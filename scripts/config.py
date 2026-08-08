@@ -78,9 +78,10 @@ class TrainingConfig:
     preprocessing_num_workers: int = 4
 
     # Batch and learning
-    per_device_train_batch_size: int = 2
-    per_device_eval_batch_size: int = 4
-    gradient_accumulation_steps: int = 4
+    # 14B + 4096-token sequences OOMs on A100 40GB at batch 2 — use 1x8
+    per_device_train_batch_size: int = 1
+    per_device_eval_batch_size: int = 2
+    gradient_accumulation_steps: int = 8
     learning_rate: float = 2e-4
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
