@@ -25,7 +25,7 @@ from config import (
 )
 from utils import (
     load_jsonl, setup_logging, extract_decision, extract_conviction_score,
-    compute_exact_match, compute_decision_agreement
+    compute_exact_match, compute_decision_agreement, format_principle_context
 )
 
 logger = logging.getLogger(__name__)
@@ -251,7 +251,6 @@ def main():
     # STEP 3: Load principles for context
     # ========================================================================
     logger.info("\n[STEP 3] Loading principles...")
-    from utils import load_jsonl, format_principle_context
     principles_data = load_jsonl(STAGE_02_PATH.parent / "stage_01_principle_foundation.jsonl")
     principle_context = format_principle_context(principles_data)
     logger.info(f"  ✓ Loaded {len(principles_data)} principles")
