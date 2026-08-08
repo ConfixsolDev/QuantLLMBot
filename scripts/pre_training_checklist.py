@@ -86,7 +86,6 @@ def check_dependencies():
         "peft": "0.7+",
         "bitsandbytes": "0.41+",
         "datasets": "2.14+",
-        "trl": "0.7+",
         "accelerate": "0.24+",
     }
 

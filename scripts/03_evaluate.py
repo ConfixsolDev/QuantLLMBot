@@ -32,13 +32,24 @@ logger = logging.getLogger(__name__)
 
 
 def load_model_with_lora():
-    """Load base model and merge with LoRA weights."""
+    """Load base model (4-bit) and attach LoRA weights.
+
+    14B in bf16 needs ~28 GB — too large for most single GPUs. 4-bit NF4
+    keeps eval on the same hardware the training ran on.
+    """
     logger.info(f"Loading base model: {model_config.base_model}")
 
-    # Load base model (without quantization for inference)
+    from transformers import BitsAndBytesConfig
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+
     model = AutoModelForCausalLM.from_pretrained(
         model_config.base_model,
-        torch_dtype=torch.bfloat16,
+        quantization_config=bnb_config,
         device_map="auto",
         trust_remote_code=model_config.trust_remote_code,
     )
@@ -49,9 +60,9 @@ def load_model_with_lora():
         logger.error("Run 02_finetune.py first.")
         sys.exit(1)
 
-    # Load and merge LoRA
+    # Attach LoRA (cannot merge into 4-bit weights; adapter stays active)
     model = PeftModel.from_pretrained(model, str(LORA_WEIGHTS_DIR))
-    model = model.merge_and_unload()
+    model.eval()
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
@@ -71,28 +82,34 @@ def generate_prediction(
     max_length: int = 200,
     temperature: float = 0.7
 ) -> str:
-    """Generate model prediction for a given instruction."""
+    """Generate model prediction for a given instruction.
+
+    Uses the same chat template as training so the model sees an identical
+    prompt format (user turn + generation prompt).
+    """
+    prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": instruction}],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
     inputs = tokenizer(
-        instruction,
+        prompt,
         return_tensors="pt",
         truncation=True,
         max_length=model_config.model_max_length
     ).to(model.device)
 
     with torch.no_grad():
+        # Deterministic decoding: decision agreement should not vary run-to-run
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_length,
-            temperature=temperature,
-            do_sample=True,
-            top_p=0.9,
-            top_k=50,
+            do_sample=False,
         )
 
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    # Remove instruction from response
-    if instruction in response:
-        response = response.split(instruction)[-1].strip()
+    # Decode only the newly generated tokens (everything after the prompt)
+    new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+    response = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
     return response
 

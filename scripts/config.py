@@ -6,12 +6,15 @@ Central location for all paths, model settings, and training hyperparameters.
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
+import os
 
 # ============================================================================
 # PATHS
 # ============================================================================
 
-PROJECT_ROOT = Path("E:\\QuantLLMBot")
+# Repo root = parent of scripts/. Override with QUANTLLM_ROOT (e.g. on Colab:
+# os.environ["QUANTLLM_ROOT"] = "/content/QuantLLMBot").
+PROJECT_ROOT = Path(os.environ.get("QUANTLLM_ROOT", Path(__file__).resolve().parents[1]))
 KNOWLEDGE_DIR = PROJECT_ROOT / "model_training" / "knowledge"
 OUTPUT_DIR = PROJECT_ROOT / "model_training" / "outputs"
 CHECKPOINT_DIR = PROJECT_ROOT / "model_training" / "checkpoints"
@@ -118,8 +121,8 @@ class PipelineConfig:
     # Evaluation metrics
     eval_metrics: list = None
 
-    # W&B logging
-    use_wandb: bool = True
+    # W&B logging (opt-in: requires `wandb login` first, otherwise training blocks)
+    use_wandb: bool = False
     wandb_project: str = "quantllmbot-phase4"
     wandb_entity: Optional[str] = None  # Set to your W&B username if desired
 

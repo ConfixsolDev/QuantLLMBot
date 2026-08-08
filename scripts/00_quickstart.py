@@ -44,8 +44,8 @@ def check_environment():
         import pandas
         logger.info(f"  ✓ Pandas {pandas.__version__}")
 
-        import trl
-        logger.info(f"  ✓ TRL {trl.__version__}")
+        import bitsandbytes
+        logger.info(f"  ✓ bitsandbytes {bitsandbytes.__version__}")
 
     except ImportError as e:
         logger.error(f"  ✗ Missing dependency: {e}")
@@ -117,8 +117,9 @@ def run_finetuning():
         logger.error("Fine-tuning failed!")
         return False
 
-    if not (LORA_WEIGHTS_DIR / "adapter_model.bin").exists():
-        logger.error(f"Expected output not found: {LORA_WEIGHTS_DIR}/adapter_model.bin")
+    adapter_files = [LORA_WEIGHTS_DIR / "adapter_model.safetensors", LORA_WEIGHTS_DIR / "adapter_model.bin"]
+    if not any(p.exists() for p in adapter_files):
+        logger.error(f"Expected adapter weights not found in: {LORA_WEIGHTS_DIR}")
         return False
 
     logger.info(f"✓ Fine-tuning complete: {LORA_WEIGHTS_DIR}")

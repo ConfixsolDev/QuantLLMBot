@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """
 QuantLLMBot Phase 4: Fine-Tuning with QLoRA
-Fine-tune Qwen2.5-7B-Instruct using LoRA adapters on instruction-response pairs.
+Fine-tune Qwen2.5-14B-Instruct using LoRA adapters on instruction-response pairs.
 Usage: python 02_finetune.py
+
+Uses plain transformers Trainer (same proven recipe as v001
+train_qwen7b_qlora_colab.py) to avoid TRL API drift between versions.
+The chat template wraps instruction (user) + response (assistant) so the
+model learns to produce the response, not to reproduce the instruction.
 """
 
 import sys
@@ -10,18 +15,18 @@ import logging
 from pathlib import Path
 import os
 
-os.environ["WANDB_PROJECT"] = "quantllmbot-phase4"
+os.environ.setdefault("WANDB_PROJECT", "quantllmbot-phase4")
 
 import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    HfArgumentParser,
+    DataCollatorForLanguageModeling,
+    Trainer,
     TrainingArguments,
 )
-from peft import LoraConfig, get_peft_model, TaskType
-from trl import SFTTrainer
+from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 from datasets import load_dataset
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -55,13 +60,18 @@ def setup_model_and_tokenizer():
         trust_remote_code=model_config.trust_remote_code,
         torch_dtype=torch.bfloat16,
     )
+    model.config.use_cache = False
+    if training_config.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
+    model = prepare_model_for_kbit_training(model)
 
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
         model_config.base_model,
         trust_remote_code=model_config.trust_remote_code,
     )
-    tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     logger.info(f"  ✓ Model loaded: {model.config.model_type}")
     logger.info(f"  ✓ Tokenizer loaded, vocab size: {len(tokenizer)}")
@@ -91,7 +101,12 @@ def setup_lora(model):
 
 
 def load_training_data(tokenizer):
-    """Load preprocessed training data."""
+    """Load preprocessed training data and tokenize instruction+response pairs.
+
+    CRITICAL: the model must see the assistant response as training labels.
+    We render each pair through the Qwen chat template and train on the
+    full sequence (causal LM), matching the v001/v002 recipe.
+    """
     logger.info(f"Loading training data from {PROCESSED_DATA_PATH}...")
 
     if not PROCESSED_DATA_PATH.exists():
@@ -109,6 +124,31 @@ def load_training_data(tokenizer):
     logger.info(f"    Sample instruction: {dataset[0]['instruction'][:100]}...")
     logger.info(f"    Sample response: {dataset[0]['response'][:100]}...")
 
+    def to_text(example):
+        messages = [
+            {"role": "user", "content": example["instruction"]},
+            {"role": "assistant", "content": example["response"]},
+        ]
+        return {
+            "text": tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False
+            )
+        }
+
+    dataset = dataset.map(to_text, remove_columns=dataset.column_names)
+
+    def tokenize(batch):
+        tokens = tokenizer(
+            batch["text"],
+            max_length=training_config.max_seq_length,
+            truncation=True,
+            padding=False,
+        )
+        tokens["labels"] = [ids.copy() for ids in tokens["input_ids"]]
+        return tokens
+
+    dataset = dataset.map(tokenize, batched=True, remove_columns=["text"])
+    logger.info(f"  ✓ Tokenized {len(dataset)} sequences (max_len={training_config.max_seq_length})")
     return dataset
 
 
@@ -169,14 +209,11 @@ def main():
     # STEP 4: Initialize trainer
     # ========================================================================
     logger.info("\n[STEP 4] Initializing trainer...")
-    trainer = SFTTrainer(
+    trainer = Trainer(
         model=model,
-        tokenizer=tokenizer,
-        train_dataset=train_dataset,
         args=training_args,
-        packing=False,
-        dataset_text_field="instruction",  # Can be extended for instruction + response
-        max_seq_length=training_config.max_seq_length,
+        train_dataset=train_dataset,
+        data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
     )
 
     logger.info("  ✓ Trainer initialized")
@@ -202,7 +239,7 @@ def main():
 
     logger.info(f"  ✓ LoRA weights saved to: {LORA_WEIGHTS_DIR}")
     logger.info(f"  ✓ Adapter config: {LORA_WEIGHTS_DIR / 'adapter_config.json'}")
-    logger.info(f"  ✓ Adapter weights: {LORA_WEIGHTS_DIR / 'adapter_model.bin'}")
+    logger.info(f"  ✓ Adapter weights: {LORA_WEIGHTS_DIR / 'adapter_model.safetensors'}")
 
     # ========================================================================
     # STEP 7: Summary
