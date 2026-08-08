@@ -1,0 +1,18 @@
+{
+  "dataset_type": "complete_sequential_market_structure_curriculum",
+  "example_count": 250,
+  "from_date": "2026-05-15",
+  "no_lookahead_policy": "All generated chart-flow examples use closed candles only. Decision examples retain their source review status.",
+  "schema_version": 1,
+  "source_csv": "D:\\QuantLLMBot\\RandDData\\RnD_XAUUSDr_20260101.csv",
+  "stages": {
+    "01_principle_foundation": 10,
+    "02_multi_h4_sequence": 40,
+    "03_internal_h4_flow_level_volume": 80,
+    "04_decision_contract_examples": 120
+  },
+  "status": "unreviewed_complete_curriculum_training_asset",
+  "to_date": "2026-07-15",
+  "training_order": "The train.jsonl file is intentionally ordered from principles to sequence flow to level/volume examples to decision-contract examples.",
+  "version": "complete_market_structure_v001"
+}

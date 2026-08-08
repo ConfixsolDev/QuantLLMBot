@@ -1,0 +1,1569 @@
+{
+  "schema_version": "1.0",
+  "short_term": [
+    {
+      "event_id": "context-1783901700-m1_ema14_cross-sell",
+      "memory_epoch": "jul13_first_trade_test_v1",
+      "run": "jul13_first_trade_test_v1",
+      "time_utc": "2026-07-13T00:15:00+00:00",
+      "state": "pass",
+      "direction": "sell",
+      "observation": "TP1 was reached before invalidation; the stated rejection/acceptance thesis held.",
+      "reason": "Failed test at M1 resistance, sell to nearest support",
+      "rejection": {
+        "state": "unclear",
+        "relevant_level": "",
+        "why": "",
+        "failure_condition": ""
+      }
+    }
+  ],
+  "experiment_window": {},
+  "regime_labels": [],
+  "shadow_validation_candidates": [],
+  "active_memory_epoch": "jul13_first_trade_test_v1",
+  "realtime_paper": {
+    "realtime_demo_preflight": {
+      "started_utc": "2026-07-20T11:59:32.752933+00:00",
+      "end_utc": "2026-07-20T11:59:32.752933+00:00",
+      "demo_verified": true,
+      "seen_candidates": [],
+      "orders": [],
+      "status": "completed",
+      "completed_utc": "2026-07-20T11:59:37.280977+00:00",
+      "provider_calls": 0
+    },
+    "realtime_demo_20260720_v1": {
+      "started_utc": "2026-07-20T12:00:04.455293+00:00",
+      "end_utc": "2026-07-20T16:00:04.455293+00:00",
+      "demo_verified": true,
+      "seen_candidates": [
+        "context-1784548800-candle_level_structure_scan-neutral"
+      ],
+      "orders": [],
+      "status": "completed",
+      "provider_calls": 1,
+      "completed_utc": "2026-07-20T12:19:59.403328+00:00"
+    },
+    "realtime_demo_20260720": {
+      "started_utc": "2026-07-20T14:27:17.367114+00:00",
+      "end_utc": "2026-07-20T16:00:00.330906+00:00",
+      "demo_verified": true,
+      "seen_candidates": [
+        "context-1784554500-m1_ema14_cross-sell",
+        "context-1784556000-candle_level_structure_scan-neutral",
+        "context-1784558400-candle_level_structure_scan-neutral",
+        "context-1784559600-candle_level_structure_scan-neutral",
+        "context-1784560620-m1_ema14_cross-sell",
+        "context-1784561580-m1_ema14_cross-sell",
+        "context-1784563020-m1_ema14_cross-sell"
+      ],
+      "orders": [],
+      "status": "completed",
+      "provider_calls": 7,
+      "completed_utc": "2026-07-20T16:01:01.855728+00:00"
+    },
+    "realtime_demo_20260721": {
+      "started_utc": "2026-07-21T07:01:11.160530+00:00",
+      "end_utc": "2026-07-21T16:00:00.302510+00:00",
+      "demo_verified": true,
+      "seen_candidates": [
+        "context-1784592300-m1_ema14_cross-buy",
+        "context-1784593200-candle_level_structure_scan-neutral",
+        "context-1784594400-candle_level_structure_scan-neutral",
+        "context-1784595600-m1_ema14_cross-sell",
+        "context-1784596800-candle_level_structure_scan-neutral",
+        "context-1784597700-m1_ema14_cross-sell",
+        "context-1784598900-m1_ema14_cross-sell",
+        "context-1784599800-m1_ema14_cross-sell",
+        "context-1784601600-candle_level_structure_scan-neutral",
+        "context-1784602500-m1_ema14_cross-buy",
+        "context-1784603520-m1_ema14_cross-sell",
+        "context-1784605380-pivot_zone_touch-neutral",
+        "context-1784605740-pivot_zone_touch-neutral",
+        "context-1784606760-pivot_zone_touch-neutral",
+        "context-1784607660-m1_ema14_cross-sell",
+        "context-1784609520-m1_ema14_cross-buy",
+        "context-1784609940-pivot_zone_touch-neutral",
+        "context-1784610780-pivot_zone_touch-neutral",
+        "context-1784611080-pivot_zone_touch-neutral",
+        "context-1784611800-pivot_zone_touch-neutral",
+        "context-1784612400-pivot_zone_touch-neutral",
+        "context-1784612820-pivot_zone_touch-neutral",
+        "context-1784613480-pivot_zone_touch-neutral",
+        "context-1784613840-pivot_zone_touch-neutral",
+        "context-1784614140-pivot_zone_touch-neutral",
+        "context-1784615160-pivot_zone_touch-neutral",
+        "context-1784616120-pivot_zone_touch-neutral"
+      ],
+      "orders": [],
+      "status": "completed",
+      "completed_utc": "2026-07-21T07:13:13.299644+00:00",
+      "provider_calls": 1
+    },
+    "realtime_demo_20260722": {
+      "started_utc": "2026-07-22T00:00:03.102345+00:00",
+      "end_utc": "2026-07-22T16:00:01.067718+00:00",
+      "demo_verified": true,
+      "seen_candidates": [
+        "context-1784678400-candle_level_structure_scan-neutral",
+        "context-1784678760-pivot_zone_touch-neutral",
+        "context-1784679060-pivot_zone_touch-neutral",
+        "context-1784679420-pivot_zone_touch-neutral",
+        "context-1784680320-pivot_zone_touch-neutral",
+        "context-1784680680-pivot_zone_touch-neutral",
+        "context-1784681400-pivot_zone_touch-neutral",
+        "context-1784681880-pivot_zone_touch-neutral",
+        "context-1784682480-pivot_zone_touch-neutral",
+        "context-1784683440-pivot_zone_touch-neutral",
+        "context-1784684040-pivot_zone_touch-neutral",
+        "context-1784684940-m1_ema14_cross-sell",
+        "context-1784685480-pivot_zone_touch-neutral",
+        "context-1784686380-pivot_zone_touch-neutral",
+        "context-1784687880-m1_ema14_cross-sell"
+      ],
+      "orders": [
+        {
+          "candidate_id": "context-1784680320-pivot_zone_touch-neutral",
+          "direction": "sell",
+          "order": 2019525329,
+          "deal": 1867397609,
+          "position_ticket": 2019525329,
+          "fill": 4091.246,
+          "volume": 0.01,
+          "request": {
+            "symbol": "XAUUSDr",
+            "volume": 0.01,
+            "type": 1,
+            "price": 4091.246,
+            "sl": 4094.246,
+            "tp": 4085.246,
+            "magic": 26072026
+          },
+          "closed": true,
+          "event": {
+            "kind": "post_open_event",
+            "candidate_id": "context-1784680320-pivot_zone_touch-neutral",
+            "time_utc": "2026-07-22T00:32:00+00:00",
+            "direction": "sell",
+            "entry": 4091.246,
+            "exit": 4094.246,
+            "exit_time_utc": "2026-07-22T00:37:31+00:00",
+            "exit_reason": "broker_sl_tp_or_session_close",
+            "outcome": "loss",
+            "pnl_points": -3.0,
+            "profit_usd": -3.0,
+            "position_ticket": 2019525329
+          }
+        },
+        {
+          "candidate_id": "context-1784684040-pivot_zone_touch-neutral",
+          "direction": "sell",
+          "order": 2019857296,
+          "deal": 1867716706,
+          "position_ticket": 2019857296,
+          "fill": 4117.566,
+          "volume": 0.01,
+          "request": {
+            "symbol": "XAUUSDr",
+            "volume": 0.01,
+            "type": 1,
+            "price": 4117.566,
+            "sl": 4120.566,
+            "tp": 4111.566,
+            "magic": 26072026
+          },
+          "closed": true,
+          "event": {
+            "kind": "post_open_event",
+            "candidate_id": "context-1784684040-pivot_zone_touch-neutral",
+            "time_utc": "2026-07-22T01:34:00+00:00",
+            "direction": "sell",
+            "entry": 4117.566,
+            "exit": 4120.566,
+            "exit_time_utc": "2026-07-22T01:39:35+00:00",
+            "exit_reason": "broker_sl_tp_or_session_close",
+            "outcome": "loss",
+            "pnl_points": -3.0,
+            "profit_usd": -3.0,
+            "position_ticket": 2019857296
+          }
+        }
+      ],
+      "status": "running",
+      "provider_calls": 27
+    },
+    "qwen_indicator_demo_exec_20260723": {
+      "started_utc": "2026-07-23T11:04:20.338100+00:00",
+      "end_utc": "2026-07-23T13:04:20.338100+00:00",
+      "demo_verified": true,
+      "seen_candidates": [
+        "context-1784805000-pivot_zone_touch-neutral",
+        "context-1784805900-pivot_zone_touch-neutral",
+        "context-1784806320-pivot_zone_touch-neutral",
+        "context-1784806860-pivot_zone_touch-neutral",
+        "context-1784807280-pivot_zone_touch-neutral",
+        "context-1784808240-m1_ema14_cross-buy"
+      ],
+      "orders": [],
+      "status": "running",
+      "provider_calls": 6
+    }
+  },
+  "daily_working_memory": {
+    "realtime_demo_20260720_v1": {
+      "day_start_utc": "2026-07-20T00:00:00+00:00",
+      "day_open": {
+        "market_location": "Price is at 4032.46, testing a multi-day H4 resistance zone between 4030–4043.5. The rally from the 3959.46 low has broken above the Asia high (4028.96) and pre-London high, with a current pullback from the 4040.8 spike into the H4 resistance cluster. The market is at a critical inflection point between continued bullish breakout and bearish rejection.",
+        "htf_structure": "H4 trend is mixed: EMA3/14 below EMA31, but price has surged above all, challenging the prior swing high at 4043.5. A close above would confirm a higher high and a trend reversal. The current H4 candle (from 08:00) is strongly bullish with a long upper wick, indicating rejection near resistance. H1 trend is firmly bullish with all EMAs aligned upward and price breaking the previous H1 swing high at 4030.88. The current H1 candle has retraced from the spike high and is retesting the breakout area. Further strength depends on holding above the broken level.",
+        "session_map": "London session active, overlap upcoming. Asia range 3982.56–4028.96 (bullish bias). Price broke above the Asia high during London, and the pullback is now testing the breakout point. Pre-London high at 4021.82 is a deeper support. A hold above 4028.96 would validate London strength; a close back inside would trap breakout longs. The high-impact news in 30 minutes could trigger sharp moves.",
+        "important_zones": {
+          "resistance": [
+            "4043.5 (H4 swing high)",
+            "4035–4038 (H4 resistance cluster, last tested 2026-07-16)",
+            "4030.88 (prior H1 swing high, now flipped support)"
+          ],
+          "support": [
+            "4028.96 (Asia high, breakout level)",
+            "4021.82 (pre-London high)",
+            "4019.48 (H1 fib 23.6%)",
+            "4014.77 (M15 swing low)",
+            "4022–4023 (M5 EMA31 / cluster zone)"
+          ]
+        },
+        "two_sided_paths": [
+          "Bullish acceptance: Clear close above 4035 on M30/H1 with a successful retest, targeting 4043.5 first, then extension toward 4050 (H4 historical low zone). Invalidation below 4028.96.",
+          "Bearish rejection: Rejection from current resistance with a close back below 4028.96 (Asia high) suggests a false breakout. Decline toward 4021.8 and 4019.5; a break below 4014.7 exposes deeper retracement."
+        ],
+        "risk_conditions": "High-impact Canadian CPI news at 12:30 UTC, with the news guard blocking new entries from 11:30 to 13:30. Expect volatile swings and potential structural breaks. The pre-news quiet period may limit participation.",
+        "invalidation_of_briefing": "A 1H close below 4028.96 would invalidate the bullish breakout case and shift focus to support retests. A 1H close above 4043.5 would break the H4 resistance and extend the bullish move.",
+        "working_focus": [
+          "M5/M15 behavior around 4035 cluster: acceptance or rejection",
+          "Price reaction at 4028.96 support: hold, break, or retest",
+          "H1 candle close relative to 4043.5",
+          "Direction and volume on the 12:30 news spike",
+          "H1 EMA alignment (all > 31) and whether price stays above EMA14"
+        ],
+        "sections_applied": [
+          "session-rules",
+          "timeframe-roles",
+          "SR-rules",
+          "fib-location",
+          "auction-states"
+        ],
+        "_provider": {
+          "id": "deepseek",
+          "model": "deepseek-v4-pro",
+          "thinking": true,
+          "reasoning_effort": "high",
+          "operator_skill_version": "2.1+fd4e54575aa4",
+          "sop_version": "2.2",
+          "attempt": 0,
+          "api_calls": 1,
+          "cache_hit_tokens": 0,
+          "cache_miss_tokens": 20303,
+          "usage": {
+            "prompt_tokens": 20303,
+            "completion_tokens": 4177
+          }
+        }
+      },
+      "hourly_reviews": [],
+      "last_hour_end_utc": "2026-07-20T12:00:00+00:00"
+    },
+    "realtime_demo_20260720": {
+      "day_start_utc": "2026-07-20T00:00:00+00:00",
+      "day_open": {
+        "market_location": "Price 4012 after sharp decline from 4040.82; testing H4 61.8% fib 4011.41, below H1 EMA14 (4015.6) and M30 EMA31 (4013.8), bearish momentum on M5/M15.",
+        "htf_structure": "H4 mixed: rally from 3959.46 to 4043.52, now retracing; price below EMA31 bearish context. H1 bullish until current candle turning bearish; decline with elevated volume threatens deeper pullback.",
+        "session_map": "Asia: bullish, range 3982.56–4028.97. London: opened 4017.19, surged to 4040.82 then reversed lower; currently bearish inside Asia range, trading near session low 4009.75.",
+        "important_zones": [
+          "Resistance: 4040.82 (London high), 4025.53 (H4 78.6%), 4017.19 (London open/EMA cluster)",
+          "Support: 4011.41 (H4 61.8%), 4009.75 (M5/M1 low), 4004.81 (H1 61.8%), 4000 (psychological), 3982.56 (Asia low)"
+        ],
+        "two_sided_paths": {
+          "acceptance_continuation": "Sustained move below 4010 and H4 61.8% targets 4004.8 then 4000; deeper H1 bearish trend extension.",
+          "rejection_reversal": "Bounce off H4 61.8% with M5 close above 4015.6 (H1 EMA14) and reclaim of 4017 aims for 4025+; would signal pullback complete."
+        },
+        "risk_conditions": "High-impact CAD CPI at 12:30 UTC (10 mins away) blocks new trade evaluation; news may invalidate current structure. Snapshot shows strong bearish participation but context uncertain pre-news.",
+        "invalidation_of_briefing": "A close above 4025 on H4 or below 3982 on H4 changes the structural narrative; post-news price may gap or reverse violently.",
+        "working_focus": [
+          "Does price hold below 4010 on M5 close after news?",
+          "Does H1 close below its 61.8% fib (4004.8)?",
+          "Post-news: acceptance/rejection of the 4010 area?",
+          "M15/M30 tick volume comparison – sell vs. buy pressure.",
+          "Reclaim of M30 EMA31 (4013.8) as early reversal signal."
+        ],
+        "sections_applied": [
+          "session-rules",
+          "fib-location",
+          "auction-states",
+          "timeframe-roles"
+        ],
+        "_provider": {
+          "id": "deepseek",
+          "model": "deepseek-v4-pro",
+          "thinking": true,
+          "reasoning_effort": "high",
+          "operator_skill_version": "2.1+fd4e54575aa4",
+          "sop_version": "2.2",
+          "attempt": 0,
+          "api_calls": 1,
+          "cache_hit_tokens": 896,
+          "cache_miss_tokens": 19717,
+          "usage": {
+            "prompt_tokens": 20613,
+            "completion_tokens": 2228
+          }
+        }
+      },
+      "hourly_reviews": [
+        {
+          "market_state_update": "Price action during CAD CPI news window (12:30-13:30 UTC); after 13:30, market resumed normal flow but no new entries evaluated.",
+          "what_model_did": "Skipped a trade at 13:35 due to high-impact news exclusion (SOP news-risk).",
+          "what_worked": "Correctly identified news window and refrained from opening a new position.",
+          "what_failed": "None; no errors observed.",
+          "failure_causes": null,
+          "risk_posture": "normal",
+          "next_hour_adjustments": [
+            "Maintain standard selectivity; monitor post-news price response for setup validation."
+          ],
+          "invalidation": null,
+          "evidence_event_ids": [
+            "context-1784554500-m1_ema14_cross-sell"
+          ],
+          "sections_applied": [
+            "news-risk"
+          ],
+          "_provider": {
+            "id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking": true,
+            "reasoning_effort": "high",
+            "operator_skill_version": "2.1+fd4e54575aa4",
+            "sop_version": "2.2",
+            "attempt": 0,
+            "api_calls": 1,
+            "cache_hit_tokens": 1024,
+            "cache_miss_tokens": 7350,
+            "usage": {
+              "prompt_tokens": 8374,
+              "completion_tokens": 1108
+            }
+          },
+          "hour_end_utc": "2026-07-20T14:00:00+00:00",
+          "expires_at_utc": "2026-07-20T15:00:00+00:00"
+        },
+        {
+          "market_state_update": "Post-CAD CPI news window, market remained subdued with price oscillating near H4 61.8% fib (4011.41) without directional expansion. M5 volatility low, not meeting fixed_r profile requirements.",
+          "what_model_did": "Reviewed area_spotter analysis at 14:40; identified that fixed_r profile requirements were unmet (M1 body weak, M5 volume low, trigger range too wide); skipped with fixed_profile_mismatch.",
+          "what_worked": "Correctly applied fixed_profile_mismatch skip code; did not force a trade when profile conditions were absent.",
+          "what_failed": "None; no erroneous actions.",
+          "failure_causes": null,
+          "risk_posture": "normal",
+          "next_hour_adjustments": [
+            "Maintain normal selectivity; continue to require full fixed_r_profile alignment before opening; monitor for increased volatility or clear directional response."
+          ],
+          "invalidation": "A close below 4000 or above 4025 on H1 would invalidate the current balance and trigger a new assessment.",
+          "evidence_event_ids": [
+            "context-1784558400-candle_level_structure_scan-neutral"
+          ],
+          "sections_applied": [
+            "news-risk"
+          ],
+          "_provider": {
+            "id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking": true,
+            "reasoning_effort": "high",
+            "operator_skill_version": "2.1+fd4e54575aa4",
+            "sop_version": "2.2",
+            "attempt": 0,
+            "api_calls": 1,
+            "cache_hit_tokens": 6784,
+            "cache_miss_tokens": 1930,
+            "usage": {
+              "prompt_tokens": 8714,
+              "completion_tokens": 2561
+            }
+          },
+          "hour_end_utc": "2026-07-20T15:00:00+00:00",
+          "expires_at_utc": "2026-07-20T16:00:00+00:00"
+        }
+      ],
+      "last_hour_end_utc": "2026-07-20T15:00:00+00:00"
+    },
+    "realtime_demo_20260721": {
+      "day_start_utc": "2026-07-21T00:00:00+00:00",
+      "day_open": {
+        "market_location": "XAUUSD at 4007.47 (M1 close), inside H4 bearish retracement, near 38.2% fib (4009.72) and H1 23.6% fib (4008.28). Price has bounced from 4000 area and is testing the 4008-4010 confluence resistance in thin off-session liquidity.",
+        "htf_structure": "H4 trend bearish below EMA31 (4026.68), fresh swing high 4040.79, swing low 3998.23; recent candles show lower highs. H1 trend bearish, close 4000.62 prior hour, current partial recovery. The upswing from 3959.44 to 4040.79 has retraced below 50% fib (4000.12), and price is attempting a corrective pullback.",
+        "session_map": "Asia session (00:00-07:00) about to begin. Yesterday's Asia was bullish (open 3995.69, close 4004.09), high 4028.95, low 3982.54. London and NY sessions were volatile, culminating in a drop to 3999.84. Off-session now, thin conditions; Asia open may bring directional flow.",
+        "important_zones": [
+          "Resistance: 4008.28 (H1 23.6% fib), 4009.72 (H4 38.2% fib), 4010.05 (M5 swing high), 4012.85 (M30 resistance).",
+          "Support: 4004-4005 (M1/M5 EMA cluster), 4000.12 (H4 50% fib), 3998.23 (major H1 swing low), 3995.69 (Asia open)."
+        ],
+        "two_sided_paths": {
+          "acceptance_scenario": "A decisive M5 close above 4010 with retest acceptance would open a move toward 4015-4020 (H4 61.8% fib / H1 resistance). A break above 4028.95 (Asia high) would shift bias bullish.",
+          "rejection_scenario": "A clear rejection at the 4008-4010 zone, especially with a lower wick failure, would resume the downtrend targeting 4000 and then 3998-3982. A close below 3998 would confirm bearish continuation."
+        },
+        "risk_conditions": "Upcoming high-impact GBP news at 06:00 UTC (Claimant Count Change) may increase volatility and cautious positioning. Off-session liquidity gaps risk erratic moves at Asia open. No other immediate red news. Price is near a key resistance in a bearish structure, so risk of false breakout if not confirmed.",
+        "invalidation_of_briefing": "A daily close above 4040.79 or an intraday acceptance above 4020 with sustained trade would invalidate the bearish structure. Conversely, a break below 3982.54 would cancel any bullish retracement scenario and signal a deeper drop.",
+        "working_focus": [
+          "Monitor the reaction at the 4008-4010 resistance confluence; look for rejection wicks or acceptance on M5 close.",
+          "Observe Asia open price action relative to yesterday's Asia range (3982.54-4028.95).",
+          "Check for a break and retest of the 4000 support area as a sign of renewed selling.",
+          "Watch M15 EMA3/14 crossover (currently bearish) for trend confirmation on lower timeframe.",
+          "Volume spike near key levels to confirm breakout or rejection strength."
+        ],
+        "sections_applied": [
+          "auction-states",
+          "timeframe-roles",
+          "fib-location",
+          "SR-rules",
+          "session-rules"
+        ],
+        "_provider": {
+          "id": "deepseek",
+          "model": "deepseek-v4-pro",
+          "thinking": true,
+          "reasoning_effort": "high",
+          "operator_skill_version": "2.1+fd4e54575aa4",
+          "sop_version": "2.2",
+          "attempt": 0,
+          "api_calls": 1,
+          "cache_hit_tokens": 6656,
+          "cache_miss_tokens": 13832,
+          "usage": {
+            "prompt_tokens": 20488,
+            "completion_tokens": 1747
+          }
+        }
+      },
+      "hourly_reviews": [
+        {
+          "market_state_update": "Price remained near 4007-4008, testing H1 23.6% fib and H4 38.2% fib resistance. Thin Asia open; no clear breakout or rejection. Multiple skips due to fixed profile mismatch.",
+          "what_model_did": "Reviewed three candidate setups via area_spotter and decision logic. All skipped with fixed_profile_mismatch: trigger range exceeded stop distance, M1 body lacked conviction, or target room insufficient.",
+          "what_worked": "Correctly applied fixed profile constraints, avoiding low-probability setups. No false starts.",
+          "what_failed": "No actionable entries were found; market conditions did not produce a clear directional candle with adequate body and room.",
+          "failure_causes": "Fixed profile geometry prevented entry; off-session thinness and lack of decisive rejection or acceptance at 4008-4010 zone.",
+          "risk_posture": "cautious",
+          "next_hour_adjustments": [
+            "Monitor 4008-4010 zone for clean rejection/acceptance. Prioritize setups with M1 body >50% range and trigger range within stop distance. As Asia liquidity increases, watch for breakout with retest. Do not modify fixed SL/TP."
+          ],
+          "invalidation": "A daily close above 4040.79 or intraday acceptance above 4020 invalidates bearish structure. Break below 3998.23 with acceptance confirms bearish continuation.",
+          "evidence_event_ids": [
+            "context-1784592300-m1_ema14_cross-buy",
+            "context-1784593200-candle_level_structure_scan-neutral",
+            "context-1784594400-candle_level_structure_scan-neutral"
+          ],
+          "sections_applied": [
+            "auction-states",
+            "timeframe-roles",
+            "fib-location",
+            "SR-rules",
+            "session-rules",
+            "starter-first",
+            "targets",
+            "basket",
+            "entry-buy",
+            "entry-sell",
+            "entry-veto"
+          ],
+          "_provider": {
+            "id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking": true,
+            "reasoning_effort": "high",
+            "operator_skill_version": "2.1+fd4e54575aa4",
+            "sop_version": "2.2",
+            "attempt": 0,
+            "api_calls": 1,
+            "cache_hit_tokens": 6784,
+            "cache_miss_tokens": 2237,
+            "usage": {
+              "prompt_tokens": 9021,
+              "completion_tokens": 3017
+            }
+          },
+          "hour_end_utc": "2026-07-21T01:00:00+00:00",
+          "expires_at_utc": "2026-07-21T02:00:00+00:00"
+        },
+        {
+          "market_state_update": "Price oscillated around 4007-4009, repeatedly testing the H1 23.6% fib and H4 38.2% fib confluence. No breakout or rejection; thin Asia session with low participation. Multiple small-range M5 candles with two-sided wicks.",
+          "what_model_did": "Reviewed three candidate setups via area_spotter and decision logic. All skipped with fixed_profile_mismatch due to trigger range exceeding stop distance and/or insufficient M1 body conviction.",
+          "what_worked": "Correctly applied fixed profile constraints, avoiding low-probability setups. No false starts. Maintained discipline in thin conditions.",
+          "what_failed": "No actionable entries found; market conditions did not produce a clear directional candle with adequate body and room. The 4008-4010 zone held without decisive response.",
+          "failure_causes": "Fixed profile geometry prevented entry (trigger range > stop distance; M1 body < 50% range). Off-session thinness and lack of decisive rejection or acceptance at the key resistance confluence.",
+          "risk_posture": "cautious",
+          "next_hour_adjustments": [
+            "Continue monitoring the 4008-4010 zone for a clean rejection or acceptance on M5 close.",
+            "Prioritize setups where the M1 body covers at least 50% of the candle range and trigger range is within stop distance.",
+            "As Asia liquidity increases, watch for a breakout with retest.",
+            "Do not modify fixed SL/TP.",
+            "Remain cautious ahead of GBP news at 06:00."
+          ],
+          "invalidation": "A daily close above 4040.79 or intraday acceptance above 4020 invalidates bearish structure. Break below 3998.23 with acceptance confirms bearish continuation.",
+          "evidence_event_ids": [
+            "context-1784596800-candle_level_structure_scan-neutral",
+            "context-1784597700-m1_ema14_cross-sell",
+            "context-1784598900-m1_ema14_cross-sell"
+          ],
+          "sections_applied": [
+            "auction-states",
+            "timeframe-roles",
+            "fib-location",
+            "SR-rules",
+            "session-rules",
+            "starter-first",
+            "targets",
+            "basket",
+            "entry-buy",
+            "entry-sell",
+            "entry-veto"
+          ],
+          "_provider": {
+            "id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking": true,
+            "reasoning_effort": "high",
+            "operator_skill_version": "2.1+fd4e54575aa4",
+            "sop_version": "2.2",
+            "attempt": 0,
+            "api_calls": 1,
+            "cache_hit_tokens": 6784,
+            "cache_miss_tokens": 2782,
+            "usage": {
+              "prompt_tokens": 9566,
+              "completion_tokens": 2268
+            }
+          },
+          "hour_end_utc": "2026-07-21T02:00:00+00:00",
+          "expires_at_utc": "2026-07-21T03:00:00+00:00"
+        },
+        {
+          "market_state_update": "Price continued to test the 4008-4010 resistance zone with repeated small-range M5 candles, two-sided wicks, and low participation. No close above 4010 or rejection below 4007. Fixed profile constraints prevented entry as M1 bodies remained below 50% range and trigger range exceeded stop distance.",
+          "what_model_did": "Reviewed three candidate setups via area_spotter and decision logic, all skipped with fixed_profile_mismatch due to geometry constraints (M1 body < 50% range, trigger range > stop distance). No outcomes to evaluate.",
+          "what_worked": "Maintained discipline by enforcing fixed profile requirements (M1 body size, trigger range relative to stop) and avoiding low-probability entries in thin conditions. Correctly withheld action until a valid setup materializes.",
+          "what_failed": "No actionable entry found. Market conditions did not produce a directional M1 body covering at least 50% of range nor an acceptable trigger range within stop distance. The 4008-4010 zone held without decisive response.",
+          "failure_causes": "Fixed profile geometry prevented entry (trigger range > stop distance; M1 body < 50% range). Thin Asia session liquidity and lack of a clear rejection or acceptance at the key resistance confluence.",
+          "risk_posture": "cautious",
+          "next_hour_adjustments": [
+            "Continue monitoring the 4008-4010 zone for a clean M5 close rejection or acceptance with adequate M1 body (≥50% of range) and trigger range within stop distance.",
+            "Prioritize setups where the M1 directional body and trigger range align with the fixed profile stop/target distance.",
+            "As Asia liquidity increases, watch for a breakout with retest of key levels (4010 or 4000).",
+            "Remain cautious ahead of high-impact GBP news at 06:00 UTC.",
+            "Do not modify fixed SL/TP or ban any side; maintain objective stance."
+          ],
+          "invalidation": "A daily close above 4040.79 or intraday acceptance above 4020 would invalidate the bearish structure. A breakdown below 3998.23 with acceptance confirms bearish continuation.",
+          "evidence_event_ids": [
+            "context-1784599800-m1_ema14_cross-sell",
+            "context-1784601600-candle_level_structure_scan-neutral",
+            "context-1784602500-m1_ema14_cross-buy"
+          ],
+          "sections_applied": [
+            "auction-states",
+            "timeframe-roles",
+            "fib-location",
+            "SR-rules",
+            "session-rules",
+            "starter-first",
+            "targets",
+            "entry-buy",
+            "entry-sell",
+            "entry-veto"
+          ],
+          "_provider": {
+            "id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking": true,
+            "reasoning_effort": "high",
+            "operator_skill_version": "2.1+fd4e54575aa4",
+            "sop_version": "2.2",
+            "attempt": 0,
+            "api_calls": 1,
+            "cache_hit_tokens": 6784,
+            "cache_miss_tokens": 2843,
+            "usage": {
+              "prompt_tokens": 9627,
+              "completion_tokens": 1564
+            }
+          },
+          "hour_end_utc": "2026-07-21T03:00:00+00:00",
+          "expires_at_utc": "2026-07-21T04:00:00+00:00"
+        },
+        {
+          "market_state_update": "Price tested the 4045-4049 resistance confluence during Asia hours; no decisive rejection or acceptance close occurred. Sellers defended the zone, but no M5 close below 4045 materialized. All decisions were armed waits for a rejection trigger.",
+          "what_model_did": "The model identified the 4045-4049 resistance as a key zone and evaluated three separate setups for a sell entry. Each time, it chose to wait for a confirmed rejection close below 4045 (or 4049) due to missing M5 close below the zone, incomplete M15 rejection, or fixed profile geometry requirements. No entry was opened.",
+          "what_worked": "The model correctly recognized the resistance confluence and did not enter prematurely. The waits avoided buying into resistance or selling without confirmation. The use of fixed_r_multiple_research profile ensured geometry was considered before entry.",
+          "what_failed": "No outcomes were available in this hour, so no failures can be identified. The model did not miss any entries because no trigger condition was met.",
+          "failure_causes": null,
+          "risk_posture": "cautious",
+          "next_hour_adjustments": [
+            "Set risk_posture to pause_new_entries from 05:00 UTC due to 60-minute pre-news window for GBP Claimant Count Change at 06:00. Maintain existing armed plans but do not initiate new entries. No changes to selectivity, timing, or level-response requirements."
+          ],
+          "invalidation": "A decisive M5 close above 4049 with retest acceptance would invalidate the short-term bearish outlook and shift focus to higher targets (4050-4054). Conversely, a clear rejection and close below 4045 would validate the sell thesis.",
+          "evidence_event_ids": [
+            "context-1784606760-pivot_zone_touch-neutral",
+            "context-1784607660-m1_ema14_cross-sell",
+            "context-1784609520-m1_ema14_cross-buy"
+          ],
+          "sections_applied": [
+            "SR-rules",
+            "entry-sell",
+            "auction-states",
+            "session-rules",
+            "pivot-location",
+            "timeframe-roles",
+            "targets",
+            "fixed_r_multiple_research"
+          ],
+          "_provider": {
+            "id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking": true,
+            "reasoning_effort": "high",
+            "operator_skill_version": "2.5+07964bc95baf",
+            "sop_version": "2.6",
+            "attempt": 0,
+            "api_calls": 1,
+            "cache_hit_tokens": 3072,
+            "cache_miss_tokens": 9950,
+            "usage": {
+              "prompt_tokens": 13022,
+              "completion_tokens": 2440
+            }
+          },
+          "hour_end_utc": "2026-07-21T05:00:00+00:00",
+          "expires_at_utc": "2026-07-21T06:00:00+00:00"
+        },
+        {
+          "market_state_update": "Price continued to test the 4045-4049 resistance confluence from the prior hour, but no decisive rejection or acceptance close occurred. The news window (GBP Claimant Count Change at 06:00) prevented any new entry evaluation.",
+          "what_model_did": "Skipped all review requests due to high-impact news exclusion (GBP Claimant Count Change at 06:00, exclusion window 05:00-07:00). No entries opened.",
+          "what_worked": "Correctly applied news-risk exclusion; all skip decisions with reason 'news_window'. No premature entries into the resistance zone.",
+          "what_failed": null,
+          "failure_causes": null,
+          "risk_posture": "pause_new_entries",
+          "next_hour_adjustments": [
+            "Continue pause_new_entries until 07:00 UTC (news exclusion window ends). Thereafter resume normal operation pending fresh market assessment."
+          ],
+          "invalidation": "A decisive M5 close above 4049 with retest acceptance would shift bias to bullish continuation targeting 4050-4054. An M5 close below 4045 with failure response would validate sell thesis targeting 4038-4042. News window remains active until 07:00 UTC.",
+          "evidence_event_ids": [
+            "context-1784610780-pivot_zone_touch-neutral",
+            "context-1784611080-pivot_zone_touch-neutral",
+            "context-1784611800-pivot_zone_touch-neutral",
+            "context-1784612400-pivot_zone_touch-neutral",
+            "context-1784612820-pivot_zone_touch-neutral",
+            "context-1784613480-pivot_zone_touch-neutral"
+          ],
+          "sections_applied": [
+            "news-risk",
+            "session-rules",
+            "SR-rules",
+            "pivot-location",
+            "timeframe-roles"
+          ],
+          "_provider": {
+            "id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking": true,
+            "reasoning_effort": "high",
+            "operator_skill_version": "2.5+07964bc95baf",
+            "sop_version": "2.6",
+            "attempt": 0,
+            "api_calls": 1,
+            "cache_hit_tokens": 8832,
+            "cache_miss_tokens": 4966,
+            "usage": {
+              "prompt_tokens": 13798,
+              "completion_tokens": 1764
+            }
+          },
+          "hour_end_utc": "2026-07-21T06:00:00+00:00",
+          "expires_at_utc": "2026-07-21T07:00:00+00:00"
+        },
+        {
+          "market_state_update": "Price continued to test the 4045-4049 resistance confluence, but no decisive close occurred; news exclusion (GBP Claimant Count Change) kept the model sidelined.",
+          "what_model_did": "All four review requests (at 06:04, 06:09, 06:26, 06:42) were skipped with code news_window due to high-impact news exclusion (05:00-07:00). No entries opened.",
+          "what_worked": "Correctly applied news-risk exclusion; all skip decisions were consistent with policy.",
+          "what_failed": null,
+          "failure_causes": null,
+          "risk_posture": "pause_new_entries",
+          "next_hour_adjustments": [
+            "Resume normal operation after 07:00 UTC; reassess market structure for potential entry based on recent price action at 4045-4049 resistance."
+          ],
+          "invalidation": "A decisive M5 close above 4049 with retest acceptance would shift bias to bullish continuation targeting 4050-4054. An M5 close below 4045 with failure response would validate sell thesis targeting 4038-4042. News window remains active until 07:00 UTC.",
+          "evidence_event_ids": [
+            "context-1784613840-pivot_zone_touch-neutral",
+            "context-1784614140-pivot_zone_touch-neutral",
+            "context-1784615160-pivot_zone_touch-neutral",
+            "context-1784616120-pivot_zone_touch-neutral"
+          ],
+          "sections_applied": [
+            "news-risk",
+            "session-rules",
+            "pivot-location",
+            "SR-rules"
+          ],
+          "_provider": {
+            "id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking": true,
+            "reasoning_effort": "high",
+            "operator_skill_version": "2.5+07964bc95baf",
+            "sop_version": "2.6",
+            "attempt": 0,
+            "api_calls": 1,
+            "cache_hit_tokens": 9088,
+            "cache_miss_tokens": 4452,
+            "usage": {
+              "prompt_tokens": 13540,
+              "completion_tokens": 1568
+            }
+          },
+          "hour_end_utc": "2026-07-21T07:00:00+00:00",
+          "expires_at_utc": "2026-07-21T08:00:00+00:00"
+        }
+      ],
+      "last_hour_end_utc": "2026-07-21T07:00:00+00:00",
+      "potential_zone_plan": {
+        "source_h4_close_utc": "2026-07-21T04:00:00+00:00",
+        "market_story": "Strong bullish H4 candle (4003.89→4051.82) closed inside 4045-4049 resistance, sweeping both edges. Consolidation near 4048. Bullish H1 trend intact; Asia bias bullish. Next H4 decisive for breakout vs. false break.",
+        "priority_zones": [
+          {
+            "zone_low": 4045.046,
+            "zone_high": 4049.046,
+            "role": "resistance",
+            "confluence_sources": [
+              "prior_day.fibonacci.r2 (4047.0)",
+              "H4 historical high zone 4045.4-4049.0",
+              "H4 close sweep inside zone",
+              "H1/H4 upper wick evidence"
+            ],
+            "acceptance_path": "Decisive H4 close above 4049 targets 4050.8-4054.8 and 4057-4061.",
+            "rejection_path": "Close back below 4045, especially with upper wick, targets 4038-4042 support.",
+            "evidence_needed": "08:00 H4 close position relative to zone; body/wick character; volume.",
+            "_model_requested_zone": {
+              "zone_low": 4045.046,
+              "zone_high": 4049.046
+            },
+            "deterministic_sources": [
+              "prior_day.fibonacci.r2"
+            ],
+            "deterministic_width": 4.0,
+            "operational_boundary": "Use only 4045.046-4049.046 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4050.852,
+            "zone_high": 4054.852,
+            "role": "resistance",
+            "confluence_sources": [
+              "prior_h4.fibonacci.r1 (4052.5)",
+              "historical day_minus_5.close (4053.2)",
+              "H4/H1 upper wick cluster",
+              "H4 proximity high"
+            ],
+            "acceptance_path": "Break above 4054 on strong volume targets 4057-4061 and 4067-4071.",
+            "rejection_path": "Rejection wick or close below 4050 returns price to 4045-4049.",
+            "evidence_needed": "H4 or strong M5 close above 4054 with bullish follow-through.",
+            "_model_requested_zone": {
+              "zone_low": 4050.852,
+              "zone_high": 4054.852
+            },
+            "deterministic_sources": [
+              "prior_h4.fibonacci.r1",
+              "historical_price.day_minus_5.close"
+            ],
+            "deterministic_width": 4.0,
+            "operational_boundary": "Use only 4050.852-4054.852 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4038.171,
+            "zone_high": 4042.171,
+            "role": "support",
+            "confluence_sources": [
+              "prior_day.floor.r1 (4039.5)",
+              "prior_day.high (4040.8)",
+              "H1 fib 23.6 (4039.2)",
+              "H4/H1 historical high cluster (8/13 tests)"
+            ],
+            "acceptance_path": "Price holds above 4038 on pullback; bullish rejection targets 4045-4049, then higher.",
+            "rejection_path": "H4 close below 4038 opens path to 4031-4035.",
+            "evidence_needed": "Retest of zone with bullish rejection candle (hammer/engulfing) on M5/M15.",
+            "_model_requested_zone": {
+              "zone_low": 4038.171,
+              "zone_high": 4042.171
+            },
+            "deterministic_sources": [
+              "prior_day.floor.r1",
+              "cheat_sheet.stddev_1.upper",
+              "historical_price.day_minus_1.high"
+            ],
+            "deterministic_width": 4.0,
+            "operational_boundary": "Use only 4038.171-4042.171 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4031.744,
+            "zone_high": 4035.744,
+            "role": "support",
+            "confluence_sources": [
+              "prior_day.fibonacci.r1 (4033.3)",
+              "prior_h4.pp (4034.2)",
+              "H4 historical high zone (4032-4038, 10 tests)",
+              "H1 swing high tests"
+            ],
+            "acceptance_path": "Bounce from zone targets 4038-4042 and then 4045-4049.",
+            "rejection_path": "H4 close below 4031 targets 4022-4026.",
+            "evidence_needed": "Arrival at zone; bullish price pattern (lower wick rejection, bullish engulfing).",
+            "_model_requested_zone": {
+              "zone_low": 4031.744,
+              "zone_high": 4035.744
+            },
+            "deterministic_sources": [
+              "prior_day.fibonacci.r1",
+              "prior_h4.pp"
+            ],
+            "deterministic_width": 4.0,
+            "operational_boundary": "Use only 4031.744-4035.744 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4057.697,
+            "zone_high": 4061.697,
+            "role": "resistance",
+            "confluence_sources": [
+              "historical day_minus_4.close (4057.98)",
+              "historical day_minus_3.high (4061.41)",
+              "H4 historical high zone (4056-4065)"
+            ],
+            "acceptance_path": "Break above 4061 targets 4067-4071 and 4082-4086.",
+            "rejection_path": "Rejection returns to 4050-4054.",
+            "evidence_needed": "H4 close above 4061 with increased volume.",
+            "_model_requested_zone": {
+              "zone_low": 4057.697,
+              "zone_high": 4061.697
+            },
+            "deterministic_sources": [
+              "historical_price.day_minus_4.close",
+              "historical_price.day_minus_3.high"
+            ],
+            "deterministic_width": 4.0,
+            "operational_boundary": "Use only 4057.697-4061.697 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4067.957,
+            "zone_high": 4071.957,
+            "role": "resistance",
+            "confluence_sources": [
+              "prior_day.floor.r2 (4069.3)",
+              "prior_day.fibonacci.r3 (4069.3)",
+              "cheat_sheet.stddev_2.upper (4070.6)",
+              "H4/H1 historical highs"
+            ],
+            "acceptance_path": "Strong close above 4072 targets 4082-4086.",
+            "rejection_path": "Rejection returns to 4057-4061.",
+            "evidence_needed": "H4 close with body above 4072 and sustained participation.",
+            "_model_requested_zone": {
+              "zone_low": 4067.957,
+              "zone_high": 4071.957
+            },
+            "deterministic_sources": [
+              "prior_day.floor.r2",
+              "prior_day.fibonacci.r3",
+              "cheat_sheet.stddev_2.upper"
+            ],
+            "deterministic_width": 4.0,
+            "operational_boundary": "Use only 4067.957-4071.957 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          }
+        ],
+        "next_h4_focus": "H4 close at 08:00 UTC: price must hold above 4045 to sustain bullish bias; break above 4049 targets 4050-4054. Rejection back below 4045 signals false break and test of 4038-4042. Volume and wick character critical.",
+        "invalidation_of_map": "A daily close above 4054 shifts bias to higher targets (4057-4061, 4067-4071). A close below 4038 invalidates bullish case; focus shifts to 4031-4035 support and then 4022-4026.",
+        "sections_applied": [
+          "pivot-location",
+          "timeframe-roles",
+          "SR-rules",
+          "fib-location"
+        ],
+        "_provider": {
+          "id": "deepseek",
+          "model": "deepseek-v4-pro",
+          "thinking": true,
+          "reasoning_effort": "high",
+          "operator_skill_version": "2.3+d03c888db737",
+          "sop_version": "2.4",
+          "attempt": 0,
+          "api_calls": 1,
+          "cache_hit_tokens": 0,
+          "cache_miss_tokens": 19270,
+          "usage": {
+            "prompt_tokens": 19270,
+            "completion_tokens": 3653
+          }
+        },
+        "zone_contract_version": "deterministic_bounds_v1"
+      },
+      "last_potential_zone_attempt_utc": "2026-07-21T04:00:00+00:00"
+    },
+    "realtime_demo_20260722": {
+      "day_start_utc": "2026-07-22T00:00:00+00:00",
+      "day_open": {
+        "market_location": "Price 4077.40 at start of Asia, just below prior day close 4080.59, testing the 23.6% H1/H4 retracement (4077.42) and the two-sided pivot zone 4077.57–4081.58. After a strong rally to 4087.57 yesterday, the market shows signs of exhaustion with a small real body H4 close. Asia opening bearish inside range, currently holding above key support cluster.",
+        "htf_structure": "H4 trend bullish above rising EMAs, but upper wick cluster at 4079.79–4086.64 shows resistance. H1 trend also bullish but with recent pullback. The rally from 3982.53 to 4087.57 is intact above the 38.2% H4 retracement at 4047.45. Lower timeframes M5/M1 are bearish, indicating short-term selling pressure.",
+        "session_map": "Asia active (00:00–07:00 UTC), open 4080.79, high 4082.04, low 4076.71, bias bearish, price currently 4077.40 inside the range. Pre-London upcoming (07:00–08:00, no new entries). London upcoming (08:00–13:00). High-impact GBP news at 06:00 UTC falls within Asia session.",
+        "important_zones": [
+          {
+            "zone": "4077.57–4081.58",
+            "role": "two-sided reference",
+            "confluence": "prior H4 S1, prior day close, H4 PP, historical high (day-5)",
+            "note": "Immediate pivot; current price testing lower edge"
+          },
+          {
+            "zone": "4071.61–4076.10",
+            "role": "support",
+            "confluence": "H4 S2, H4 fib S3/S2, H4 S1",
+            "note": "Next demand area if 4077.57 breaks"
+          },
+          {
+            "zone": "4084.95–4089.32",
+            "role": "resistance",
+            "confluence": "H4 fib R1/R2, H4 floor R1, prior day high, daily fib R1",
+            "note": "Key overhead barrier; holds bearish pressure below"
+          },
+          {
+            "zone": "4090.91–4095.41",
+            "role": "resistance",
+            "confluence": "H4 floor R2, H4 fib R3",
+            "note": "Next resistance on breakout above 4089.32"
+          },
+          {
+            "zone": "4064.44–4068.44",
+            "role": "support (weaker)",
+            "confluence": "H4 floor S3 only",
+            "note": "Deeper support; needs additional confirmation"
+          }
+        ],
+        "two_sided_paths": [
+          {
+            "zone": "4077.57–4081.58",
+            "acceptance_case": "H1 close above 4081.58 with hold targets 4084.95–4089.32 resistance.",
+            "rejection_case": "H1 close below 4077.57 with a solid bearish body opens path to 4071.61–4076.10 support.",
+            "current_facts": "Price has broken below the zone in Asia, currently testing 23.6% retracement; no acceptance or rejection confirmed yet."
+          }
+        ],
+        "risk_conditions": "High-impact UK CPI y/y at 06:00 UTC; 60-minute exclusion window 05:00–07:00 UTC. News guard currently clear but upcoming event may cause volatility. No new entries during the window per core-skill news-risk rules.",
+        "invalidation_of_briefing": "H4 close below 4047.45 (38.2% retracement of 3982.53–4087.57) would break the bullish structural sequence and invalidate the upward bias. Above, an H4 close above 4089.32 with hold negates the bearish pullback scenario.",
+        "working_focus": [
+          "Monitor H1/M30 close relative to 4077.57 support; a break with follow-through targets 4071–76.",
+          "Watch for bullish rejection wicks or strong bids at 4077–78 to gauge demand.",
+          "Assess volume participation and M5 closes on any reclaim attempt of 4081.58.",
+          "Note London open reaction after Asia range consolidation; Asia range may form a base.",
+          "UK CPI release at 06:00; await stable price and fresh structure post-news before evaluating."
+        ],
+        "sections_applied": [
+          "pivot-location",
+          "fib-location",
+          "reference-ladder",
+          "auction-states",
+          "SR-rules",
+          "timeframe-roles",
+          "session-rules",
+          "news-risk"
+        ],
+        "_provider": {
+          "id": "deepseek",
+          "model": "deepseek-v4-pro",
+          "thinking": true,
+          "reasoning_effort": "high",
+          "operator_skill_version": "2.5+07964bc95baf",
+          "sop_version": "2.6",
+          "attempt": 0,
+          "api_calls": 1,
+          "cache_hit_tokens": 768,
+          "cache_miss_tokens": 26112,
+          "usage": {
+            "prompt_tokens": 26880,
+            "completion_tokens": 2519
+          }
+        }
+      },
+      "potential_zone_plan": {
+        "source_h4_close_utc": "2026-07-22T00:00:00+00:00",
+        "market_story": "After a strong bull run to 4087.57, the last H4 candle closed with a small real body at 4080.59, showing indecision near the prior day's high and just below a key resistance cluster at 4084.95-4089.32. The current Asia session opened at 4080.79 and has drifted lower to 4077.40, testing the 23.6% retracement (4077.42) and the two-sided confluence zone of 4077.57-4081.58 (prior H4 S1/PP, daily close, historical high). The H4 trend remains bullish above EMAs, but the bearish Asia bias and failure to hold above 4080 suggest a potential deeper pullback to the support cluster at 4071.61-4076.10. Acceptance above 4081.58 targets the 4085-89 resistance; a break below 4077.57 opens the road to 4071-76.",
+        "priority_zones": [
+          {
+            "zone_low": 4077.574,
+            "zone_high": 4081.582,
+            "role": "two_sided",
+            "confluence_sources": [
+              "prior_h4.fibonacci.s1",
+              "historical_price.day_minus_1.close",
+              "prior_h4.pp",
+              "historical_price.day_minus_5.high"
+            ],
+            "acceptance_path": "Close and hold above 4081.58 targets 4084.95-4089.32 resistance.",
+            "rejection_path": "Close below 4077.57 targets 4071.61-4076.10 support.",
+            "acceptance_precondition": "H1 close above 4081.58 with a retest that holds above 4081.58.",
+            "rejection_precondition": "H1 close below 4077.57 with a solid body, or a completed M5 double-top failure at the upper edge (probe above 4081.58 then close back below).",
+            "evidence_needed": "M5 volume and body direction on the break; currently price is just below the zone.",
+            "_model_requested_zone": {
+              "zone_low": 4077.574,
+              "zone_high": 4081.582
+            },
+            "deterministic_sources": [
+              "prior_h4.fibonacci.s1",
+              "historical_price.day_minus_1.close",
+              "prior_h4.pp",
+              "historical_price.day_minus_5.high"
+            ],
+            "deterministic_width": 4.008,
+            "operational_boundary": "Use only 4077.574-4081.582 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4071.607,
+            "zone_high": 4076.099,
+            "role": "support",
+            "confluence_sources": [
+              "prior_h4.floor.s2",
+              "prior_h4.fibonacci.s3",
+              "prior_h4.fibonacci.s2",
+              "prior_h4.floor.s1"
+            ],
+            "acceptance_path": "Bounce from zone targets 4084.95-4089.32 resistance.",
+            "rejection_path": "Break below 4071.61 targets 4064.44-4068.44 support.",
+            "acceptance_precondition": "M15 close above 4076.10 with a subsequent move toward 4080; a wick rejection to lower edge is acceptable.",
+            "rejection_precondition": "H1 close below 4071.61 with follow-through.",
+            "evidence_needed": "Need a clear bounce candle or break with volume.",
+            "_model_requested_zone": {
+              "zone_low": 4071.607,
+              "zone_high": 4076.099
+            },
+            "deterministic_sources": [
+              "prior_h4.floor.s2",
+              "prior_h4.fibonacci.s3",
+              "prior_h4.fibonacci.s2",
+              "prior_h4.floor.s1"
+            ],
+            "deterministic_width": 4.492,
+            "operational_boundary": "Use only 4071.607-4076.099 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4084.949,
+            "zone_high": 4089.317,
+            "role": "resistance",
+            "confluence_sources": [
+              "prior_h4.fibonacci.r1",
+              "prior_h4.floor.r1",
+              "prior_h4.fibonacci.r2",
+              "historical_price.day_minus_1.high",
+              "prior_day.fibonacci.r1"
+            ],
+            "acceptance_path": "Break and hold above 4089.32 targets 4090.91-4095.41 resistance.",
+            "rejection_path": "Rejection (e.g., wick or double top) targets 4077.57-4081.58 support, then 4071-76.",
+            "acceptance_precondition": "H1 close above 4089.32 with a retest hold.",
+            "rejection_precondition": "M5 double-top failure: probe above 4084.95 fails to close above and closes back inside/below 4084.95, or a wick rejection with a close below 4085.",
+            "evidence_needed": "Current proximity: if price rallies here, watch volume and wick reactions.",
+            "_model_requested_zone": {
+              "zone_low": 4084.949,
+              "zone_high": 4089.317
+            },
+            "deterministic_sources": [
+              "prior_h4.fibonacci.r1",
+              "prior_h4.floor.r1",
+              "prior_h4.fibonacci.r2",
+              "historical_price.day_minus_1.high",
+              "prior_day.fibonacci.r1"
+            ],
+            "deterministic_width": 4.368,
+            "operational_boundary": "Use only 4084.949-4089.317 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4090.915,
+            "zone_high": 4095.407,
+            "role": "resistance",
+            "confluence_sources": [
+              "prior_h4.floor.r2",
+              "prior_h4.fibonacci.r3",
+              "prior_h4.floor.r3"
+            ],
+            "acceptance_path": "Acceptance above 4095.41 opens upside to 4107-4111 zone.",
+            "rejection_path": "Rejection here would be a lower high, targeting back to 4085-89.",
+            "acceptance_precondition": "H4 close above 4095.41.",
+            "rejection_precondition": "M15 close below 4090.91 after a probe higher; or a wick rejection closing inside the zone.",
+            "evidence_needed": "Currently distant; future approach requires fresh reaction.",
+            "_model_requested_zone": {
+              "zone_low": 4090.915,
+              "zone_high": 4095.407
+            },
+            "deterministic_sources": [
+              "prior_h4.floor.r2",
+              "prior_h4.fibonacci.r3",
+              "prior_h4.floor.r3"
+            ],
+            "deterministic_width": 4.492,
+            "operational_boundary": "Use only 4090.915-4095.407 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4064.445,
+            "zone_high": 4068.445,
+            "role": "support",
+            "confluence_sources": [
+              "prior_h4.floor.s3"
+            ],
+            "acceptance_path": "Bounce targets 4071-76.",
+            "rejection_path": "Break below 4064.44 targets 4057.35-4061.41.",
+            "acceptance_precondition": "H1 close above 4068.45 with a bullish reversal signal.",
+            "rejection_precondition": "H4 close below 4064.44.",
+            "evidence_needed": "Weak confluence; watch for stronger momentum before relying on this zone.",
+            "_model_requested_zone": {
+              "zone_low": 4064.445,
+              "zone_high": 4068.445
+            },
+            "deterministic_sources": [
+              "prior_h4.floor.s3"
+            ],
+            "deterministic_width": 4.0,
+            "operational_boundary": "Use only 4064.445-4068.445 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4057.351,
+            "zone_high": 4061.413,
+            "role": "two_sided",
+            "confluence_sources": [
+              "prior_day.pp",
+              "historical_price.day_minus_5.close",
+              "historical_price.day_minus_4.high"
+            ],
+            "acceptance_path": "Hold above 4061.41 retests 4064-68.",
+            "rejection_path": "Break below 4057.35 opens 4051.76 Fib confluence and 4042.34 stddev.",
+            "acceptance_precondition": "M30 close above 4061.41 with a base.",
+            "rejection_precondition": "H1 close below 4057.35 with a bearish body.",
+            "evidence_needed": "Far enough to wait for a reaction upon approach.",
+            "_model_requested_zone": {
+              "zone_low": 4057.351,
+              "zone_high": 4061.413
+            },
+            "deterministic_sources": [
+              "prior_day.pp",
+              "historical_price.day_minus_5.close",
+              "historical_price.day_minus_4.high"
+            ],
+            "deterministic_width": 4.062,
+            "operational_boundary": "Use only 4057.351-4061.413 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          }
+        ],
+        "next_h4_focus": "Price action around the 4077.57-4081.58 zone; an H4 close above 4081.58 signals continuation, while an H4 close below 4077.57 suggests a deeper pullback to 4071-76.",
+        "invalidation_of_map": "An H4 close below the 38.2% retracement at 4047.45 would break the bullish structural sequence and invalidate the upward bias. Above, a close above 4089.32 with holding shifts the bearish short-term view.",
+        "sections_applied": [
+          "pivot-location",
+          "fib-location",
+          "reference-ladder",
+          "auction-states",
+          "SR-rules",
+          "timeframe-roles"
+        ],
+        "_provider": {
+          "id": "deepseek",
+          "model": "deepseek-v4-pro",
+          "thinking": true,
+          "reasoning_effort": "high",
+          "operator_skill_version": "2.5+07964bc95baf",
+          "sop_version": "2.6",
+          "attempt": 0,
+          "api_calls": 1,
+          "cache_hit_tokens": 0,
+          "cache_miss_tokens": 16280,
+          "usage": {
+            "prompt_tokens": 16280,
+            "completion_tokens": 7209
+          }
+        },
+        "zone_contract_version": "deterministic_bounds_v1"
+      },
+      "hourly_reviews": [
+        {
+          "market_state_update": "Price tested H4 resistance zone (4084.95-4089.32) early, generating a double-top failure sell signal at 00:32. That sell was immediately reversed, stopping out at -3 points, suggesting higher timeframe bullish momentum dominated. Later, M30 acceptance of the break conflicted with M1 rejection, leading to htf_conflict skip. Zone not cleanly resolved by hour end; price oscillated near resistance.",
+          "what_model_did": "Made 7 decisions: 3 waits (2 sells, 1 buy), 2 skips (fixed_profile_mismatch, htf_conflict), 1 open loss, and 1 additional wait (sell). Only one trade executed (sell at 00:32, loss -3). Other decisions avoided entry due to profile mismatch or timeframe conflict.",
+          "what_worked": "Skips based on fixed profile mismatch and htf conflict avoided further losses. Waits also prevented premature entries. The model correctly identified the conflict between M30 acceptance and M1 rejection and chose to skip.",
+          "what_failed": "The M1 double-top failure sell at H4 resistance was immediately reversed for a -3 point loss. The lower-timeframe signal conflicted with the prevailing H4 bullish trend (H4 above EMAs, rally intact). The loss indicates that M1 double-top failure entry against strong higher timeframe momentum is insufficient.",
+          "failure_causes": "Primary cause: M1 double-top failure sell executed against a strongly bullish H4 trend. The M1 signal lacked higher timeframe alignment. Additionally, the double-top failure may have been premature—the highs may not have been equivalent tests or the close was not decisive enough to override the H4 bullish bias.",
+          "risk_posture": "cautious",
+          "next_hour_adjustments": [
+            "Increase selectivity: require that any sell at resistance in a bullish H4 trend must have either a clear H1/M30 breakdown or a second test failure with M5 acceptance of the failure. Reinforce that M1 double-top failure alone is insufficient against dominant H4 trend. Also, remember upcoming UK CPI news exclusion window 05:00-07:00 UTC; no new entries during that period. Risk posture changed to cautious."
+          ],
+          "invalidation": "H4 close above 4089.32 would invalidate the bearish short-term view and suggest continuation higher, negating the need for further sell attempts.",
+          "evidence_event_ids": [
+            "context-1784678760-pivot_zone_touch-neutral",
+            "context-1784679060-pivot_zone_touch-neutral",
+            "context-1784679420-pivot_zone_touch-neutral",
+            "context-1784680320-pivot_zone_touch-neutral",
+            "context-1784680680-pivot_zone_touch-neutral",
+            "context-1784681400-pivot_zone_touch-neutral",
+            "context-1784681880-pivot_zone_touch-neutral"
+          ],
+          "sections_applied": [
+            "SR-rules",
+            "entry-sell",
+            "zone-to-trigger",
+            "targets",
+            "timeframe-roles",
+            "execution-profile",
+            "auction-states",
+            "session-rules",
+            "coherence",
+            "fixed-r-multiple",
+            "starter-first",
+            "breakout-retest"
+          ],
+          "_provider": {
+            "id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking": true,
+            "reasoning_effort": "high",
+            "operator_skill_version": "2.5+07964bc95baf",
+            "sop_version": "2.6",
+            "attempt": 0,
+            "api_calls": 1,
+            "cache_hit_tokens": 9088,
+            "cache_miss_tokens": 5234,
+            "usage": {
+              "prompt_tokens": 14322,
+              "completion_tokens": 3207
+            }
+          },
+          "hour_end_utc": "2026-07-22T01:00:00+00:00",
+          "expires_at_utc": "2026-07-22T02:00:00+00:00"
+        },
+        {
+          "market_state_update": "Price tested H4 resistance (4084.95-4089.32) early, a double-top failure sell opened at 01:34 but reversed quickly, hitting stop loss for -3 points. Price then moved above the resistance zone, reaching above 4085 by hour end, showing strong bullish momentum. The H4 uptrend remains intact.",
+          "what_model_did": "Made 5 decisions: 1 armed wait (sell at 01:08), 1 skip (fixed_profile_mismatch at 01:24), 1 open sell (loss -3 at 01:34), and 2 skips (daily_risk_pause at 01:49 and 01:58 after the loss). Only one trade executed, ending in loss.",
+          "what_worked": "The skip due to fixed profile mismatch avoided a potentially losing entry. The daily risk pause after the loss prevented further risk-taking in a volatile environment.",
+          "what_failed": "The M1 double-top failure sell at H4 resistance was immediately reversed for a loss, mirroring the prior hour's failure. The lower-timeframe signal conflicted with the strong H4 bullish trend.",
+          "failure_causes": "Selling against a dominant H4 uptrend using only an M1 double-top failure pattern proved insufficient. The bullish momentum overwhelmed the bearish signal, and the M1 trigger lacked higher timeframe confirmation.",
+          "risk_posture": "pause_new_entries",
+          "next_hour_adjustments": [
+            "Maintain daily risk pause until a fresh closed-price review and structural reassessment.",
+            "If pause lifted, require any sell entry to have a clear H1/M30 breakdown or a second test failure with M5 acceptance; M1 double-top failure alone is insufficient against H4 trend.",
+            "Monitor upcoming UK CPI news at 06:00 UTC; prepare for increased volatility and no new entries in news window (05:00-07:00)."
+          ],
+          "invalidation": "If price closes an H1 candle above 4089.32 with hold, the bearish short-term view is invalidated and the uptrend likely continues. Below 4047.45 (38.2% retracement) would invalidate the bullish structural sequence.",
+          "evidence_event_ids": [
+            "context-1784682480-pivot_zone_touch-neutral",
+            "context-1784683440-pivot_zone_touch-neutral",
+            "context-1784684040-pivot_zone_touch-neutral",
+            "context-1784684940-m1_ema14_cross-sell",
+            "context-1784685480-pivot_zone_touch-neutral"
+          ],
+          "sections_applied": [
+            "SR-rules",
+            "entry-sell",
+            "zone-to-trigger",
+            "targets",
+            "timeframe-roles",
+            "execution-profile",
+            "auction-states",
+            "session-rules",
+            "coherence",
+            "starter-first"
+          ],
+          "_provider": {
+            "id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking": true,
+            "reasoning_effort": "high",
+            "operator_skill_version": "2.5+07964bc95baf",
+            "sop_version": "2.6",
+            "attempt": 0,
+            "api_calls": 1,
+            "cache_hit_tokens": 9088,
+            "cache_miss_tokens": 5789,
+            "usage": {
+              "prompt_tokens": 14877,
+              "completion_tokens": 2350
+            }
+          },
+          "hour_end_utc": "2026-07-22T02:00:00+00:00",
+          "expires_at_utc": "2026-07-22T03:00:00+00:00"
+        }
+      ],
+      "last_potential_zone_attempt_utc": "2026-07-22T00:00:00+00:00",
+      "last_hour_end_utc": "2026-07-22T02:00:00+00:00"
+    },
+    "qwen_indicator_demo_exec_20260723": {
+      "day_start_utc": "2026-07-23T00:00:00+00:00",
+      "day_open": {
+        "market_location": "Price at 4092.206, inside the 4088.572-4092.572 confluence support zone (H4 61.8% retracement, prior H4 & daily Fibonacci S1). London session active, price below Asia low (4112.256) with bearish bias, consolidating after a sharp decline from 4166.085.",
+        "htf_structure": "H4: bullish trend but pullback to 61.8% retracement (4090.413); close below EMA14 but above EMA31. H1: mixed, with EMA3/14/31 bearish after a series of lower highs and lower lows. Overall structure is corrective following the 4166 peak, testing key support.",
+        "session_map": "Asia: completed bearish (high 4141.065, low 4112.256). London: active, opened at 4095.557, broke below Asia low, range 4086.015–4099.412. Current bias bearish, price trading inside the zone with repeated lower probes and closes above support.",
+        "important_zones": "Support: 4088.572–4092.572 (H4 61.8% Fib, prior H4/Daily Fib S1). Below: 4084.125–4088.125 (prior day floor S1, day-2 high) and 4076.651–4080.651. Resistance: 4103.435–4107.435 (prior H4 pivot), 4120.853–4125.382 (prior H4/Daily PP, Fib R1), and 4129.957–4133.957.",
+        "two_sided_paths": "Bullish: Defense of 4088–4092 and a close above 4092.572 opens a reclaim of 4103–4107, with further acceptance targeting 4120–4125. Bearish: A close below 4088.572 exposes 4084–4088 and possibly 4076–4080, confirming a deeper correction. Rejection at 4103–4107 would reinforce bearish control.",
+        "risk_conditions": "High-impact ECB rate decision at 12:15 UTC (still >60 min away, no current news window). Price near major support with multiple tests; failure risk rises with each retest. London volume average, caution around possible false breaks.",
+        "invalidation_of_briefing": "A H4/H1 close above 4107.435 and acceptance above 4092.572 invalidates bearish bias; a close below 4076.651 confirms deeper correction and targets 4061–4065.",
+        "working_focus": [
+          "M5 close below 4088.572 – confirm breakdown and target 4084–4088.",
+          "M5 close above 4092.572 with volume – signal for a bounce toward 4103–4107.",
+          "H1 close relative to 4103.435 – decisive rejection or acceptance alters structure.",
+          "Second test failure at 4088–4092 – watch for declining participation and close location.",
+          "M30/H1 close below 4084.125 – opens path to 4076–4080 zone."
+        ],
+        "sections_applied": [
+          "auction-states",
+          "timeframe-roles",
+          "SR-rules",
+          "fib-location",
+          "pivot-location",
+          "reference-ladder",
+          "zone-to-trigger",
+          "session-rules"
+        ],
+        "_provider": {
+          "id": "deepseek",
+          "model": "deepseek-v4-pro",
+          "thinking": true,
+          "reasoning_effort": "high",
+          "operator_skill_version": "2.5+07964bc95baf",
+          "sop_version": "2.6",
+          "attempt": 0,
+          "api_calls": 1,
+          "cache_hit_tokens": 3072,
+          "cache_miss_tokens": 26888,
+          "usage": {
+            "prompt_tokens": 29960,
+            "completion_tokens": 1802
+          }
+        }
+      },
+      "potential_zone_plan": {
+        "source_h4_close_utc": "2026-07-23T12:00:00+00:00",
+        "market_story": "XAUUSD remains under bearish pressure after a sharp decline from 4166. The current H4 candle carved out a low at 4072.791 before recovering to close at 4085.829, right at the 4084-4088 pivot zone. Buyers defended the 4076-4080 support area, but overhead resistance layers at 4091-4096 and 4098-4102 cap rallies. The H1 trend is bearish. The upcoming H4 will test whether the bounce has legs or if sellers resume below 4084.",
+        "priority_zones": [
+          {
+            "zone_low": 4084.125,
+            "zone_high": 4088.125,
+            "role": "two_sided",
+            "confluence_sources": [
+              "prior_day.floor.s1",
+              "prior_h4.pp",
+              "historical_price.day_minus_2.high"
+            ],
+            "acceptance_path": "Price closes above 4088.125 and holds on retest, confirming a higher low and targeting 4091-4096.",
+            "rejection_path": "Price fails to close above 4088.125 and breaks below 4084.125, with a close below targeting 4076-4080.",
+            "acceptance_precondition": "M30 close above 4088.125 with a subsequent H1 close above or a retest that holds above 4084.125.",
+            "rejection_precondition": "M5 close below 4084.125 and no immediate reclaim; a two-bar M1 breakdown with closes below also qualifies. A completed M1 double-top failure at the upper edge (probe 4088.125 area, fail to close above, close back below) would be a valid trigger.",
+            "evidence_needed": "Decisive close outside the zone (above 4088.125 or below 4084.125) with a retest confirmation.",
+            "_model_requested_zone": {
+              "zone_low": 4084.125,
+              "zone_high": 4088.125
+            },
+            "deterministic_sources": [
+              "prior_day.floor.s1",
+              "prior_h4.pp",
+              "historical_price.day_minus_2.high"
+            ],
+            "deterministic_width": 4.0,
+            "operational_boundary": "Use only 4084.125-4088.125 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4075.841,
+            "zone_high": 4080.59,
+            "role": "support",
+            "confluence_sources": [
+              "prior_h4.fibonacci.s1",
+              "historical_price.day_minus_1.low",
+              "historical_price.day_minus_2.close"
+            ],
+            "acceptance_path": "Sellers push below 4075.841 with a close, opening a path to 4069-4073.",
+            "rejection_path": "Buyers hold above 4075.841 and produce a reversal candle, reclaiming 4080+ and targeting 4084-4088.",
+            "acceptance_precondition": "H1 close below 4075.841.",
+            "rejection_precondition": "H1 close above 4080.59 after a test of the zone with clear buyer reaction, i.e., a lower probe and a close above the zone.",
+            "evidence_needed": "Close outside the zone with a subsequent hold – either a break-down or a strong reversal.",
+            "_model_requested_zone": {
+              "zone_low": 4075.841,
+              "zone_high": 4080.59
+            },
+            "deterministic_sources": [
+              "prior_h4.fibonacci.s1",
+              "historical_price.day_minus_1.low",
+              "historical_price.day_minus_2.close"
+            ],
+            "deterministic_width": 4.749,
+            "operational_boundary": "Use only 4075.841-4080.590 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4091.242,
+            "zone_high": 4096.18,
+            "role": "resistance",
+            "confluence_sources": [
+              "prior_day.fibonacci.s1",
+              "prior_h4.fibonacci.r1"
+            ],
+            "acceptance_path": "Price closes above 4096.18 and holds, confirming a shift to bullish and targeting 4098-4102.",
+            "rejection_path": "Price tests the zone but fails to close above, forming a lower high; a second failure targets 4084-4088.",
+            "acceptance_precondition": "H1 close above 4096.18 with a subsequent M5 hold above 4091.242.",
+            "rejection_precondition": "M5 close below 4091.242 after a failed probe into the zone; a completed M1 double-top failure near 4096.18 would further confirm.",
+            "evidence_needed": "Unsuccessful probe with a rejection close back below the zone.",
+            "_model_requested_zone": {
+              "zone_low": 4091.242,
+              "zone_high": 4096.18
+            },
+            "deterministic_sources": [
+              "prior_day.fibonacci.s1",
+              "prior_h4.fibonacci.r1"
+            ],
+            "deterministic_width": 4.938,
+            "operational_boundary": "Use only 4091.242-4096.180 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4098.846,
+            "zone_high": 4102.846,
+            "role": "resistance",
+            "confluence_sources": [
+              "prior_h4.floor.r1",
+              "prior_h4.fibonacci.r2"
+            ],
+            "acceptance_path": "Price closes above 4102.846 and holds on retest, opening a path to 4110-4114.",
+            "rejection_path": "Price tests the zone but fails to close above, confirming the downtrend continuation toward 4091-4096.",
+            "acceptance_precondition": "H1 close above 4102.846 with a subsequent retest that holds above 4098.846.",
+            "rejection_precondition": "M30 close below 4098.846 after a probe, or a completed M1 double-top failure at the zone edge.",
+            "evidence_needed": "Break and hold above, or a rejection close back below with wick evidence.",
+            "_model_requested_zone": {
+              "zone_low": 4098.846,
+              "zone_high": 4102.846
+            },
+            "deterministic_sources": [
+              "prior_h4.floor.r1",
+              "prior_h4.fibonacci.r2"
+            ],
+            "deterministic_width": 4.0,
+            "operational_boundary": "Use only 4098.846-4102.846 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4069.291,
+            "zone_high": 4073.291,
+            "role": "support",
+            "confluence_sources": [
+              "prior_h4.fibonacci.s2",
+              "prior_day.fibonacci.s2",
+              "prior_h4.floor.s1",
+              "cheat_sheet.stddev_1.lower"
+            ],
+            "acceptance_path": "Sellers force a close below 4069.291, targeting 4058-4062.",
+            "rejection_path": "Buyers step in and defend the zone, producing a bounce that reclaims 4073+, targeting 4076-4080.",
+            "acceptance_precondition": "H4 close below 4069.291.",
+            "rejection_precondition": "H1 close above 4073.291 after a test of the zone with a clear rejection lower wick.",
+            "evidence_needed": "Decisive close outside the zone.",
+            "_model_requested_zone": {
+              "zone_low": 4069.291,
+              "zone_high": 4073.291
+            },
+            "deterministic_sources": [
+              "prior_h4.fibonacci.s2",
+              "prior_day.fibonacci.s2",
+              "prior_h4.floor.s1",
+              "cheat_sheet.stddev_1.lower"
+            ],
+            "deterministic_width": 4.0,
+            "operational_boundary": "Use only 4069.291-4073.291 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          },
+          {
+            "zone_low": 4110.632,
+            "zone_high": 4114.632,
+            "role": "resistance",
+            "confluence_sources": [
+              "prior_h4.floor.r2",
+              "prior_h4.fibonacci.r3"
+            ],
+            "acceptance_path": "Price closes above 4114.632 and holds, targeting 4120-4125.",
+            "rejection_path": "Price tests and fails, forming a lower high and targeting 4098-4102.",
+            "acceptance_precondition": "H1 close above 4114.632 with a retest that holds above 4110.632.",
+            "rejection_precondition": "M30 close below 4110.632 after a probe, confirming rejection.",
+            "evidence_needed": "Close above the zone and hold, or a failed probe with rejection close.",
+            "_model_requested_zone": {
+              "zone_low": 4110.632,
+              "zone_high": 4114.632
+            },
+            "deterministic_sources": [
+              "prior_h4.floor.r2",
+              "prior_h4.fibonacci.r3"
+            ],
+            "deterministic_width": 4.0,
+            "operational_boundary": "Use only 4110.632-4114.632 as this investigation zone; prices outside it are targets or separate zones, not widened boundaries."
+          }
+        ],
+        "next_h4_focus": "Whether the 4084-4088 pivot zone can hold and push price toward 4091-4096, or if sellers break below 4084 to retest the 4076-4080 support. A reclaim of 4091-4096 would ease bearish pressure, while a drop below 4075 opens the door to 4069-4073.",
+        "invalidation_of_map": "A close above 4114.632 and acceptance would shift focus to 4120+ and invalidate the bearish structure. A close below 4069.291 would confirm a deeper correction and target 4058-4062.",
+        "sections_applied": [
+          "auction-states",
+          "timeframe-roles",
+          "SR-rules",
+          "fib-location",
+          "pivot-location",
+          "reference-ladder",
+          "zone-to-trigger"
+        ],
+        "_provider": {
+          "id": "deepseek",
+          "model": "deepseek-v4-pro",
+          "thinking": true,
+          "reasoning_effort": "high",
+          "operator_skill_version": "2.5+07964bc95baf",
+          "sop_version": "2.6",
+          "attempt": 0,
+          "api_calls": 1,
+          "cache_hit_tokens": 9088,
+          "cache_miss_tokens": 12477,
+          "usage": {
+            "prompt_tokens": 21565,
+            "completion_tokens": 5594
+          }
+        },
+        "zone_contract_version": "deterministic_bounds_v1"
+      },
+      "hourly_reviews": [
+        {
+          "market_state_update": "Price consolidated near 4088-4092 support zone, repeatedly testing but not closing below. Multiple lower wicks and closes above 4088.572 indicate buyer defense. H4/H1 structure remains bearish but the zone is intact. London session active, ECB rate decision at 12:15 UTC closes the news window until 13:15.",
+          "what_model_did": "Respected session rules and news guard: skipped all entries. One skip due to daily_risk_pause (pipeline error), four due to news_window (ECB exclusion). No trades opened, consistent with prior briefing’s caution near major support and risk conditions.",
+          "what_worked": "Discipline to avoid entries during news window, even when price was testing a high-conviction confluence zone. Skipped during daily_risk_pause as per protocol.",
+          "what_failed": "One skip (11:10) was labeled daily_risk_pause but appears to be a provider pipeline error rather than a true risk posture; model correctly skipped but the code was not news_window. This is a minor logging issue.",
+          "failure_causes": "The daily_risk_pause at 11:10 was caused by a provider pipeline timeout (context-1784805000). The news_window skips correctly reflect the ECB high-impact event guard becoming active from 11:15 (60 min before 12:15).",
+          "risk_posture": "cautious",
+          "next_hour_adjustments": [
+            "Maintain cautious posture; the ECB decision at 12:15 will keep the news guard active until 13:15. For the 12:00-13:00 hour, expect continued consolidation or a breakout after the news. No new entries until after the window closes and a fresh valid setup emerges. Keep selectivity high; the support zone may break or produce a bounce after the event."
+          ],
+          "invalidation": "If price closes below 4088.572 on M30/H1, the bearish breakdown target is 4084-4088; a decisive close above 4092.572 would signal a bounce toward 4103-4107.",
+          "evidence_event_ids": [
+            "context-1784805000",
+            "context-1784805900",
+            "context-1784806320",
+            "context-1784806860",
+            "context-1784807280"
+          ],
+          "sections_applied": [
+            "session-rules",
+            "news-risk",
+            "zone-to-trigger",
+            "auction-states"
+          ],
+          "_provider": {
+            "id": "deepseek",
+            "model": "deepseek-v4-flash",
+            "thinking": true,
+            "reasoning_effort": "high",
+            "operator_skill_version": "2.5+07964bc95baf",
+            "sop_version": "2.6",
+            "attempt": 0,
+            "api_calls": 1,
+            "cache_hit_tokens": 0,
+            "cache_miss_tokens": 13561,
+            "usage": {
+              "prompt_tokens": 13561,
+              "completion_tokens": 834
+            }
+          },
+          "hour_end_utc": "2026-07-23T12:00:00+00:00",
+          "expires_at_utc": "2026-07-23T13:00:00+00:00"
+        }
+      ],
+      "last_potential_zone_attempt_utc": "2026-07-23T12:00:00+00:00",
+      "last_hour_end_utc": "2026-07-23T12:00:00+00:00"
+    }
+  }
+}

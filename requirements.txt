@@ -1,0 +1,29 @@
+# QuantLLMBot Phase 4 Training Pipeline - Requirements
+# Python 3.10+
+
+# Core ML/DL
+torch>=2.0.0
+transformers>=4.36.0
+peft>=0.7.0
+bitsandbytes>=0.41.0
+datasets>=2.14.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Training & Acceleration
+accelerate>=0.24.0
+trl>=0.7.0
+wandb>=0.15.0
+pydantic>=2.0.0
+
+# Utilities
+tqdm>=4.66.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+jsonlines>=4.0.0
+
+# Development (optional)
+jupyter>=1.0.0
+ipython>=8.0.0
+black>=23.0.0
+flake8>=6.0.0

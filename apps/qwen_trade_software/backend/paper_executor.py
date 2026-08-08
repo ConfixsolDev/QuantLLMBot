@@ -1,0 +1,769 @@
+"""Single-position MT5 demo entry executor with an enforced demo-account lock."""
+
+import argparse
+import json
+import msvcrt
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import MetaTrader5 as mt5
+
+from tick_data_archive import append_tick_record
+
+
+APP_DIR = Path(__file__).resolve().parent
+LOG_DIR = APP_DIR / "logs"
+DEFAULT_TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+QWEN_MAGIC = 26072401
+QWEN_COMMENT_PREFIX = "QWEN"
+EXECUTION_LOCK_FILE = APP_DIR / "paper-executor.lock"
+MONITOR_INTERVAL_SECONDS = 1.0
+# No longer used to gate entry timing (see BestPriceRangeTracker docstring,
+# 2026-08-06) -- kept only so nothing else in this file breaks if it's
+# still referenced by a stale caller or an old log-replay tool.
+BEST_PRICE_MINIMUM_OBSERVATION_SECONDS = 0.25
+MIN_ENTRY_CONFIDENCE = 51
+INITIAL_SAFETY_DISTANCE = 5.0
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _dated_log_path(base_name: str) -> Path:
+    """Today's log file, e.g. paper-executions-2026-08-06.jsonl.
+
+    Computed fresh on every call (never cached) so a process that stays
+    running across midnight rolls over to a new file automatically, the
+    same way reviewer.py already rotates reviews-*.jsonl by date.
+    """
+    return LOG_DIR / f"{base_name}-{datetime.now():%Y-%m-%d}.jsonl"
+
+
+def _dated_log_files(base_name: str, days_back: int = 1) -> list[Path]:
+    """Existing dated files for `base_name`, today first then earlier days.
+
+    A proposal or position from just before midnight can still be looked
+    up just after it, so id-lookups need to see yesterday's file too, not
+    only today's.
+    """
+    today = datetime.now().date()
+    paths = []
+    for offset in range(days_back + 1):
+        day = today - timedelta(days=offset)
+        path = LOG_DIR / f"{base_name}-{day:%Y-%m-%d}.jsonl"
+        if path.exists():
+            paths.append(path)
+    return paths
+
+
+def append_event(event: dict) -> None:
+    append_tick_record("paper-executions", event)
+
+
+def load_proposal(proposal_id: str) -> dict:
+    files = _dated_log_files("paper-proposals")
+    if not files:
+        raise RuntimeError("No paper proposal log exists.")
+    for path in files:
+        for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+            if not line.strip():
+                continue
+            proposal = json.loads(line)
+            if proposal.get("proposal_id") == proposal_id:
+                return proposal
+    raise RuntimeError(f"Unknown proposal ID: {proposal_id}")
+
+
+def validate_plan(args, proposal: dict) -> None:
+    if proposal.get("mode") != "paper-research":
+        raise RuntimeError("Proposal is not marked paper-research.")
+    if not proposal.get("market", {}).get("connected"):
+        raise RuntimeError("Proposal was recorded while MT5 was disconnected.")
+    qwen = proposal.get("qwen")
+    qwen = qwen if isinstance(qwen, dict) else {}
+    plan = qwen.get("execution_plan")
+    plan = plan if isinstance(plan, dict) else {}
+    try:
+        confidence = float(qwen.get("confidence"))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < MIN_ENTRY_CONFIDENCE:
+        raise RuntimeError(
+            f"Qwen confidence must be at least {MIN_ENTRY_CONFIDENCE}."
+        )
+    if plan.get("decision_confidence") != round(confidence):
+        raise RuntimeError("Plan confidence provenance does not match Qwen output.")
+    if plan.get("side") != args.side:
+        raise RuntimeError("Plan side does not match executor arguments.")
+    if args.entry_low > args.entry_high:
+        raise RuntimeError("entry-low must be less than or equal to entry-high.")
+    if args.side == "buy":
+        if not args.stop_loss < args.entry_low:
+            raise RuntimeError("Buy stop-loss must be below the entry zone.")
+        if not args.take_profit > args.entry_high:
+            raise RuntimeError("Buy take-profit must be above the entry zone.")
+    else:
+        if not args.stop_loss > args.entry_high:
+            raise RuntimeError("Sell stop-loss must be above the entry zone.")
+        if not args.take_profit < args.entry_low:
+            raise RuntimeError("Sell take-profit must be below the entry zone.")
+    if args.buckets != 1:
+        raise RuntimeError("Single-position mode requires exactly one entry.")
+    if args.volume <= 0:
+        raise RuntimeError("volume must be positive.")
+    if args.signal_timeframe not in ("M1", "M5"):
+        raise RuntimeError("Demo entries must be generated from M1 or M5.")
+    if not 3 <= args.stop_price_distance <= 5:
+        raise RuntimeError("stop-price-distance must be between 3 and 5.")
+
+
+def fill_price(tick, side: str) -> float:
+    return float(tick.ask if side == "buy" else tick.bid)
+
+
+def close_price(tick, side: str) -> float:
+    return float(tick.bid if side == "buy" else tick.ask)
+
+
+def inside_entry_zone(price: float, low: float, high: float) -> bool:
+    return low <= price <= high
+
+
+def remaining_signal_seconds(created_at: datetime, now: datetime, ttl: float) -> float:
+    return ttl - (now - created_at).total_seconds()
+
+
+def average_fill_price(fills: list[dict]) -> float:
+    total_volume = sum(float(fill["volume"]) for fill in fills)
+    return (
+        sum(float(fill["price"]) * float(fill["volume"]) for fill in fills)
+        / total_volume
+    )
+
+
+def favorable_price_move(mark: float, average_entry: float, side: str) -> float:
+    return mark - average_entry if side == "buy" else average_entry - mark
+
+
+class BestPriceRangeTracker:
+    """Enter immediately on the first fresh tick inside Qwen's approved zone.
+
+    2026-08-06 change: this used to wait up to `observation_seconds` (2s)
+    hunting for a small retrace before entering, and if nothing retraced it
+    would accept whatever price was live once that timer ran out -- with no
+    check on how far that price had drifted from the best one seen. On a
+    fast tape that meant paying deep into the bad end of Qwen's approved
+    range (e.g. approved 82-91, filled at 89) purely because the clock ran
+    out, not because 89 was actually the best available. `observation_seconds`
+    and `retrace_distance` are kept as constructor/CLI arguments -- and are
+    still recorded in the logged proposal `plan` for audit continuity -- but
+    no longer gate the entry decision. The first fresh, in-zone tick fires
+    immediately. `best_seen` is still tracked and reported purely for
+    observability (how the actual fill compared to the best price available
+    in the brief window before entry), not as a trigger condition.
+    """
+
+    def __init__(
+        self,
+        side: str,
+        observation_seconds: float,
+        retrace_distance: float,
+    ) -> None:
+        self.side = side
+        self.observation_seconds = max(0.0, float(observation_seconds))
+        self.retrace_distance = max(0.0, float(retrace_distance))
+        self.first_seen: float | None = None
+        self.best_seen: float | None = None
+        self.best_seen_at: float | None = None
+        self.observations = 0
+
+    def observe(
+        self,
+        price: float,
+        now_monotonic: float,
+        *,
+        inside_range: bool,
+        signal_seconds_left: float,
+        poll_seconds: float,
+    ) -> dict:
+        if not inside_range:
+            return {"enter": False, "reason": "outside_entry_range"}
+        self.observations += 1
+        if self.first_seen is None:
+            self.first_seen = now_monotonic
+            self.best_seen = float(price)
+            self.best_seen_at = now_monotonic
+        improved = (
+            price < self.best_seen
+            if self.side == "buy"
+            else price > self.best_seen
+        )
+        if improved:
+            self.best_seen = float(price)
+            self.best_seen_at = now_monotonic
+        elapsed = now_monotonic - self.first_seen
+        retrace = (
+            float(price) - float(self.best_seen)
+            if self.side == "buy"
+            else float(self.best_seen) - float(price)
+        )
+        # Fire on the first fresh, in-zone tick -- no waiting, no unconditional
+        # accept-at-timeout. See the class docstring for why the previous
+        # wait-then-accept-anything behavior was removed.
+        reason = "immediate_zone_entry"
+        return {
+            "enter": True,
+            "reason": reason,
+            "best_price": self.best_seen,
+            "current_price": float(price),
+            "retrace_distance": round(retrace, 6),
+            "observation_seconds": round(elapsed, 3),
+            "observations": self.observations,
+        }
+
+
+def execution_comment(execution_id: str) -> str:
+    return f"{QWEN_COMMENT_PREFIX}_{execution_id[-8:]}"
+
+
+def owned_positions(symbol: str, execution_id: str):
+    expected_comment = execution_comment(execution_id)
+    positions = mt5.positions_get(symbol=symbol) or ()
+    return tuple(
+        position
+        for position in positions
+        if position.magic == QWEN_MAGIC
+        and str(position.comment) == expected_comment
+    )
+
+
+def realized_execution_outcome(fills: list[dict], since: datetime) -> dict:
+    """Read authoritative MT5 deal P&L after the managed position disappears."""
+    position_ids = {int(fill["order"]) for fill in fills}
+    deals = mt5.history_deals_get(since, datetime.now(timezone.utc)) or ()
+    matched = [deal for deal in deals if int(deal.position_id) in position_ids]
+    exits = [deal for deal in matched if deal.entry != mt5.DEAL_ENTRY_IN]
+    comments = [str(deal.comment) for deal in exits]
+    if any("QWEN_MGR_CLOSE" in comment for comment in comments):
+        reason = "qwen_confirmed_close"
+    elif any(comment.startswith("[sl") for comment in comments):
+        reason = "managed_or_safety_sl"
+    elif any(comment.startswith("[tp") for comment in comments):
+        reason = "managed_or_safety_tp"
+    elif any(comment.startswith("[so") for comment in comments):
+        reason = "broker_stopout"
+    else:
+        reason = "external_position_close"
+    exit_volume = sum(float(deal.volume) for deal in exits)
+    exit_price = (
+        sum(float(deal.price) * float(deal.volume) for deal in exits) / exit_volume
+        if exit_volume
+        else None
+    )
+    gross = sum(float(deal.profit) for deal in matched)
+    costs = sum(
+        float(deal.commission) + float(deal.swap) + float(deal.fee)
+        for deal in matched
+    )
+    return {
+        "reason": reason,
+        "exit_price": exit_price,
+        "gross_pnl": gross,
+        "costs": costs,
+        "net_pnl": gross + costs,
+        "close_comments": comments,
+    }
+
+
+def initial_safety_bracket(side: str, order_price: float, digits: int) -> tuple[float, float]:
+    """Return the temporary symmetric broker bracket used until management reviews."""
+    if side == "buy":
+        stop_loss = order_price - INITIAL_SAFETY_DISTANCE
+        take_profit = order_price + INITIAL_SAFETY_DISTANCE
+    else:
+        stop_loss = order_price + INITIAL_SAFETY_DISTANCE
+        take_profit = order_price - INITIAL_SAFETY_DISTANCE
+    return round(stop_loss, digits), round(take_profit, digits)
+
+
+def submit_single_position(args, execution_id: str, tick):
+    is_buy = args.side == "buy"
+    order_price = float(tick.ask if is_buy else tick.bid)
+    symbol_info = mt5.symbol_info(args.symbol)
+    digits = int(symbol_info.digits) if symbol_info else 3
+    safety_sl, safety_tp = initial_safety_bracket(args.side, order_price, digits)
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": args.symbol,
+        "volume": args.volume,
+        "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
+        "price": order_price,
+        "sl": safety_sl,
+        "tp": safety_tp,
+        "deviation": 30,
+        "magic": QWEN_MAGIC,
+        "comment": execution_comment(execution_id),
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": mt5.ORDER_FILLING_IOC,
+    }
+    result = mt5.order_send(request)
+    if result is None or result.retcode not in (
+        mt5.TRADE_RETCODE_DONE,
+        mt5.TRADE_RETCODE_DONE_PARTIAL,
+    ):
+        detail = result.comment if result else str(mt5.last_error())
+        raise RuntimeError(f"MT5 demo order rejected: {detail}")
+    return result, safety_sl, safety_tp
+
+
+def _run(args) -> dict:
+    proposal = load_proposal(args.proposal_id)
+    validate_plan(args, proposal)
+    proposal_created_at = datetime.fromisoformat(proposal["created_at_utc"])
+    signal_seconds_left = remaining_signal_seconds(
+        proposal_created_at,
+        datetime.now(timezone.utc),
+        args.signal_ttl_seconds,
+    )
+    if signal_seconds_left <= 0:
+        result = {
+            "schema_version": 1,
+            "event": "mt5_execution_skipped",
+            "proposal_id": args.proposal_id,
+            "created_at_utc": utc_now(),
+            "reason": "signal_expired",
+            "signal_ttl_seconds": args.signal_ttl_seconds,
+        }
+        append_event(result)
+        return result
+    if not mt5.initialize(path=args.terminal):
+        raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
+
+    try:
+        account = mt5.account_info()
+        if account is None:
+            raise RuntimeError(f"MT5 account unavailable: {mt5.last_error()}")
+        if account.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO:
+            raise RuntimeError("Paper executor refuses non-demo MT5 accounts.")
+        if proposal["symbol"] != args.symbol:
+            raise RuntimeError("Plan symbol does not match the recorded proposal.")
+        if not mt5.symbol_select(args.symbol, True):
+            raise RuntimeError(f"Unable to select {args.symbol}.")
+
+        execution_id = f"demo-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
+        fills = []
+        minimum_pnl = 0.0
+        peak_pnl = 0.0
+        peak_price_move = 0.0
+        first_fill_monotonic = None
+        last_monitor_monotonic = None
+        started = time.monotonic()
+        signal_deadline = started + signal_seconds_left
+        entry_tracker = BestPriceRangeTracker(
+            args.side,
+            args.best_price_observation_seconds,
+            args.best_price_retrace,
+        )
+        append_event(
+            {
+                "schema_version": 1,
+                "event": "mt5_execution_started",
+                "execution_id": execution_id,
+                "proposal_id": args.proposal_id,
+                "created_at_utc": utc_now(),
+                "mode": "mt5-demo",
+                "account": {"login": account.login, "server": account.server, "trade_mode": "DEMO"},
+                "plan": {
+                    "symbol": args.symbol,
+                    "side": args.side,
+                    "entry_low": args.entry_low,
+                    "entry_high": args.entry_high,
+                    "position_count": 1,
+                    "volume": args.volume,
+                    "signal_timeframe": args.signal_timeframe,
+                    "stop_price_distance": args.stop_price_distance,
+                    "qwen_reference_sl": args.stop_loss,
+                    "qwen_reference_target": args.take_profit,
+                    "broker_sl_tp": "temporary symmetric 5.0-price safety bracket; structure manager replaces it",
+                    "initial_safety_distance": INITIAL_SAFETY_DISTANCE,
+                    "management_owner": "qwen_trade_management",
+                    "signal_ttl_seconds": args.signal_ttl_seconds,
+                    "entry_price_policy": "bounded_best_price_in_approved_range",
+                    "best_price_observation_seconds": args.best_price_observation_seconds,
+                    "best_price_retrace": args.best_price_retrace,
+                },
+            }
+        )
+
+        # Visibility for the two distinct ways the pre-fill wait can stall:
+        # MT5 not handing us a fresh tick at all, versus price simply not
+        # having reached Qwen's approved zone yet. Logged (not gated) so we
+        # can tell the two apart from paper-runner.log instead of having to
+        # reconstruct it after the fact from execution records, as happened
+        # with today's 2026-08-06 review. Neither log line changes behavior;
+        # the signal_deadline check above is still the only hard stop.
+        STALL_LOG_THRESHOLD_SECONDS = 2.0
+        stale_tick_since = None
+        outside_zone_since = None
+
+        while True:
+            if not fills and time.monotonic() >= signal_deadline:
+                result = {
+                    "schema_version": 1,
+                    "event": "mt5_execution_closed",
+                    "execution_id": execution_id,
+                    "proposal_id": args.proposal_id,
+                    "created_at_utc": utc_now(),
+                    "reason": "signal_expired",
+                    "exit_price": None,
+                    "fills": [],
+                    "unfilled_positions": 1,
+                    "gross_pnl": 0,
+                    "peak_pnl": 0.0,
+                    "maximum_drawdown": 0.0,
+                    "holding_seconds": round(time.monotonic() - started, 3),
+                    "position_holding_seconds": 0.0,
+                    "close_results": [],
+                }
+                append_event(result)
+                return result
+            tick = mt5.symbol_info_tick(args.symbol)
+            if tick is None or tick.time_msc <= 0:
+                if not fills:
+                    now = time.monotonic()
+                    if stale_tick_since is None:
+                        stale_tick_since = now
+                    elif now - stale_tick_since >= STALL_LOG_THRESHOLD_SECONDS:
+                        logging.warning(
+                            "paper_executor %s: no tick from MT5 for %s (symbol=%s)",
+                            execution_id, args.symbol, "%.1fs" % (now - stale_tick_since),
+                        )
+                        stale_tick_since = now
+                time.sleep(args.poll_ms / 1000)
+                continue
+            age_ms = int(time.time() * 1000) - int(tick.time_msc)
+            if age_ms > args.maximum_tick_age_ms:
+                if not fills:
+                    now = time.monotonic()
+                    if stale_tick_since is None:
+                        stale_tick_since = now
+                    elif now - stale_tick_since >= STALL_LOG_THRESHOLD_SECONDS:
+                        logging.warning(
+                            "paper_executor %s: MT5 tick is %dms stale, stuck for %.1fs (symbol=%s)",
+                            execution_id, age_ms, now - stale_tick_since, args.symbol,
+                        )
+                        stale_tick_since = now
+                time.sleep(args.poll_ms / 1000)
+                continue
+            stale_tick_since = None
+
+            entry_quote = fill_price(tick, args.side)
+            mark = close_price(tick, args.side)
+            currently_inside_zone = not fills and inside_entry_zone(
+                entry_quote, args.entry_low, args.entry_high
+            )
+            if not fills and not currently_inside_zone:
+                now = time.monotonic()
+                if outside_zone_since is None:
+                    outside_zone_since = now
+                elif now - outside_zone_since >= STALL_LOG_THRESHOLD_SECONDS:
+                    logging.warning(
+                        "paper_executor %s: price %.3f still outside approved zone [%.3f, %.3f] after %.1fs",
+                        execution_id, entry_quote, args.entry_low, args.entry_high,
+                        now - outside_zone_since,
+                    )
+                    outside_zone_since = now
+            else:
+                outside_zone_since = None
+            tracker_state = entry_tracker.observe(
+                entry_quote,
+                time.monotonic(),
+                inside_range=currently_inside_zone,
+                signal_seconds_left=max(0.0, signal_deadline - time.monotonic()),
+                poll_seconds=args.poll_ms / 1000,
+            )
+            if not fills and tracker_state.get("enter"):
+                phase = "single_entry"
+                order_result, safety_sl, safety_tp = submit_single_position(
+                    args, execution_id, tick
+                )
+                actual_fill = float(order_result.price or entry_quote)
+                best_observed = float(tracker_state["best_price"])
+                fill = {
+                    "position_number": 1,
+                    "phase": phase,
+                    "price": actual_fill,
+                    "best_observed_entry_price": best_observed,
+                    "price_from_best": round(
+                        actual_fill - best_observed
+                        if args.side == "buy"
+                        else best_observed - actual_fill,
+                        6,
+                    ),
+                    "entry_selection_reason": tracker_state["reason"],
+                    "entry_observation_seconds": tracker_state["observation_seconds"],
+                    "entry_observations": tracker_state["observations"],
+                    "improvement_from_previous": None,
+                    "volume": args.volume,
+                    "filled_at_utc": utc_now(),
+                    "tick_time_msc": tick.time_msc,
+                    "deal": int(order_result.deal),
+                    "order": int(order_result.order),
+                    "retcode": int(order_result.retcode),
+                    "stop_loss": safety_sl,
+                    "take_profit": safety_tp,
+                    "sl_source": "temporary_5_price_safety",
+                    "tp_source": "temporary_5_price_safety",
+                    "management_reference_sl": args.stop_loss,
+                    "management_reference_tp": args.take_profit,
+                }
+                fills.append(fill)
+                if first_fill_monotonic is None:
+                    first_fill_monotonic = time.monotonic()
+                append_event(
+                    {
+                        "schema_version": 1,
+                        "event": "mt5_fill",
+                        "execution_id": execution_id,
+                        "proposal_id": args.proposal_id,
+                        "created_at_utc": utc_now(),
+                        "fill": fill,
+                    }
+                )
+
+            if fills:
+                live_positions = owned_positions(args.symbol, execution_id)
+                pnl = sum(float(position.profit) for position in live_positions)
+                minimum_pnl = min(minimum_pnl, pnl)
+                peak_pnl = max(peak_pnl, pnl)
+                position_holding_seconds = (
+                    time.monotonic() - first_fill_monotonic
+                    if first_fill_monotonic is not None
+                    else 0.0
+                )
+                average_entry = average_fill_price(fills)
+                price_move = favorable_price_move(mark, average_entry, args.side)
+                peak_price_move = max(peak_price_move, price_move)
+                structural_target_distance = favorable_price_move(
+                    args.take_profit, average_entry, args.side
+                )
+                giveback = peak_price_move - price_move
+                adverse_price_move = max(0.0, -price_move)
+                active_stop_distance = abs(average_entry - args.stop_loss)
+                now_monotonic = time.monotonic()
+                if (
+                    last_monitor_monotonic is None
+                    or now_monotonic - last_monitor_monotonic >= MONITOR_INTERVAL_SECONDS
+                ):
+                    append_event(
+                        {
+                            "schema_version": 1,
+                            "event": "mt5_execution_monitor",
+                            "execution_id": execution_id,
+                            "proposal_id": args.proposal_id,
+                            "created_at_utc": utc_now(),
+                            "side": args.side,
+                            "mark": mark,
+                            "average_entry": average_entry,
+                            "favorable_price_move": round(price_move, 3),
+                            "peak_favorable_price_move": round(peak_price_move, 3),
+                            "price_giveback": round(giveback, 3),
+                            "adverse_price_move": round(adverse_price_move, 3),
+                            "stop_price_distance": round(active_stop_distance, 3),
+                            "stop_progress_pct": round(
+                                100 * adverse_price_move / max(active_stop_distance, 0.001),
+                                1,
+                            ),
+                            "structural_target": args.take_profit,
+                            "structural_target_distance": round(
+                                structural_target_distance, 3
+                            ),
+                            "structural_progress_pct": (
+                                round(
+                                    100 * price_move / structural_target_distance,
+                                    1,
+                                )
+                                if structural_target_distance > 0
+                                else None
+                            ),
+                            "management_owner": "qwen_trade_management",
+                            "target_is_review_level": True,
+                            "gross_pnl": pnl,
+                            "peak_pnl": peak_pnl,
+                            "maximum_drawdown": minimum_pnl,
+                            "holding_seconds": round(position_holding_seconds, 3),
+                        }
+                    )
+                    last_monitor_monotonic = now_monotonic
+                # MT5 enforces Qwen's named-level SL/TP. The separate Qwen
+                # manager may later replace either level after validation.
+                if not live_positions:
+                    outcome = realized_execution_outcome(fills, proposal_created_at)
+                    reason = outcome["reason"]
+                    pnl = outcome["gross_pnl"]
+                    if outcome["exit_price"] is not None:
+                        mark = float(outcome["exit_price"])
+                        price_move = favorable_price_move(
+                            mark, average_entry, args.side
+                        )
+                        giveback = peak_price_move - price_move
+                        adverse_price_move = max(0.0, -price_move)
+                    close_results = []
+                    result = {
+                        "schema_version": 1,
+                        "event": "mt5_execution_closed",
+                        "execution_id": execution_id,
+                        "proposal_id": args.proposal_id,
+                        "created_at_utc": utc_now(),
+                        "reason": reason,
+                        "exit_price": mark,
+                        "fills": fills,
+                        "gross_pnl": pnl,
+                        "costs": outcome["costs"],
+                        "net_pnl": outcome["net_pnl"],
+                        "average_entry": average_entry,
+                        "favorable_price_move": round(price_move, 3),
+                        "peak_favorable_price_move": round(peak_price_move, 3),
+                        "price_giveback": round(giveback, 3),
+                        "adverse_price_move": round(adverse_price_move, 3),
+                        "stop_price_distance": round(active_stop_distance, 3),
+                        "structural_target": args.take_profit,
+                        "structural_target_distance": round(
+                            structural_target_distance, 3
+                        ),
+                        "management_owner": "qwen_trade_management",
+                        "peak_pnl": peak_pnl,
+                        "maximum_drawdown": minimum_pnl,
+                        "holding_seconds": round(time.monotonic() - started, 3),
+                        "position_holding_seconds": round(position_holding_seconds, 3),
+                        "entry_wait_seconds": round(
+                            first_fill_monotonic - started, 3
+                        ) if first_fill_monotonic is not None else None,
+                        "close_results": close_results,
+                        "close_comments": outcome["close_comments"],
+                    }
+                    append_event(result)
+                    return result
+            time.sleep(args.poll_ms / 1000)
+
+    finally:
+        mt5.shutdown()
+
+
+def run(args) -> dict:
+    """Run one exclusive position so concurrent runners cannot overlap tickets."""
+    lock = EXECUTION_LOCK_FILE.open("a+b")
+    if lock.tell() == 0:
+        lock.write(b"\0")
+        lock.flush()
+    lock.seek(0)
+    try:
+        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        lock.close()
+        result = {
+            "schema_version": 1,
+            "event": "mt5_execution_skipped",
+            "proposal_id": args.proposal_id,
+            "created_at_utc": utc_now(),
+            "reason": "executor_busy",
+        }
+        append_event(result)
+        return result
+    try:
+        return _run(args)
+    finally:
+        lock.seek(0)
+        msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        lock.close()
+
+
+def self_test() -> None:
+    assert inside_entry_zone(101, 100, 102)
+    assert not inside_entry_zone(103, 100, 102)
+    assert average_fill_price([{"price": 101, "volume": 0.5}]) == 101
+    assert favorable_price_move(104, 101, "buy") == 3
+    assert favorable_price_move(98, 101, "sell") == 3
+    assert MIN_ENTRY_CONFIDENCE == 51
+    assert initial_safety_bracket("buy", 4233.553, 3) == (4228.553, 4238.553)
+    assert initial_safety_bracket("sell", 4233.553, 3) == (4238.553, 4228.553)
+    created = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    assert remaining_signal_seconds(
+        created, created + timedelta(seconds=59), 60
+    ) == 1
+    assert remaining_signal_seconds(
+        created, created + timedelta(seconds=60), 60
+    ) == 0
+    # 2026-08-06: BestPriceRangeTracker no longer waits for a retrace or a
+    # timeout -- it fires on the first fresh, in-zone tick. These assertions
+    # replace the old wait-then-accept-anything test coverage.
+    buy_tracker = BestPriceRangeTracker("buy", 2.0, 0.1)
+    first = buy_tracker.observe(
+        101.0, 0.0, inside_range=True, signal_seconds_left=10, poll_seconds=0.25
+    )
+    assert first["enter"] and first["reason"] == "immediate_zone_entry"
+    assert first["best_price"] == 101.0
+    assert first["observations"] == 1
+    outside = BestPriceRangeTracker("buy", 2.0, 0.1).observe(
+        101.0, 0.0, inside_range=False, signal_seconds_left=10, poll_seconds=0.25
+    )
+    assert not outside["enter"] and outside["reason"] == "outside_entry_range"
+    sell_tracker = BestPriceRangeTracker("sell", 1.0, 0.1)
+    immediate = sell_tracker.observe(
+        100.0, 0.0, inside_range=True, signal_seconds_left=10, poll_seconds=0.25
+    )
+    assert immediate["enter"] and immediate["best_price"] == 100.0
+    improved = sell_tracker.observe(
+        100.2, 1.0, inside_range=True, signal_seconds_left=9, poll_seconds=0.25
+    )
+    # sell side: a higher price is the favorable direction, so best_price
+    # tracking should move up even though entry already fired on the first tick.
+    assert improved["enter"] and improved["best_price"] == 100.2
+    print("paper_executor self-test passed")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="MT5 single-position paper executor")
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--proposal-id")
+    parser.add_argument("--symbol", default="XAUUSDr")
+    parser.add_argument("--side", choices=("buy", "sell"))
+    parser.add_argument("--entry-low", type=float)
+    parser.add_argument("--entry-high", type=float)
+    parser.add_argument("--stop-loss", type=float)
+    parser.add_argument("--take-profit", type=float)
+    parser.add_argument("--buckets", type=int, default=1)
+    parser.add_argument("--volume", type=float, default=0.5)
+    parser.add_argument("--signal-ttl-seconds", type=float, default=60)
+    parser.add_argument("--maximum-tick-age-ms", type=int, default=3000)
+    parser.add_argument("--poll-ms", type=int, default=250)
+    parser.add_argument("--signal-timeframe", choices=("M1", "M5"), default="M1")
+    parser.add_argument("--stop-price-distance", type=float, default=3.0)
+    parser.add_argument("--best-price-observation-seconds", type=float, default=2.0)
+    parser.add_argument("--best-price-retrace", type=float, default=0.10)
+    parser.add_argument("--terminal", default=DEFAULT_TERMINAL)
+    args = parser.parse_args()
+    if not args.self_test:
+        required = (
+            "proposal_id",
+            "side",
+            "entry_low",
+            "entry_high",
+            "stop_loss",
+            "take_profit",
+        )
+        missing = [name for name in required if getattr(args, name) is None]
+        if missing:
+            parser.error("missing required arguments: " + ", ".join(missing))
+    return args
+
+
+if __name__ == "__main__":
+    arguments = parse_args()
+    if arguments.self_test:
+        self_test()
+    else:
+        print(json.dumps(run(arguments), indent=2))

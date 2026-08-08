@@ -1,0 +1,172 @@
+"""
+QuantLLMBot Phase 4 Configuration
+Central location for all paths, model settings, and training hyperparameters.
+"""
+
+from pathlib import Path
+from dataclasses import dataclass
+from typing import Optional
+
+# ============================================================================
+# PATHS
+# ============================================================================
+
+PROJECT_ROOT = Path("E:\\QuantLLMBot")
+KNOWLEDGE_DIR = PROJECT_ROOT / "model_training" / "knowledge"
+OUTPUT_DIR = PROJECT_ROOT / "model_training" / "outputs"
+CHECKPOINT_DIR = PROJECT_ROOT / "model_training" / "checkpoints"
+LOGS_DIR = PROJECT_ROOT / "model_training" / "logs"
+
+# Data files
+STAGE_01_PATH = KNOWLEDGE_DIR / "stage_01_principle_foundation.jsonl"
+STAGE_02_PATH = KNOWLEDGE_DIR / "stage_02_structured_data.jsonl"
+STAGE_03_PATH = KNOWLEDGE_DIR / "stage_03_detector_definitions.jsonl"
+STAGE_04_PATH = KNOWLEDGE_DIR / "stage_04_decision_contract.jsonl"
+
+# Outputs
+PROCESSED_DATA_PATH = OUTPUT_DIR / "processed_training_data.jsonl"
+LORA_WEIGHTS_DIR = OUTPUT_DIR / "lora_weights"
+EVAL_RESULTS_PATH = OUTPUT_DIR / "evaluation_results.json"
+
+# Create directories if they don't exist
+for directory in [OUTPUT_DIR, CHECKPOINT_DIR, LOGS_DIR, LORA_WEIGHTS_DIR]:
+    directory.mkdir(parents=True, exist_ok=True)
+
+
+# ============================================================================
+# MODEL CONFIGURATION
+# ============================================================================
+
+@dataclass
+class ModelConfig:
+    base_model: str = "Qwen/Qwen2.5-14B-Instruct"
+    model_max_length: int = 4096
+    trust_remote_code: bool = True
+    device_map: str = "auto"
+    torch_dtype: str = "bfloat16"  # or "float16"
+
+
+@dataclass
+class QuantizationConfig:
+    load_in_4bit: bool = True
+    bnb_4bit_compute_dtype: str = "bfloat16"
+    bnb_4bit_use_double_quant: bool = True
+    bnb_4bit_quant_type: str = "nf4"
+
+
+@dataclass
+class LoRAConfig:
+    r: int = 16
+    lora_alpha: int = 32
+    target_modules: list = None
+    lora_dropout: float = 0.05
+    bias: str = "none"
+    task_type: str = "CAUSAL_LM"
+
+    def __post_init__(self):
+        if self.target_modules is None:
+            self.target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "up_proj", "down_proj"]
+
+
+@dataclass
+class TrainingConfig:
+    # Data
+    max_seq_length: int = 4096
+    preprocessing_num_workers: int = 4
+
+    # Batch and learning
+    per_device_train_batch_size: int = 2
+    per_device_eval_batch_size: int = 4
+    gradient_accumulation_steps: int = 4
+    learning_rate: float = 2e-4
+    weight_decay: float = 0.01
+    max_grad_norm: float = 1.0
+
+    # Epochs and steps
+    num_train_epochs: int = 3
+    warmup_steps: int = 100
+
+    # Checkpointing
+    save_steps: int = 50
+    eval_steps: int = 50
+    save_total_limit: int = 3
+
+    # Logging
+    logging_steps: int = 10
+    log_model: bool = False
+
+    # Misc
+    seed: int = 42
+    fp16: bool = False  # Use bf16 instead for A100
+    bf16: bool = True
+    optim: str = "paged_adamw_32bit"
+    gradient_checkpointing: bool = True
+
+
+# ============================================================================
+# TRAINING PIPELINE SETTINGS
+# ============================================================================
+
+@dataclass
+class PipelineConfig:
+    # Preprocessing
+    training_lines_start: int = 0  # Lines 1-115 (0-indexed: 0-114)
+    training_lines_end: int = 115
+    test_lines_start: int = 115  # Lines 116-125 (0-indexed: 115-124)
+    test_lines_end: int = 125
+
+    # Evaluation metrics
+    eval_metrics: list = None
+
+    # W&B logging
+    use_wandb: bool = True
+    wandb_project: str = "quantllmbot-phase4"
+    wandb_entity: Optional[str] = None  # Set to your W&B username if desired
+
+    def __post_init__(self):
+        if self.eval_metrics is None:
+            self.eval_metrics = [
+                "exact_match_decision",
+                "decision_agreement",
+                "conviction_score_mae",
+                "evidence_label_accuracy"
+            ]
+
+
+# ============================================================================
+# INSTANTIATE CONFIGS
+# ============================================================================
+
+model_config = ModelConfig()
+quant_config = QuantizationConfig()
+lora_config = LoRAConfig()
+training_config = TrainingConfig()
+pipeline_config = PipelineConfig()
+
+
+# ============================================================================
+# HELPER: EFFECTIVE BATCH SIZE
+# ============================================================================
+
+def get_effective_batch_size(
+    per_device_batch_size: int = training_config.per_device_train_batch_size,
+    gradient_accumulation: int = training_config.gradient_accumulation_steps,
+    num_devices: int = 1
+) -> int:
+    """
+    Compute effective batch size across all devices and accumulation steps.
+    effective_batch_size = per_device_batch_size * num_devices * gradient_accumulation_steps
+    """
+    return per_device_batch_size * num_devices * gradient_accumulation
+
+
+if __name__ == "__main__":
+    print("QuantLLMBot Phase 4 Configuration")
+    print(f"Project Root: {PROJECT_ROOT}")
+    print(f"Knowledge Dir: {KNOWLEDGE_DIR}")
+    print(f"Output Dir: {OUTPUT_DIR}")
+    print(f"\nModel: {model_config.base_model}")
+    print(f"LoRA Config: r={lora_config.r}, alpha={lora_config.lora_alpha}")
+    print(f"Effective Batch Size: {get_effective_batch_size()}")
+    print(f"Training Data: Lines {pipeline_config.training_lines_start}-{pipeline_config.training_lines_end}")
+    print(f"Test Data: Lines {pipeline_config.test_lines_start}-{pipeline_config.test_lines_end}")

@@ -1,0 +1,200 @@
+{
+  "project": "QuantLLMBot Training Pipeline",
+  "version": "2.0",
+  "description": "Complete Phase 4 curriculum implementation: 01_principle_foundation → 02_structured_data → 03_detector_definitions → 04_decision_contract",
+
+  "environment": {
+    "python_version": "3.10+",
+    "platform": "Windows/Linux/Mac",
+    "cuda_version": "12.1+ (for GPU training)",
+    "ram_minimum_gb": 16,
+    "vram_minimum_gb": 8
+  },
+
+  "python_dependencies": {
+    "core": {
+      "torch": ">=2.0.0",
+      "transformers": ">=4.36.0",
+      "peft": ">=0.7.0",
+      "bitsandbytes": ">=0.41.0",
+      "datasets": ">=2.14.0",
+      "pandas": ">=2.0.0",
+      "numpy": ">=1.24.0"
+    },
+    "training": {
+      "accelerate": ">=0.24.0",
+      "trl": ">=0.7.0",
+      "wandb": ">=0.15.0",
+      "pydantic": ">=2.0.0"
+    },
+    "utilities": {
+      "tqdm": ">=4.66.0",
+      "pyyaml": ">=6.0",
+      "python-dotenv": ">=1.0.0",
+      "jsonlines": ">=4.0.0"
+    },
+    "development": {
+      "jupyter": ">=1.0.0",
+      "ipython": ">=8.0.0",
+      "black": ">=23.0.0",
+      "flake8": ">=6.0.0"
+    }
+  },
+
+  "data_files": {
+    "stage_01_principle_foundation.jsonl": {
+      "path": "E:\\QuantLLMBot\\model_training\\knowledge\\stage_01_principle_foundation.jsonl",
+      "size_kb": 25,
+      "records": 35,
+      "format": "JSONL (one principle per line)",
+      "fields": ["principle_id", "topic", "principle_name", "core_concept", "foundational_rule", "why_matters", "evidence_strength", "applies_to_detectors"]
+    },
+    "stage_02_structured_data.jsonl": {
+      "path": "E:\\QuantLLMBot\\model_training\\knowledge\\stage_02_structured_data.jsonl",
+      "size_kb": 41,
+      "records": 125,
+      "format": "JSONL (one example per line)",
+      "fields": ["example_id", "topic", "title", "setup", "decision", "invalidation", "why", "evidence", "bucket"],
+      "buckets": {
+        "A": 54,
+        "B": 61,
+        "C": 9
+      },
+      "note": "Lines 1-115 are Bucket A/B (training data). Lines 116-125 are Bucket C (skip for training)."
+    },
+    "stage_03_detector_definitions.jsonl": {
+      "path": "E:\\QuantLLMBot\\model_training\\knowledge\\stage_03_detector_definitions.jsonl",
+      "size_kb": 36,
+      "records": 125,
+      "format": "JSONL (one detector per line)",
+      "fields": ["example_id", "detector_type", "detector_name", "input_signals", "logic", "thresholds", "output"]
+    },
+    "stage_04_decision_contract.jsonl": {
+      "path": "E:\\QuantLLMBot\\model_training\\knowledge\\stage_04_decision_contract.jsonl",
+      "size_kb": 34,
+      "records": 125,
+      "format": "JSONL (one contract per line)",
+      "fields": ["example_id", "detector_output", "trade_decision", "decision_conditions", "evidence_label", "conviction_score", "risk_control"]
+    }
+  },
+
+  "model_config": {
+    "base_model": "Qwen/Qwen2.5-7B-Instruct",
+    "quantization": "4bit_nf4",
+    "lora": {
+      "r": 16,
+      "alpha": 32,
+      "target_modules": ["q_proj", "v_proj", "k_proj", "o_proj", "up_proj", "down_proj"],
+      "dropout": 0.05,
+      "bias": "none",
+      "task_type": "CAUSAL_LM"
+    },
+    "training": {
+      "max_seq_length": 4096,
+      "batch_size": 2,
+      "gradient_accumulation_steps": 4,
+      "learning_rate": 2e-4,
+      "num_epochs": 3,
+      "warmup_steps": 100,
+      "weight_decay": 0.01,
+      "max_grad_norm": 1.0
+    }
+  },
+
+  "curriculum_stages": {
+    "stage_01": {
+      "name": "Principle Foundation",
+      "records": 35,
+      "purpose": "Establish core market structure concepts before worked examples",
+      "training_purpose": "System prompt context; use to create instruction template"
+    },
+    "stage_02": {
+      "name": "Structured Data (Worked Examples)",
+      "records": 115,
+      "purpose": "Worked examples with setup/decision/invalidation/evidence",
+      "training_purpose": "Main training data for detector recognition and decision mapping",
+      "format": "Use lines 1-115 (Bucket A/B only). Skip lines 116-125 (Bucket C doctrine)."
+    },
+    "stage_03": {
+      "name": "Detector Definitions",
+      "records": 115,
+      "purpose": "Input signals, logic, thresholds for each example",
+      "training_purpose": "Intermediate representation for understanding detector structure"
+    },
+    "stage_04": {
+      "name": "Decision Contract",
+      "records": 115,
+      "purpose": "Detector output → trade decision mapping with conviction scores",
+      "training_purpose": "Output target for training; train model to predict decision_contract from setup"
+    }
+  },
+
+  "training_pipeline": {
+    "phase_1_preprocessing": {
+      "input": "stage_02_structured_data.jsonl (lines 1-115 only)",
+      "task": "Load JSONL, create instruction-response pairs",
+      "output_format": {
+        "instruction": "Setup context from stage_02 + principle context from stage_01",
+        "response": "Trade decision + evidence from stage_04"
+      }
+    },
+    "phase_2_fine_tuning": {
+      "model": "Qwen2.5-7B-Instruct + QLoRA",
+      "training_data": "Instruction-response pairs from phase_1",
+      "epochs": 3,
+      "output": "adapter_weights (LoRA weights)"
+    },
+    "phase_3_evaluation": {
+      "test_set": "stage_02 lines 116-125 (Bucket C - holdout)",
+      "metrics": ["exact_match_decision", "conviction_score_rmse", "evidence_label_accuracy"],
+      "validation": "Compare predicted_decision vs stage_04 decision_contract"
+    }
+  },
+
+  "directory_structure": {
+    "root": "E:\\QuantLLMBot",
+    "model_training": "E:\\QuantLLMBot\\model_training",
+    "knowledge": "E:\\QuantLLMBot\\model_training\\knowledge",
+    "data_stages": "E:\\QuantLLMBot\\model_training\\knowledge",
+    "output_weights": "E:\\QuantLLMBot\\model_training\\outputs\\lora_weights",
+    "checkpoints": "E:\\QuantLLMBot\\model_training\\checkpoints",
+    "logs": "E:\\QuantLLMBot\\model_training\\logs"
+  },
+
+  "quick_start": {
+    "step_1": "Clone repo / navigate to E:\\QuantLLMBot",
+    "step_2": "pip install -r requirements.txt (use dependencies above)",
+    "step_3": "Verify data files exist in E:\\QuantLLMBot\\model_training\\knowledge\\",
+    "step_4": "python scripts/01_preprocess.py (load JSONL, create instruction pairs)",
+    "step_5": "python scripts/02_finetune.py (QLoRA fine-tuning)",
+    "step_6": "python scripts/03_evaluate.py (test on holdout data)"
+  },
+
+  "expected_outputs": {
+    "after_preprocessing": {
+      "file": "processed_training_data.jsonl",
+      "format": "JSONL with instruction/response pairs",
+      "records": 115
+    },
+    "after_finetuning": {
+      "file": "lora_weights/adapter_config.json + adapter_model.bin",
+      "size_mb": "50-100",
+      "purpose": "Use with base model for inference"
+    },
+    "after_evaluation": {
+      "file": "evaluation_results.json",
+      "metrics": {
+        "exact_match_accuracy": "expected 65-75%",
+        "decision_agreement": "expected 80-85%",
+        "conviction_score_mae": "expected 0.05-0.10"
+      }
+    }
+  },
+
+  "notes": {
+    "important": "Use only stage_02 lines 1-115 (Bucket A/B examples) for training. Lines 116-125 (Bucket C) are doctrine rules—skip them.",
+    "gpu_memory": "At batch_size=2, gradient_accumulation=4, needs ~8GB VRAM. Reduce batch_size to 1 for <8GB GPUs.",
+    "data_size": "115 examples = small dataset. Expect overfitting; use early stopping or validation-based checkpoint saving.",
+    "inference": "After training, load base model + LoRA adapter and use merged model or PEFT inference for detector predictions."
+  }
+}

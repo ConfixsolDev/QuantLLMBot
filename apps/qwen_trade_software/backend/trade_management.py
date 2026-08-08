@@ -1,0 +1,807 @@
+"""Trade management: the ongoing, in-trade half of the Qwen paper-trading system.
+
+2026-08-06 split: this file used to be part of reviewer.py. It is now a
+separate process because entry-decision and trade-management are, per the
+user, "a different game" -- they will need separate knowledge bases and
+eventually separate trained skills/models, so keeping them in one file made
+that future work harder than it needed to be.
+
+This process owns everything that happens AFTER a Qwen position is already
+open: reading live positions/deals from MT5, building the deterministic
+management facts (trade path, structural levels, execution-monitor state),
+asking Qwen (or the deterministic confirmation guard) whether to hold,
+protect, or close, and applying that decision to the live position's SL/TP.
+It runs on its own interval (QWEN_REVIEW_INTERVAL_SECONDS, default 30s) and
+writes its own dashboard-state file (management-dashboard-state.json) that
+reviewer.py reads and merges into the /snapshot endpoint the frontend
+already expects.
+
+It does NOT talk to Qwen about new entries -- that stays entirely in
+reviewer.py. The two processes currently still share one Qwen/Ollama model
+instance (see review_shared.model_generation_lock) -- splitting the code is
+not the same as splitting the model; that is future hardware-dependent work.
+"""
+
+import json
+import logging
+import logging.handlers
+import socket
+import time
+from datetime import datetime, timedelta, timezone
+
+import MetaTrader5 as mt5
+
+from market_context_cache import latest_readiness
+from review_shared import (
+    DEFAULT_MANAGEMENT_STATE,
+    LOG_DIR,
+    MANAGEMENT_STATE_FILE,
+    MODEL,
+    QWEN_MAGIC,
+    STORE_ROOT,
+    _dated_log_files,
+    _dated_log_path,
+    connect_mt5,
+    is_qwen_owned,
+    load_review_tickets,
+    normalize_confidence,
+    normalize_invalidation,
+    normalize_text,
+    ollama_generate,
+    read_json_safe,
+    warm_model,
+    write_json_atomic,
+)
+from tick_data_archive import append_qwen_decision, append_tick_record
+from trade_manager import (
+    build_management_facts,
+    build_management_prompt,
+    confirmed_management_guard,
+    decision_is_currently_applicable,
+    management_schema,
+    validate_management_decision,
+)
+
+
+# Same env var reviewer.py's entry loop reads a separate one for -- kept
+# distinct on purpose (QWEN_REVIEW_INTERVAL_SECONDS here vs.
+# QWEN_ENTRY_INTERVAL_SECONDS in reviewer.py) so the two cadences can be
+# tuned independently once real hardware numbers are in from the faster GPU
+# machine, without conflating "how often to check for a new setup" with
+# "how often to review a live trade".
+import os
+
+INTERVAL_SECONDS = int(os.environ.get("QWEN_REVIEW_INTERVAL_SECONDS", "30"))
+# The executor installs a generic +/-5.0-price symmetric safety bracket at
+# entry, not Qwen's own reference SL/TP (considered and explicitly rejected
+# on 2026-08-06 -- Qwen's own levels are often too tight to use as the
+# immediate entry-time bracket). This process is the intended path for those
+# levels to actually take effect over the life of the trade: it may tighten
+# the SL and/or replace the TP with a validated named level once the
+# completed-candle management contract confirms it.
+AUTO_MANAGE_QWEN_OWNED = True
+
+LAST_MANAGED_M1_BY_TICKET: dict[int, str] = {}
+ENTRY_CONTEXT_BY_TICKET: dict[int, dict] = {}
+EXECUTION_MONITOR_BY_ID: dict[str, dict] = {}
+# Tracks (file, byte offset) for the incremental executions tail below. The
+# file changes at midnight, which naturally resets the offset to 0 for the
+# new day's file.
+PAPER_EXECUTION_TAIL_STATE = {"path": None, "offset": 0}
+
+_LOG_HANDLER = logging.handlers.TimedRotatingFileHandler(
+    filename=LOG_DIR / "trade-management.log", when="midnight", encoding="utf-8"
+)
+_LOG_HANDLER.suffix = "%Y-%m-%d"
+_LOG_HANDLER.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_LOG_HANDLER])
+
+
+def position_to_dict(position) -> dict:
+    return {
+        "ticket": position.ticket,
+        "symbol": position.symbol,
+        "side": "buy" if position.type == mt5.POSITION_TYPE_BUY else "sell",
+        "volume": position.volume,
+        "open_price": position.price_open,
+        "current_price": position.price_current,
+        "stop_loss": position.sl,
+        "take_profit": position.tp,
+        "profit": position.profit,
+        "swap": position.swap,
+        "magic": position.magic,
+        "comment": position.comment,
+        "opened_at": datetime.fromtimestamp(position.time, timezone.utc).isoformat(),
+    }
+
+
+def deal_to_dict(deal) -> dict:
+    return {
+        "ticket": deal.ticket,
+        "order": deal.order,
+        "position_id": deal.position_id,
+        "symbol": deal.symbol,
+        "side": "buy" if deal.type == mt5.DEAL_TYPE_BUY else "sell",
+        "entry": deal.entry,
+        "volume": deal.volume,
+        "price": deal.price,
+        "profit": deal.profit,
+        "commission": deal.commission,
+        "swap": deal.swap,
+        "magic": deal.magic,
+        "comment": deal.comment,
+        "executed_at": datetime.fromtimestamp(deal.time, timezone.utc).isoformat(),
+    }
+
+
+def chart_levels(symbol: str) -> dict:
+    levels = {}
+    timeframes = {
+        "M1": mt5.TIMEFRAME_M1,
+        "M5": mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15,
+        "M30": mt5.TIMEFRAME_M30,
+        "H1": mt5.TIMEFRAME_H1,
+        "H4": mt5.TIMEFRAME_H4,
+    }
+    for tag, timeframe in timeframes.items():
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, 2)
+        if rates is None or len(rates) < 2:
+            continue
+        ordered = sorted(rates, key=lambda rate: int(rate["time"]))
+        previous, current = ordered[-2], ordered[-1]
+        levels[f"{tag}_CURRENT_OPEN"] = float(current["open"])
+        levels[f"{tag}_PREVIOUS_HIGH"] = float(previous["high"])
+        levels[f"{tag}_PREVIOUS_LOW"] = float(previous["low"])
+
+    daily = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_D1, 0, 2)
+    if daily is not None and len(daily) >= 2:
+        ordered = sorted(daily, key=lambda rate: int(rate["time"]))
+        previous, current = ordered[-2], ordered[-1]
+        high, low, close = (
+            float(previous["high"]),
+            float(previous["low"]),
+            float(previous["close"]),
+        )
+        pivot = (high + low + close) / 3.0
+        levels.update(
+            {
+                "D1_CURRENT_OPEN": float(current["open"]),
+                "D1_CURRENT_HIGH": float(current["high"]),
+                "D1_CURRENT_LOW": float(current["low"]),
+                "D1_PREVIOUS_HIGH": high,
+                "D1_PREVIOUS_LOW": low,
+                "D1_PIVOT": pivot,
+                "D1_R1": 2.0 * pivot - low,
+                "D1_S1": 2.0 * pivot - high,
+            }
+        )
+    return levels
+
+
+def historical_respect_counts(symbol: str, flat_levels: dict) -> dict:
+    """Count distinct 15-day reactions around each M30/H1/H4 named level."""
+    counts = {}
+    timeframe_map = {
+        "M30": mt5.TIMEFRAME_M30,
+        "H1": mt5.TIMEFRAME_H1,
+        "H4": mt5.TIMEFRAME_H4,
+    }
+    bars_per_day = {"M30": 48, "H1": 24, "H4": 6}
+    for tag, timeframe in timeframe_map.items():
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 1, bars_per_day[tag] * 15)
+        if rates is None:
+            continue
+        tag_levels = {
+            level_id: float(price)
+            for level_id, price in flat_levels.items()
+            if level_id.startswith(f"{tag}_")
+        }
+        for level_id, level in tag_levels.items():
+            tolerance = max(0.35, level * 0.00010)
+            respected = 0
+            touching_previous = False
+            for rate in sorted(rates, key=lambda item: int(item["time"])):
+                high = float(rate["high"])
+                low = float(rate["low"])
+                opened = float(rate["open"])
+                closed = float(rate["close"])
+                touched = low - tolerance <= level <= high + tolerance
+                rejected = touched and (
+                    (low <= level + tolerance and closed > level and closed >= opened)
+                    or (high >= level - tolerance and closed < level and closed <= opened)
+                )
+                if rejected and not touching_previous:
+                    respected += 1
+                touching_previous = touched
+            counts[level_id] = respected
+    return counts
+
+
+def levels_for_ui(flat_levels: dict, symbol: str = None) -> dict:
+    grouped = {}
+    respect_counts = historical_respect_counts(symbol, flat_levels) if symbol else {}
+    for level_id, price in flat_levels.items():
+        timeframe = level_id.split("_", 1)[0]
+        role = level_id.replace(f"{timeframe}_", "").replace("_", " ").title()
+        grouped.setdefault(timeframe, []).append(
+            {
+                "id": level_id,
+                "price": price,
+                "role": role,
+                "respect_count": respect_counts.get(level_id, 0),
+            }
+        )
+    for timeframe in grouped:
+        grouped[timeframe].sort(key=lambda item: item["price"], reverse=True)
+    return grouped
+
+
+def recent_candle_context(symbol: str) -> dict:
+    """Capture closed candles so Qwen can see reactions, wicks, and oscillation."""
+    output = {}
+    for tag, timeframe in (("M1", mt5.TIMEFRAME_M1), ("M5", mt5.TIMEFRAME_M5)):
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 1, 5)
+        rows = []
+        if rates is not None:
+            for rate in sorted(rates, key=lambda item: int(item["time"])):
+                closed_at = datetime.fromtimestamp(int(rate["time"]), timezone.utc)
+                opened = float(rate["open"])
+                high = float(rate["high"])
+                low = float(rate["low"])
+                closed = float(rate["close"])
+                rows.append(
+                    {
+                        "time_utc": closed_at.strftime("%H:%M"),
+                        "closed_at_utc": closed_at.isoformat(),
+                        "evidence_id": f"candle:{tag}:{closed_at.isoformat()}",
+                        "open": opened,
+                        "high": high,
+                        "low": low,
+                        "close": closed,
+                        "direction": (
+                            "up" if closed > opened else "down" if closed < opened else "flat"
+                        ),
+                        "body": round(abs(closed - opened), 3),
+                        "upper_wick": round(high - max(opened, closed), 3),
+                        "lower_wick": round(min(opened, closed) - low, 3),
+                    }
+                )
+        output[tag] = rows
+    return output
+
+
+def today_basket_summary(now: datetime) -> dict:
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    deals = mt5.history_deals_get(start, now) or []
+    executions = [
+        deal
+        for deal in deals
+        if deal.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)
+        and deal.magic == QWEN_MAGIC
+    ]
+    by_position = {}
+    for deal in executions:
+        by_position.setdefault(deal.position_id, []).append(deal)
+    durations = []
+    for position_deals in by_position.values():
+        times = sorted(deal.time for deal in position_deals)
+        if len(times) >= 2:
+            durations.append(times[-1] - times[0])
+    durations.sort()
+    closed_profits = []
+    for position_deals in by_position.values():
+        if len(position_deals) >= 2:
+            closed_profits.append(
+                sum(deal.profit + deal.commission + deal.swap for deal in position_deals)
+            )
+    return {
+        "deal_count": len(executions),
+        "position_count": len(by_position),
+        "net_profit": sum(
+            deal.profit + deal.commission + deal.swap for deal in executions
+        ),
+        "median_hold_seconds": durations[len(durations) // 2] if durations else None,
+        "max_hold_seconds": max(durations) if durations else None,
+        "win_rate": (
+            round(100 * sum(profit > 0 for profit in closed_profits) / len(closed_profits))
+            if closed_profits
+            else 0
+        ),
+    }
+
+
+def update_dashboard(positions, levels_by_symbol, today, review=None) -> None:
+    """Write this process's own dashboard-state file.
+
+    Reads the file back first (rather than starting from
+    DEFAULT_MANAGEMENT_STATE each time) so a review-less cycle -- e.g. no
+    Qwen-owned position open -- doesn't clobber the last "qwen_management"
+    commentary reviewer.py may still be surfacing for a just-closed trade.
+    """
+    symbol = next(iter(levels_by_symbol), "XAUUSDr")
+    tick = mt5.symbol_info_tick(symbol)
+    review_tickets = load_review_tickets()
+    position_rows = []
+    for position in positions:
+        row = position_to_dict(position)
+        row["under_review"] = position.ticket in review_tickets
+        row["qwen_owned"] = is_qwen_owned(position)
+        position_rows.append(row)
+    state = read_json_safe(MANAGEMENT_STATE_FILE, DEFAULT_MANAGEMENT_STATE)
+    state.update(
+        {
+            "connected": True,
+            "model": MODEL,
+            "model_status": "Loaded on CPU",
+            "symbol": symbol,
+            "price": tick.bid if tick else 0.0,
+            "change": 0.0,
+            "levels": levels_for_ui(levels_by_symbol.get(symbol, {}), symbol),
+            "market_context": recent_candle_context(symbol),
+            "positions": position_rows,
+            "today": {
+                "net_profit": today["net_profit"],
+                "baskets": today["position_count"],
+                "deals": today["deal_count"],
+                "median_hold_seconds": today["median_hold_seconds"] or 0,
+                "win_rate": today["win_rate"],
+            },
+            "context_cache": latest_readiness(symbol),
+        }
+    )
+    if review:
+        review_summary = review.get("summary", "")
+        inferred_bias = (
+            review_summary.get("bias", "Reviewed")
+            if isinstance(review_summary, dict)
+            else "Reviewed"
+        )
+        state["qwen_management"] = {
+            "bias": review.get("bias", inferred_bias),
+            "confidence": normalize_confidence(review.get("confidence"), 65),
+            "summary": normalize_text(review_summary, "No summary returned."),
+            "invalidation": normalize_invalidation(
+                review.get("invalidation"),
+                review.get("execution_plan"),
+            ),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    write_json_atomic(MANAGEMENT_STATE_FILE, state)
+
+
+def valid_level_for_position(position, level: float, purpose: str) -> bool:
+    tick = mt5.symbol_info_tick(position.symbol)
+    info = mt5.symbol_info(position.symbol)
+    if tick is None or info is None:
+        return False
+    minimum = max(info.trade_stops_level * info.point, info.point)
+    if position.type == mt5.POSITION_TYPE_BUY:
+        return level < tick.bid - minimum if purpose == "sl" else level > tick.ask + minimum
+    return level > tick.ask + minimum if purpose == "sl" else level < tick.bid - minimum
+
+
+def close_qwen_owned_positions(positions) -> list:
+    results = []
+    for original in positions:
+        live = mt5.positions_get(ticket=original.ticket)
+        if not live or not is_qwen_owned(live[0]):
+            continue
+        position = live[0]
+        tick = mt5.symbol_info_tick(position.symbol)
+        if tick is None:
+            continue
+        is_buy = position.type == mt5.POSITION_TYPE_BUY
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "position": position.ticket,
+            "symbol": position.symbol,
+            "volume": position.volume,
+            "type": mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY,
+            "price": tick.bid if is_buy else tick.ask,
+            "deviation": 20,
+            "magic": QWEN_MAGIC,
+            "comment": "QWEN_MGR_CLOSE",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        result = mt5.order_send(request)
+        results.append(
+            {
+                "ticket": position.ticket,
+                "retcode": result.retcode if result else None,
+                "comment": result.comment if result else str(mt5.last_error()),
+            }
+        )
+    return results
+
+
+def active_entry_context(position) -> dict | None:
+    """Recover the immutable entry thesis for the one managed position."""
+    cached = ENTRY_CONTEXT_BY_TICKET.get(int(position.ticket))
+    if cached:
+        return cached
+    suffix = str(position.comment).removeprefix("QWEN_")
+    started = None
+    for path in _dated_log_files("paper-executions"):
+        for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                event.get("event") == "mt5_execution_started"
+                and str(event.get("execution_id", "")).endswith(suffix)
+            ):
+                started = event
+                break
+        if started:
+            break
+    if not started:
+        return None
+    proposal_id = started.get("proposal_id")
+    for path in _dated_log_files("paper-proposals"):
+        for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+            try:
+                proposal = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if proposal.get("proposal_id") == proposal_id:
+                context = {
+                    "execution_id": started["execution_id"],
+                    "proposal_id": proposal_id,
+                    "plan": proposal.get("qwen", {}).get("execution_plan", {}),
+                }
+                ENTRY_CONTEXT_BY_TICKET[int(position.ticket)] = context
+                return context
+    return None
+
+
+def refresh_execution_monitor_cache() -> None:
+    """Incrementally recover each active execution's exact peak/giveback path."""
+    path = _dated_log_path("paper-executions")
+    if PAPER_EXECUTION_TAIL_STATE["path"] != path:
+        # Local midnight rolled over to a new (initially empty) file. Start
+        # a fresh tail on it from offset 0; EXECUTION_MONITOR_BY_ID is left
+        # alone since any still-open position keeps getting fresh monitor
+        # events under the same execution_id in the new file.
+        PAPER_EXECUTION_TAIL_STATE["path"] = path
+        PAPER_EXECUTION_TAIL_STATE["offset"] = 0
+    if not path.exists():
+        return
+    size = path.stat().st_size
+    if size < PAPER_EXECUTION_TAIL_STATE["offset"]:
+        PAPER_EXECUTION_TAIL_STATE["offset"] = 0
+        EXECUTION_MONITOR_BY_ID.clear()
+    with path.open("r", encoding="utf-8") as stream:
+        stream.seek(PAPER_EXECUTION_TAIL_STATE["offset"])
+        for line in stream:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            execution_id = event.get("execution_id")
+            if event.get("event") == "mt5_execution_monitor" and execution_id:
+                EXECUTION_MONITOR_BY_ID[execution_id] = {
+                    "created_at_utc": event.get("created_at_utc"),
+                    "mark": event.get("mark"),
+                    "peak_favorable_price_move": event.get(
+                        "peak_favorable_price_move", 0.0
+                    ),
+                    "peak_pnl": event.get("peak_pnl"),
+                    "price_giveback": event.get("price_giveback", 0.0),
+                    "maximum_drawdown": event.get("maximum_drawdown"),
+                }
+            elif event.get("event") == "mt5_execution_closed" and execution_id:
+                EXECUTION_MONITOR_BY_ID.pop(execution_id, None)
+        # Use the size captured before reading. If the executor appends during
+        # this pass, the extra bytes are intentionally consumed next cycle.
+        PAPER_EXECUTION_TAIL_STATE["offset"] = size
+
+
+def execution_management_state(entry: dict) -> dict:
+    refresh_execution_monitor_cache()
+    return dict(EXECUTION_MONITOR_BY_ID.get(entry.get("execution_id"), {}))
+
+
+def recent_management_history(ticket: int, limit: int = 3) -> list[dict]:
+    """Recover compact prior decisions so management calls are not stateless."""
+    records = []
+    review_files = sorted(LOG_DIR.glob("reviews-*.jsonl"), reverse=True)[:2]
+    for path in review_files:
+        for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            positions = record.get("snapshot", {}).get("positions", [])
+            position = next(
+                (row for row in positions if int(row.get("ticket", 0)) == ticket),
+                None,
+            )
+            if not position:
+                continue
+            decision = record.get("review", {})
+            trade_path = record.get("snapshot", {}).get(
+                "management_facts", {}
+            ).get("trade_path", {})
+            records.append(
+                {
+                    "timestamp_utc": record.get("timestamp_utc"),
+                    "observed_price": position.get("current_price"),
+                    "observed_gross_pnl": position.get("profit"),
+                    "action": decision.get("action"),
+                    "thesis_state": decision.get("thesis_state"),
+                    "decision_level_ref": decision.get("decision_level_ref"),
+                    "summary": decision.get("summary"),
+                    "peak_price": trade_path.get("peak_price"),
+                    "reached_favorable_level_refs": trade_path.get(
+                        "reached_favorable_level_refs", []
+                    ),
+                }
+            )
+            if len(records) >= limit:
+                return list(reversed(records))
+    return list(reversed(records))
+
+
+def apply_confirmed_protection(position, decision: dict, facts: dict) -> list:
+    """Replace the temporary bracket with deterministically validated structure levels."""
+    if decision.get("action") != "protect":
+        return []
+    live = mt5.positions_get(ticket=position.ticket)
+    if not live or not is_qwen_owned(live[0]):
+        return []
+    position = live[0]
+    references = facts.get("level_references", {})
+    sl_reference = references.get(decision.get("decision_level_ref"))
+    tp_reference = references.get(decision.get("next_target_ref"))
+    old_sl = float(position.sl or 0.0)
+    old_tp = float(position.tp or 0.0)
+    new_sl = old_sl
+    new_tp = old_tp
+    if sl_reference:
+        candidate_sl = float(sl_reference["price"])
+        # A validated structural invalidation may be tighter or wider than the
+        # temporary entry bracket. It is authoritative once M1+M5 acceptance
+        # has passed the deterministic management contract.
+        if valid_level_for_position(position, candidate_sl, "sl"):
+            new_sl = candidate_sl
+    if tp_reference:
+        candidate_tp = float(tp_reference["price"])
+        if valid_level_for_position(position, candidate_tp, "tp"):
+            new_tp = candidate_tp
+    if new_sl == old_sl and new_tp == old_tp:
+        return []
+    result = mt5.order_send(
+        {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": position.ticket,
+            "symbol": position.symbol,
+            "sl": new_sl,
+            "tp": new_tp,
+        }
+    )
+    return [
+        {
+            "ticket": position.ticket,
+            "sl_level_ref": decision.get("decision_level_ref"),
+            "tp_level_ref": decision.get("next_target_ref"),
+            "old_sl": old_sl,
+            "new_sl": new_sl,
+            "old_tp": old_tp,
+            "new_tp": new_tp,
+            "retcode": result.retcode if result else None,
+            "comment": result.comment if result else str(mt5.last_error()),
+        }
+    ]
+
+
+def review_positions() -> None:
+    cycle_started = time.monotonic()
+    positions = mt5.positions_get()
+    if positions is None:
+        raise RuntimeError(f"positions_get failed: {mt5.last_error()}")
+    now = datetime.now(timezone.utc)
+    recent_deals = mt5.history_deals_get(now - timedelta(seconds=75), now)
+    if recent_deals is None:
+        raise RuntimeError(f"history_deals_get failed: {mt5.last_error()}")
+    symbols = sorted(
+        {position.symbol for position in positions if position.symbol}
+        | {deal.symbol for deal in recent_deals if deal.symbol}
+    )
+    if not symbols:
+        symbols = ["XAUUSDr"]
+    levels_by_symbol = {symbol: chart_levels(symbol) for symbol in symbols}
+    today = today_basket_summary(now)
+    update_dashboard(positions, levels_by_symbol, today)
+    # Qwen's execution loop sees only positions it owns. Manual and other-EA
+    # positions remain dashboard-visible but never enter this management path.
+    positions = tuple(position for position in positions if is_qwen_owned(position))
+    if not positions:
+        logging.info("No Qwen-owned open positions; Qwen remains loaded")
+        return
+
+    account = mt5.account_info()
+    snapshot = {
+        "review_time_utc": now.isoformat(),
+        "account": {
+            "login": account.login if account else None,
+            "balance": account.balance if account else None,
+            "equity": account.equity if account else None,
+            "margin_free": account.margin_free if account else None,
+        },
+        "positions": [position_to_dict(position) for position in positions],
+        "recent_deals": [deal_to_dict(deal) for deal in recent_deals[-10:]],
+        "today_basket": today,
+        "chart_levels": levels_by_symbol,
+    }
+    if len(positions) != 1:
+        raise RuntimeError(
+            f"Single-position manager refuses {len(positions)} simultaneous Qwen positions."
+        )
+    position = positions[0]
+    entry = active_entry_context(position)
+    if not entry or entry["plan"].get("status") != "ready":
+        raise RuntimeError("Open Qwen position has no recoverable immutable entry plan.")
+    primary_symbol = position.symbol
+    market_context = recent_candle_context(primary_symbol)
+    facts = build_management_facts(
+        position_to_dict(position),
+        entry["plan"],
+        levels_by_symbol[primary_symbol],
+        market_context,
+        execution_state=execution_management_state(entry),
+        prior_management=recent_management_history(int(position.ticket)),
+    )
+    latest_management_candle = facts.get("latest_completed_m1")
+    if not latest_management_candle:
+        raise RuntimeError("No completed M1 candle is available for management.")
+    if LAST_MANAGED_M1_BY_TICKET.get(position.ticket) == latest_management_candle:
+        logging.info(
+            "Position %s already managed for %s",
+            position.ticket,
+            latest_management_candle,
+        )
+        return
+    snapshot["management_facts"] = facts
+    guard_review = confirmed_management_guard(facts)
+    model_used = MODEL
+    total_duration_ns = None
+    prompt_text = None
+    raw_response = None
+    if guard_review:
+        raw_response = json.dumps(guard_review, separators=(",", ":"))
+        parsed_review, management_failures = validate_management_decision(
+            guard_review, facts
+        )
+        model_used = "deterministic-confirmation-guard"
+        logging.info(
+            "Confirmed management guard ticket=%s action=%s level=%s",
+            position.ticket,
+            parsed_review.get("action"),
+            parsed_review.get("decision_level_ref"),
+        )
+    else:
+        prompt_text = build_management_prompt(facts, STORE_ROOT)
+        result = ollama_generate(
+            prompt_text,
+            timeout=None,
+            num_predict=512,
+            num_ctx=4096,
+            format_schema=management_schema(facts),
+        )
+        total_duration_ns = result.get("total_duration")
+        raw_response = result.get("response", "{}")
+        raw_review = json.loads(raw_response)
+        parsed_review, management_failures = validate_management_decision(
+            raw_review, facts
+        )
+    LAST_MANAGED_M1_BY_TICKET[position.ticket] = latest_management_candle
+    parsed_review["validation_failures"] = management_failures
+    update_dashboard(positions, levels_by_symbol, today, parsed_review)
+    applications = []
+    response_age_seconds = time.monotonic() - cycle_started
+    close_results = []
+    refreshed_context = recent_candle_context(primary_symbol)
+    latest_rows = refreshed_context.get("M1", [])
+    latest_m1_after_response = (
+        latest_rows[-1].get("evidence_id") if latest_rows else None
+    )
+    live = mt5.positions_get(ticket=position.ticket) or ()
+    same_position_open = bool(live and is_qwen_owned(live[0]))
+    current_quote = (
+        mt5.symbol_info_tick(primary_symbol) if same_position_open else None
+    )
+    live_price = (
+        float(current_quote.bid)
+        if current_quote and live[0].type == mt5.POSITION_TYPE_BUY
+        else float(current_quote.ask) if current_quote else None
+    )
+    decision_still_applicable = bool(
+        live_price is not None
+        and decision_is_currently_applicable(parsed_review, facts, live_price)
+    )
+    stale_for_execution = not same_position_open or not decision_still_applicable
+    if (
+        AUTO_MANAGE_QWEN_OWNED
+        and same_position_open
+        and not stale_for_execution
+        and not management_failures
+    ):
+        if parsed_review.get("action") == "close":
+            close_results = close_qwen_owned_positions(live)
+        elif parsed_review.get("action") == "protect":
+            applications = apply_confirmed_protection(live[0], parsed_review, facts)
+    append_qwen_decision(
+        decision_type="management",
+        symbol=primary_symbol,
+        price=facts.get("position", {}).get("current"),
+        prompt_text=prompt_text,
+        raw_response=raw_response or json.dumps(parsed_review, separators=(",", ":")),
+        parsed=parsed_review,
+        model=model_used,
+        duration_ns=total_duration_ns,
+        mt5_position_id=int(position.ticket),
+        context={
+            "entry_proposal_id": entry.get("proposal_id"),
+            "guard_applied": bool(guard_review),
+            "latest_completed_m1": latest_management_candle,
+        },
+    )
+    record = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "snapshot": snapshot,
+        "model": model_used,
+        "prompt_text": prompt_text,
+        "raw_response": raw_response,
+        "review": parsed_review,
+        "protection_applications": applications,
+        "close_applications": close_results,
+        "response_age_seconds": response_age_seconds,
+        "stale_for_execution": stale_for_execution,
+        "newer_m1_available": (
+            latest_m1_after_response != facts.get("latest_completed_m1")
+        ),
+        "post_qwen_price": live_price,
+        "entry_context": entry,
+        "guard_applied": bool(guard_review),
+        "total_duration_ns": total_duration_ns,
+    }
+    append_tick_record("reviews", record)
+    logging.info(
+        "Reviewed %d open position(s) and %d recent deal(s); audit=%s",
+        len(positions),
+        len(recent_deals),
+        LOG_DIR / f"reviews-{datetime.now():%Y-%m-%d}.jsonl",
+    )
+
+
+def main() -> None:
+    # A localhost listener prevents duplicate trade-management instances.
+    # Separate port from reviewer.py's 48631 -- these are two independent
+    # processes now, each needing its own singleton guard.
+    singleton = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        singleton.bind(("127.0.0.1", 48633))
+        singleton.listen(1)
+    except OSError:
+        return
+
+    logging.info("Qwen trade-management process starting; interval=%ds", INTERVAL_SECONDS)
+    while True:
+        started = time.monotonic()
+        try:
+            warm_model()
+            connect_mt5()
+            review_positions()
+        except Exception:
+            logging.exception("Management review cycle failed")
+        finally:
+            mt5.shutdown()
+        elapsed = time.monotonic() - started
+        time.sleep(max(1, INTERVAL_SECONDS - elapsed))
+
+
+if __name__ == "__main__":
+    main()

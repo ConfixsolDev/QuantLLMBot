@@ -1,0 +1,10 @@
+# Git LFS: LoRA checkpoint weight/optimizer files under model_training/adapters/
+# are large binaries that don't diff meaningfully -- route them through LFS
+# so the main repo history stays small while checkpoints still get real
+# version tracking. Small files in the same tree (README.md, rng_state.pth,
+# config jsons) stay as normal git blobs; training_args.bin also matches the
+# *.bin rule below and rides along through LFS too, which is harmless at its
+# size (a few KB).
+model_training/adapters/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
+model_training/adapters/**/*.pt filter=lfs diff=lfs merge=lfs -text
+model_training/adapters/**/*.bin filter=lfs diff=lfs merge=lfs -text

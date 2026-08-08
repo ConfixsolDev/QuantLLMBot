@@ -1,0 +1,158 @@
+{
+  "schema_version": "1.0",
+  "principles": [
+    {
+      "id": "mp_002",
+      "principle": "Avoid sell when rejection level is too close to support; wait for better location.",
+      "condition": "Rejection level within 5 points of mapped support zone.",
+      "action": "Skip or wait for retest with more room.",
+      "scope_tags": [
+        "asia",
+        "sell",
+        "tight_stop"
+      ],
+      "regime_tags": [
+        "bearish_trend"
+      ],
+      "counter_case": "Strong momentum with volume could still work.",
+      "scope": "",
+      "invalidation": "Price breaks support with acceptance.",
+      "next_test": "Monitor for wider rejection zone before entry.",
+      "status": "candidate",
+      "evidence_ids": [
+        "context-1783909920-m1_ema14_cross-buy"
+      ],
+      "runs": [
+        "jul13_modular_full_v2:1-10"
+      ],
+      "contradiction_count": 0,
+      "evidence_count": 1
+    },
+    {
+      "id": "mp_003",
+      "principle": "Skip when price is midrange without fresh mapped level test.",
+      "condition": "Price between mapped levels, no fresh rejection or acceptance.",
+      "action": "Skip with reason empty_midrange.",
+      "scope_tags": [
+        "asia",
+        "skip"
+      ],
+      "regime_tags": [
+        "bearish_trend"
+      ],
+      "counter_case": "Breakout from midrange could offer entry.",
+      "scope": "",
+      "invalidation": "Price reaches mapped level with response.",
+      "next_test": "Wait for test of mapped level.",
+      "status": "calibrating",
+      "evidence_ids": [
+        "context-1783903200-candle_level_structure_scan-neutral",
+        "context-1783911180-m1_ema14_cross-buy",
+        "context-1783912800-candle_level_structure_scan-neutral"
+      ],
+      "runs": [
+        "jul13_modular_full_v2:1-10"
+      ],
+      "contradiction_count": 0,
+      "evidence_count": 3
+    },
+    {
+      "id": "prop_001",
+      "principle": "First rejection starter",
+      "condition": "Fresh M1/M5 rejection at mapped level with context",
+      "action": "Open starter with tight stop",
+      "scope_tags": [
+        "M1",
+        "M5"
+      ],
+      "regime_tags": [
+        "asia",
+        "london"
+      ],
+      "counter_case": "Price accepts beyond level",
+      "scope": "",
+      "invalidation": "Close above resistance for sell",
+      "next_test": "Second test for add",
+      "status": "challenged",
+      "evidence_ids": [
+        "context-1783919700",
+        "context-1783920840",
+        "context-1783924800",
+        "context-1783930800",
+        "context-1783953600",
+        "context-1783962000"
+      ],
+      "runs": [
+        "jul13_modular_full_v2:11-20",
+        "jul13_modular_full_v2:31-40"
+      ],
+      "contradiction_count": 3,
+      "evidence_count": 6
+    },
+    {
+      "id": "prop_002",
+      "principle": "Pre-London skip",
+      "condition": "Pre-London session 07-08 UTC",
+      "action": "Skip regardless of setup",
+      "scope_tags": [
+        "session"
+      ],
+      "regime_tags": [
+        "pre_london"
+      ],
+      "counter_case": "Strong setup with high volume",
+      "scope": "",
+      "invalidation": "London open confirms direction",
+      "next_test": "First London bar",
+      "status": "calibrating",
+      "evidence_ids": [
+        "context-1783926000",
+        "context-1783926900",
+        "context-1783927800",
+        "context-1783952400",
+        "context-1783960800",
+        "event_9",
+        "event_10"
+      ],
+      "runs": [
+        "jul13_modular_full_v2:11-20",
+        "jul13_modular_full_v2:31-40",
+        "jul13_modular_full_v2:21-30"
+      ],
+      "contradiction_count": 1,
+      "evidence_count": 7
+    },
+    {
+      "id": "prop_003",
+      "principle": "Rejection failure condition",
+      "condition": "Rejection at level but price later accepts",
+      "action": "Close if invalidation triggered",
+      "scope_tags": [
+        "M1",
+        "M5"
+      ],
+      "regime_tags": [
+        "asia",
+        "london"
+      ],
+      "counter_case": "Rejection holds",
+      "scope": "",
+      "invalidation": "Close beyond level",
+      "next_test": "Retest for reversal",
+      "status": "challenged",
+      "evidence_ids": [
+        "context-1783916220",
+        "context-1783922940",
+        "context-1783929600",
+        "event_5"
+      ],
+      "runs": [
+        "jul13_modular_full_v2:11-20",
+        "jul13_modular_full_v2:21-30"
+      ],
+      "contradiction_count": 5,
+      "evidence_count": 4
+    }
+  ],
+  "updated_utc": "2026-07-20T02:23:33.782300+00:00"
+}

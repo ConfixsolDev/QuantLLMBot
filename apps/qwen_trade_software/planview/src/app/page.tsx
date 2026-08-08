@@ -1,0 +1,142 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { fetchCandles, fetchPlan } from "@/lib/api";
+import type { HourlyUpdate, PlannerState } from "@/lib/types";
+import { DayPlanPanel } from "@/components/DayPlanPanel";
+import { HeaderClock } from "@/components/HeaderClock";
+import { HourValidationCard } from "@/components/HourValidationCard";
+import { PlanChart } from "@/components/PlanChart";
+import { SessionTimeline } from "@/components/SessionTimeline";
+
+const TIMEFRAMES = ["M5", "M15", "H1"] as const;
+
+export default function PlanViewPage() {
+  const [plan, setPlan] = useState<PlannerState | null>(null);
+  const [candles, setCandles] = useState<
+    import("@/lib/types").Candle[]
+  >([]);
+  const [timeframe, setTimeframe] =
+    useState<(typeof TIMEFRAMES)[number]>("M15");
+  const [selectedHourlyId, setSelectedHourlyId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadPlan = useCallback(async () => {
+    try {
+      const data = await fetchPlan();
+      setPlan(data);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load plan");
+    }
+  }, []);
+
+  const loadCandles = useCallback(async () => {
+    try {
+      const data = await fetchCandles(timeframe, 200);
+      setCandles(data.candles);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load candles");
+    }
+  }, [timeframe]);
+
+  useEffect(() => {
+    loadPlan();
+    const timer = setInterval(loadPlan, 15000);
+    return () => clearInterval(timer);
+  }, [loadPlan]);
+
+  useEffect(() => {
+    loadCandles();
+    const timer = setInterval(loadCandles, 30000);
+    return () => clearInterval(timer);
+  }, [loadCandles]);
+
+  const hourlyUpdates = plan?.hourly_updates ?? [];
+
+  const selectedUpdate: HourlyUpdate | null = useMemo(() => {
+    if (!hourlyUpdates.length) return null;
+    if (selectedHourlyId) {
+      return hourlyUpdates.find((u) => u.hourly_id === selectedHourlyId) ?? null;
+    }
+    return hourlyUpdates[hourlyUpdates.length - 1];
+  }, [hourlyUpdates, selectedHourlyId]);
+
+  const defaultClock = {
+    utc_time: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    utc_hour: new Date().getUTCHours(),
+    hours_into_day: new Date().getUTCHours(),
+    session: "off_session",
+    hour_of_session: 1,
+    sessions_completed: [],
+    next_boundary_utc: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+  };
+
+  return (
+    <main className="mx-auto min-h-screen max-w-7xl space-y-4 p-4 md:p-6">
+      <HeaderClock
+        clock={plan?.clock ?? defaultClock}
+        plannerStatus={plan?.planner_status ?? "loading"}
+        plannerAlive={plan?.planner_alive}
+      />
+
+      {error && (
+        <div className="rounded-lg border border-rose-900 bg-rose-950/40 p-3 text-sm text-rose-200">
+          {error} — ensure backend is running on :48632 and planner process is up.
+        </div>
+      )}
+
+      <SessionTimeline
+        clock={plan?.clock ?? defaultClock}
+        sessionPlan={plan?.session_plan ?? null}
+        sessionVerdicts={plan?.session_verdicts ?? []}
+        hourlyUpdates={hourlyUpdates}
+      />
+
+      <div className="flex flex-wrap gap-2">
+        {TIMEFRAMES.map((tf) => (
+          <button
+            key={tf}
+            type="button"
+            onClick={() => setTimeframe(tf)}
+            className={`rounded px-3 py-1 text-sm ${
+              timeframe === tf
+                ? "bg-gold text-ink"
+                : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+            }`}
+          >
+            {tf}
+          </button>
+        ))}
+      </div>
+
+      <PlanChart
+        candles={candles}
+        dayPlan={plan?.day_plan ?? null}
+        sessionPlan={plan?.session_plan ?? null}
+        hourlyUpdates={hourlyUpdates}
+        selectedHourlyId={selectedUpdate?.hourly_id ?? null}
+        onSelectHour={setSelectedHourlyId}
+        timeframe={timeframe}
+      />
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <DayPlanPanel dayPlan={plan?.day_plan ?? null} />
+        <HourValidationCard update={selectedUpdate} />
+      </div>
+
+      {plan?.session_plan && (
+        <div className="card">
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
+            Active session plan
+          </h2>
+          <p className="text-sm text-slate-300">{plan.session_plan.summary}</p>
+          <p className="mt-2 text-xs text-slate-500">
+            {plan.session_plan.session_plan_id} · {plan.session_plan.active_scenario} ·
+            confidence {plan.session_plan.confidence}
+          </p>
+        </div>
+      )}
+    </main>
+  );
+}
