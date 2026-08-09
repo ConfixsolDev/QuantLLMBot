@@ -15,7 +15,7 @@ separately, on **evidence**, not conversation alone.
 ┌─────────────────────────────────────────────────────────────────┐
 │  PART 2 — SKILL (grows slowly, evidence-gated)                  │
 │  store/core_skill.md · store/sop.md  (lean LLM template)        │
-│  daily review · LESSON_LEDGER · TRADING_KNOWLEDGE_BASE          │
+│  daily review → store edits · see CURRICULUM_AND_DATA_PREP.md   │
 └───────────────────────────────┬─────────────────────────────────┘
                                 │ read at runtime
                                 ▼
@@ -70,9 +70,10 @@ place. See `store/README.md`.
 | Location | Holds |
 |----------|--------|
 | `model_training/tick_data/` | All ticks (grows forever) |
-| `model_training/reviews/` | Daily human review |
-| `model_training/LESSON_LEDGER.md` | Approved lesson index |
-| `model_training/TRADING_KNOWLEDGE_BASE.md` | Offline training bundle |
+| `model_training/knowledge/stage_*.jsonl` | Curated SFT curriculum |
+| `model_training/CURRICULUM_AND_DATA_PREP.md` | Sole process doc for train/data |
+
+Do not recreate LESSON_LEDGER / TRADING_KNOWLEDGE_BASE / review markdown trees.
 
 ---
 

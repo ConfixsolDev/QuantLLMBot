@@ -1,0 +1,11 @@
+---
+description: Single curriculum doc; model Python only in python_utilities_for_models
+alwaysApply: true
+---
+
+# Curriculum & model utilities
+
+- For training, data prep, curriculum, tick→train, Colab process: read and follow **only** `model_training/CURRICULUM_AND_DATA_PREP.md`. Edit that file when process changes. **Never** create new markdown guides/plans/READMEs on those topics.
+- Before writing Python for curriculum/data/append/export/zip/audit: list `model_training/python_utilities_for_models/`, reuse or extend, or add a new `.py` **there only**.
+- Keep live system code in `apps/qwen_trade_software/`. Keep Colab train pipeline in repo `scripts/`.
+- Live doctrine: `store/core_skill.md` + `store/sop.md` only.

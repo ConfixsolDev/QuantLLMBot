@@ -68,7 +68,10 @@ class LoRAConfig:
 
     def __post_init__(self):
         if self.target_modules is None:
-            self.target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "up_proj", "down_proj"]
+            self.target_modules = [
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+            ]
 
 
 @dataclass
@@ -86,9 +89,9 @@ class TrainingConfig:
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
 
-    # Epochs and steps
-    num_train_epochs: int = 3
-    warmup_steps: int = 100
+    # Epochs and steps (~45 steps at 3 epochs; warmup must stay below that)
+    num_train_epochs: int = 5
+    warmup_steps: int = 5
 
     # Checkpointing
     save_steps: int = 50
@@ -113,11 +116,11 @@ class TrainingConfig:
 
 @dataclass
 class PipelineConfig:
-    # Preprocessing
-    training_lines_start: int = 0  # Lines 1-115 (0-indexed: 0-114)
-    training_lines_end: int = 115
-    test_lines_start: int = 115  # Lines 116-125 (0-indexed: 115-124)
-    test_lines_end: int = 125
+    # Preprocessing — 379 train / 10 skill holdout (H4 fib consume + M1 EMA 3/14/31)
+    training_lines_start: int = 0
+    training_lines_end: int = 379
+    test_lines_start: int = 379
+    test_lines_end: int = 389
 
     # Evaluation metrics
     eval_metrics: list = None

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 QuantLLMBot Phase 4: Evaluation
-Evaluate fine-tuned model on holdout test set (Bucket C, lines 116-125).
+Evaluate fine-tuned model on holdout test set (config test_lines_*).
+Scores Decision match plus Action/Direction bridge fields (live-aligned).
 Usage: python 03_evaluate.py
 """
 
@@ -25,7 +26,8 @@ from config import (
 )
 from utils import (
     load_jsonl, setup_logging, extract_decision, extract_conviction_score,
-    compute_exact_match, compute_decision_agreement, format_principle_context
+    extract_action_direction, compute_exact_match, compute_decision_agreement,
+    format_principle_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,7 +81,7 @@ def generate_prediction(
     model,
     tokenizer,
     instruction: str,
-    max_length: int = 200,
+    max_length: int = 350,
     temperature: float = 0.7
 ) -> str:
     """Generate model prediction for a given instruction.
@@ -100,11 +102,12 @@ def generate_prediction(
     ).to(model.device)
 
     with torch.no_grad():
-        # Deterministic decoding: decision agreement should not vary run-to-run
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_length,
             do_sample=False,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
         )
 
     # Decode only the newly generated tokens (everything after the prompt)
@@ -126,7 +129,10 @@ Title: {example.get('title', 'N/A')}
 Setup: {example.get('setup', 'N/A')}
 </trade_setup>
 
-Based on the principles above and the trade setup, what should the trading decision be?"""
+Based on the principles above and the trade setup, decide using this contract:
+Action open|wait|skip; Direction buy|sell|none; Confidence 0-100;
+named Key Levels; Entry/Stop Loss/Take Profit when Action=open.
+Session permission and closed-bar acceptance override pattern names."""
 
 
 def evaluate_on_test_set(
@@ -134,7 +140,7 @@ def evaluate_on_test_set(
     tokenizer,
     test_examples: List[Dict[str, Any]],
     test_contracts: List[Dict[str, Any]],
-    principle_context: str
+    principles_data: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
     """
     Evaluate model on test set and compute metrics.
@@ -148,29 +154,40 @@ def evaluate_on_test_set(
     references = []
     conviction_predictions = []
     conviction_references = []
+    raw_responses = []
+    action_pairs = []
 
     for idx, (example, contract) in enumerate(tqdm(zip(test_examples, test_contracts), total=len(test_examples))):
+        # Same topic-scoped context as training (all 35 principles overflow
+        # the 4096-token prompt budget and truncate the question away)
+        principle_context = format_principle_context(principles_data, topic=example.get("topic"))
         instruction = format_test_instruction(example, principle_context)
 
         # Generate prediction
         response = generate_prediction(model, tokenizer, instruction)
 
-        # Extract decision and conviction score
+        if idx == 0:
+            logger.info(f"  Sample raw output ({example.get('example_id')}):\n{response[:500]}")
+
         pred_decision = extract_decision(response) or "UNKNOWN"
         pred_conviction = extract_conviction_score(response) or 0.5
+        pred_action, pred_direction = extract_action_direction(response)
 
         ref_decision = contract.get('trade_decision', 'HOLD')
         ref_conviction = float(contract.get('conviction_score', 0.5))
+        ref_action = contract.get("action")
+        ref_direction = contract.get("direction")
 
         predictions.append(pred_decision)
         references.append(ref_decision)
         conviction_predictions.append(pred_conviction)
         conviction_references.append(ref_conviction)
+        raw_responses.append(response)
+        action_pairs.append((pred_action, pred_direction, ref_action, ref_direction))
 
         if (idx + 1) % 5 == 0:
             logger.debug(f"  Processed {idx + 1}/{len(test_examples)}")
 
-    # Compute metrics
     conviction_preds_np = np.array(conviction_predictions)
     conviction_refs_np = np.array(conviction_references)
 
@@ -182,8 +199,15 @@ def evaluate_on_test_set(
     conviction_mae = float(np.mean(np.abs(conviction_preds_np - conviction_refs_np)))
     conviction_rmse = float(np.sqrt(np.mean((conviction_preds_np - conviction_refs_np) ** 2)))
 
-    # Evidence label accuracy (simplified: check if certain keywords present)
-    evidence_accuracy = 0.0  # Placeholder; requires NLP parsing
+    action_hits = sum(
+        1 for pa, _, ra, _ in action_pairs
+        if pa and ra and pa == ra
+    )
+    direction_hits = sum(
+        1 for _, pd, _, rd in action_pairs
+        if pd and rd and pd == rd
+    )
+    n_ad = max(1, sum(1 for _, _, ra, rd in action_pairs if ra and rd))
 
     results = {
         "num_test_examples": len(test_examples),
@@ -191,21 +215,29 @@ def evaluate_on_test_set(
             "exact_match_decision": round(exact_match_acc, 2),
             "exact_match_count": exact_match_count,
             "decision_agreement": round(decision_agreement, 2),
+            "action_agreement": round(action_hits / n_ad * 100, 2),
+            "direction_agreement": round(direction_hits / n_ad * 100, 2),
             "conviction_score_mae": round(conviction_mae, 4),
             "conviction_score_rmse": round(conviction_rmse, 4),
-            "evidence_label_accuracy": round(evidence_accuracy, 2),
         },
         "predictions": [
             {
                 "example_id": example.get('example_id'),
                 "predicted_decision": pred,
                 "reference_decision": ref,
+                "predicted_action": pa,
+                "reference_action": ra,
+                "predicted_direction": pd,
+                "reference_direction": rd,
                 "predicted_conviction": round(pred_conv, 4),
                 "reference_conviction": round(ref_conv, 4),
+                "raw_response": raw,
                 "match": compute_exact_match(pred, ref),
             }
-            for example, pred, ref, pred_conv, ref_conv in zip(
-                test_examples, predictions, references, conviction_predictions, conviction_references
+            for example, pred, ref, pred_conv, ref_conv, raw, (pa, pd, ra, rd) in zip(
+                test_examples, predictions, references,
+                conviction_predictions, conviction_references, raw_responses,
+                action_pairs,
             )
         ]
     }
@@ -252,14 +284,13 @@ def main():
     # ========================================================================
     logger.info("\n[STEP 3] Loading principles...")
     principles_data = load_jsonl(STAGE_02_PATH.parent / "stage_01_principle_foundation.jsonl")
-    principle_context = format_principle_context(principles_data)
-    logger.info(f"  ✓ Loaded {len(principles_data)} principles")
+    logger.info(f"  ✓ Loaded {len(principles_data)} principles (topic-scoped per example)")
 
     # ========================================================================
     # STEP 4: Evaluate
     # ========================================================================
     logger.info("\n[STEP 4] Running evaluation...")
-    results = evaluate_on_test_set(model, tokenizer, test_examples, test_contracts, principle_context)
+    results = evaluate_on_test_set(model, tokenizer, test_examples, test_contracts, principles_data)
 
     # ========================================================================
     # STEP 5: Save results

@@ -130,24 +130,40 @@ def load_training_data(tokenizer):
             {"role": "assistant", "content": example["response"]},
         ]
         return {
-            "text": tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=False
-            )
+            "instruction": example["instruction"],
+            "response": example["response"],
+            "messages": messages,
         }
 
     dataset = dataset.map(to_text, remove_columns=dataset.column_names)
 
-    def tokenize(batch):
+    def tokenize(example):
+        user_messages = [{"role": "user", "content": example["instruction"]}]
+        full_messages = user_messages + [{"role": "assistant", "content": example["response"]}]
+
+        prompt_text = tokenizer.apply_chat_template(
+            user_messages, tokenize=False, add_generation_prompt=True
+        )
+        full_text = tokenizer.apply_chat_template(
+            full_messages, tokenize=False, add_generation_prompt=False
+        )
+
+        prompt_len = len(tokenizer(prompt_text, add_special_tokens=False)["input_ids"])
         tokens = tokenizer(
-            batch["text"],
+            full_text,
             max_length=training_config.max_seq_length,
             truncation=True,
             padding=False,
+            add_special_tokens=False,
         )
-        tokens["labels"] = [ids.copy() for ids in tokens["input_ids"]]
+        labels = tokens["input_ids"].copy()
+        # Train only on assistant response tokens (matches eval prompt)
+        mask_len = min(prompt_len, len(labels))
+        labels[:mask_len] = [-100] * mask_len
+        tokens["labels"] = labels
         return tokens
 
-    dataset = dataset.map(tokenize, batched=True, remove_columns=["text"])
+    dataset = dataset.map(tokenize, remove_columns=["instruction", "response", "messages"])
     logger.info(f"  ✓ Tokenized {len(dataset)} sequences (max_len={training_config.max_seq_length})")
     return dataset
 
