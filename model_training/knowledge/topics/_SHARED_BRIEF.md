@@ -1,7 +1,7 @@
 # Shared brief for all topic distillation agents
 
 ## Corpus
-Book corpus extracts are optional/offline tooling (see `python_utilities_for_models/extract_book_corpus.py`). Distilled topics in this folder are the working source.
+Full page-marked plain text of the trading books lives in `model_training/knowledge/_pdf_extract/` (**keep in git** — learning source). Distilled topics in this folder are the operating doctrine. Rebuild extracts via `python_utilities_for_models/extract_book_corpus.py` if needed.
 Each file has `[[PAGE n]]` markers so you can cite page numbers. Slugs:
 
 | slug | book |

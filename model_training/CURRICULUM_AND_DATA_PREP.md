@@ -30,6 +30,7 @@ model_training/
   knowledge/
     stage_01..04_*.jsonl               ← SFT curriculum (train data)
     topics/01..09_*.md + maps          ← distilled doctrine source
+    _pdf_extract/                      ← KEEP — full book plain-text corpus for learning
   tick_data/YYYY-MM-DD/*.jsonl         ← live evidence archive (grows daily)
   datasets/raw/                        ← optional MT5 export output
   python_utilities_for_models/         ← ALL model/agent Python for curriculum jobs
@@ -37,6 +38,8 @@ apps/qwen_trade_software/              ← live SYSTEM code (separate)
 scripts/                               ← Colab train/eval pipeline (system)
 store/                                 ← live LLM template (core_skill + sop)
 ```
+
+**Do not delete** `knowledge/_pdf_extract/` — it is the checked-in book corpus used for learning and topic distillation (plain `.txt` extracts). Distilled topics in `topics/` are the operating doctrine; the extracts stay as source material.
 
 ---
 

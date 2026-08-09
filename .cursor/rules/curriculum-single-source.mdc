@@ -9,3 +9,4 @@ alwaysApply: true
 - Before writing Python for curriculum/data/append/export/zip/audit: list `model_training/python_utilities_for_models/`, reuse or extend, or add a new `.py` **there only**.
 - Keep live system code in `apps/qwen_trade_software/`. Keep Colab train pipeline in repo `scripts/`.
 - Live doctrine: `store/core_skill.md` + `store/sop.md` only.
+- **Never delete** `model_training/knowledge/_pdf_extract/` — checked-in book corpus for learning.
