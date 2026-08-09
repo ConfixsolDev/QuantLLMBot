@@ -8,8 +8,9 @@ import { HeaderClock } from "@/components/HeaderClock";
 import { HourValidationCard } from "@/components/HourValidationCard";
 import { PlanChart } from "@/components/PlanChart";
 import { SessionTimeline } from "@/components/SessionTimeline";
+import { TradeIdeaStackPanel } from "@/components/TradeIdeaStackPanel";
 
-const TIMEFRAMES = ["M5", "M15", "H1"] as const;
+const TIMEFRAMES = ["H4", "H1", "M15"] as const;
 
 export default function PlanViewPage() {
   const [plan, setPlan] = useState<PlannerState | null>(null);
@@ -17,7 +18,7 @@ export default function PlanViewPage() {
     import("@/lib/types").Candle[]
   >([]);
   const [timeframe, setTimeframe] =
-    useState<(typeof TIMEFRAMES)[number]>("M15");
+    useState<(typeof TIMEFRAMES)[number]>("H4");
   const [selectedHourlyId, setSelectedHourlyId] = useState<string | null>(null);
   const [tradeIdea, setTradeIdea] = useState<TradeIdea | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +70,11 @@ export default function PlanViewPage() {
   }, [loadCandles]);
 
   const hourlyUpdates = plan?.hourly_updates ?? [];
+  const tradeIdeaStack =
+    plan?.trade_idea_stack ??
+    plan?.session_plan?.trade_idea_stack ??
+    plan?.day_plan?.trade_idea_stack ??
+    null;
 
   const selectedUpdate: HourlyUpdate | null = useMemo(() => {
     if (!hourlyUpdates.length) return null;
@@ -94,6 +100,16 @@ export default function PlanViewPage() {
         clock={plan?.clock ?? defaultClock}
         plannerStatus={plan?.planner_status ?? "loading"}
         plannerAlive={plan?.planner_alive}
+        runtime={
+          plan?.runtime_status ?? {
+            model: plan?.model,
+            model_installed: plan?.model_installed,
+            model_resident: plan?.model_resident,
+            model_device: plan?.model_device,
+            mt5_connected: plan?.mt5_connected,
+            planner_alive: plan?.planner_alive,
+          }
+        }
       />
 
       {error && (
@@ -131,29 +147,47 @@ export default function PlanViewPage() {
         dayPlan={plan?.day_plan ?? null}
         sessionPlan={plan?.session_plan ?? null}
         tradeIdea={tradeIdea}
+        tradeIdeaStack={tradeIdeaStack ?? null}
         hourlyUpdates={hourlyUpdates}
         selectedHourlyId={selectedUpdate?.hourly_id ?? null}
         onSelectHour={setSelectedHourlyId}
         timeframe={timeframe}
+        runtime={
+          plan?.runtime_status ?? {
+            model: plan?.model,
+            model_installed: plan?.model_installed,
+            model_resident: plan?.model_resident,
+            model_device: plan?.model_device,
+            mt5_connected: plan?.mt5_connected,
+            planner_alive: plan?.planner_alive,
+          }
+        }
       />
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <DayPlanPanel dayPlan={plan?.day_plan ?? null} />
+        <TradeIdeaStackPanel stack={tradeIdeaStack} />
         <HourValidationCard update={selectedUpdate} />
       </div>
 
-      {plan?.session_plan && (
-        <div className="card">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
-            Active session plan
-          </h2>
-          <p className="text-sm text-slate-300">{plan.session_plan.summary}</p>
-          <p className="mt-2 text-xs text-slate-500">
-            {plan.session_plan.session_plan_id} · {plan.session_plan.active_scenario} ·
-            confidence {plan.session_plan.confidence}
-          </p>
-        </div>
-      )}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <DayPlanPanel
+          dayPlan={plan?.day_plan ?? null}
+          livePrice={plan?.live_price}
+          liveSanity={plan?.day_plan_live_sanity}
+        />
+        {plan?.session_plan && (
+          <div className="card">
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
+              Active session plan
+            </h2>
+            <p className="text-sm text-slate-300">{plan.session_plan.summary}</p>
+            <p className="mt-2 text-xs text-slate-500">
+              {plan.session_plan.session_plan_id} · {plan.session_plan.active_scenario} ·
+              confidence {plan.session_plan.confidence}
+            </p>
+          </div>
+        )}
+      </div>
     </main>
   );
 }

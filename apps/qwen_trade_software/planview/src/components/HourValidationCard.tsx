@@ -69,6 +69,18 @@ export function HourValidationCard({ update }: { update: HourlyUpdate | null }) 
           </ul>
         </div>
       )}
+      {update.layer_validation && (
+        <div className="flex flex-wrap gap-2 text-xs">
+          {(["h4", "h1", "m15"] as const).map((layer) => (
+            <span
+              key={layer}
+              className={`badge badge-${update.layer_validation?.[layer] || "pending"}`}
+            >
+              {layer.toUpperCase()} {update.layer_validation?.[layer]}
+            </span>
+          ))}
+        </div>
+      )}
       <p className="text-sm text-slate-300">{update.note}</p>
       <p className="text-xs text-slate-500">
         Confidence delta: {update.confidence_delta >= 0 ? "+" : ""}

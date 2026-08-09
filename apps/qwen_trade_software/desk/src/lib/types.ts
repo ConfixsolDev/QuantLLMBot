@@ -100,7 +100,7 @@ export const TIMEFRAME_LABELS: Record<Timeframe, string> = {
 
 export const DEFAULT_SNAPSHOT: Snapshot = {
   connected: false,
-  model: "qwen-trading-v002:latest",
+  model: "qwen-trading-v003:latest",
   model_status: "Waiting for local reviewer",
   symbol: "XAUUSDr",
   price: 0,

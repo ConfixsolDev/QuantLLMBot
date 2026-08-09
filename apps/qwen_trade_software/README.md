@@ -83,8 +83,7 @@ silently enables execution.
 
 ## Qwen model download
 
-The `qwen-trading-v002:latest` Ollama model package for installing the same
-model on another system is available from [Google Drive](https://drive.google.com/file/d/1pShA0JKZdBdXUOVkhXdFzgwADt5rutrm/view?usp=drive_link).
+Live trading uses `qwen-trading-v003:latest` in Ollama (`ollama create qwen-trading-v003 -f Modelfile` from the Colab GGUF export). An older `qwen-trading-v002` package is still on [Google Drive](https://drive.google.com/file/d/1pShA0JKZdBdXUOVkhXdFzgwADt5rutrm/view?usp=drive_link) if needed.
 
 ## Deployed locations
 

@@ -18,7 +18,8 @@ it belongs in that side's own file, not here.
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import MetaTrader5 as mt5
@@ -26,10 +27,16 @@ import MetaTrader5 as mt5
 from market_context_cache import DEFAULT_STORE_ROOT, model_generation_lock
 
 
-MODEL = "qwen-trading-v002:latest"
+MODEL = "qwen-trading-v003:latest"
 OLLAMA_GENERATE = "http://127.0.0.1:11434/api/generate"
 QWEN_MAGIC = 26072401
 QWEN_COMMENT_PREFIX = "QWEN_"
+# XAUUSD typically quiets Friday ~21:00 UTC through Sunday ~22:00 UTC. When the
+# calendar says closed, or MT5 stops producing fresh ticks, unload Qwen from
+# Ollama and skip model calls until the market is quoting again.
+GOLD_SYMBOL = "XAUUSDr"
+MAX_QUOTE_AGE_MS_MARKET_OPEN = 180_000
+MODEL_RESIDENCY_FILE = None  # set after APP_DIR below
 # Both processes read the same skill/contract text off disk (entry reads
 # core_skill.md + the entry contract; management reads the management
 # contract via build_management_prompt), so the root is shared here rather
@@ -40,6 +47,8 @@ APP_DIR = Path(__file__).resolve().parent
 LOG_DIR = APP_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 REVIEW_TICKETS_FILE = APP_DIR / "review-tickets.json"
+MODEL_RESIDENCY_FILE = APP_DIR / "model-residency.json"
+DEFAULT_TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
 # 2026-08-06 split: reviewer.py (entry-decision) and trade_management.py
 # (management) are now separate processes with no shared memory, so the
@@ -194,6 +203,15 @@ def ollama_generate(
     prompt: str, keep_alive=-1, timeout=45, num_predict=160, num_ctx=4096,
     format_schema: dict | None = None,
 ) -> dict:
+    # Empty-prompt warm/unload paths use _ollama_generate_raw / warm_model /
+    # unload_model. Real decision calls must not run while gold is not quoting.
+    if prompt:
+        market = gold_market_open()
+        if not market.get("open"):
+            raise RuntimeError(
+                f"Qwen call blocked; market closed ({market.get('reason')})"
+            )
+
     from io_performance_log import log_qwen_generate
 
     return log_qwen_generate(
@@ -218,6 +236,134 @@ def ollama_generate(
 def warm_model() -> None:
     ollama_generate("", keep_alive=-1)
     logging.info("Qwen model loaded and pinned: %s", MODEL)
+
+
+def unload_model() -> None:
+    """Drop the trading model from Ollama memory (keep_alive=0)."""
+    _ollama_generate_raw("", keep_alive=0, timeout=60, num_predict=1, num_ctx=512)
+    logging.info("Qwen model unloaded from Ollama: %s", MODEL)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def calendar_gold_market_open(now: datetime | None = None) -> bool:
+    """Broker-style XAUUSD weekend/daily close window (UTC)."""
+    moment = now or _utc_now()
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    else:
+        moment = moment.astimezone(timezone.utc)
+    weekday = moment.weekday()  # Mon=0 … Sun=6
+    hour = moment.hour
+    if weekday == 5:
+        return False
+    if weekday == 6:
+        return hour >= 22
+    if weekday == 4 and hour >= 21:
+        return False
+    return True
+
+
+def mt5_quote_is_fresh(
+    symbol: str = GOLD_SYMBOL,
+    *,
+    max_age_ms: int = MAX_QUOTE_AGE_MS_MARKET_OPEN,
+    terminal: str = DEFAULT_TERMINAL,
+) -> tuple[bool, str]:
+    """True when MT5 has a recent tick — ground truth for 'price is changing'."""
+    initialized = mt5.initialize(path=terminal) or mt5.initialize()
+    if not initialized:
+        return False, f"mt5_unavailable:{mt5.last_error()}"
+    try:
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None or int(getattr(tick, "time_msc", 0) or 0) <= 0:
+            return False, "mt5_no_tick"
+        age_ms = int(time.time() * 1000) - int(tick.time_msc)
+        if age_ms > max_age_ms:
+            return False, f"mt5_tick_stale_{age_ms}ms"
+        return True, f"mt5_tick_age_{age_ms}ms"
+    finally:
+        mt5.shutdown()
+
+
+def gold_market_open(
+    now: datetime | None = None,
+    *,
+    symbol: str = GOLD_SYMBOL,
+) -> dict:
+    """Decide whether gold is actively quoting and models may run."""
+    moment = now or _utc_now()
+    if not calendar_gold_market_open(moment):
+        return {
+            "open": False,
+            "reason": "calendar_closed",
+            "checked_at_utc": moment.astimezone(timezone.utc).isoformat(),
+        }
+    fresh, detail = mt5_quote_is_fresh(symbol)
+    if not fresh:
+        return {
+            "open": False,
+            "reason": detail,
+            "checked_at_utc": moment.astimezone(timezone.utc).isoformat(),
+        }
+    return {
+        "open": True,
+        "reason": detail,
+        "checked_at_utc": moment.astimezone(timezone.utc).isoformat(),
+    }
+
+
+def _read_model_residency() -> dict:
+    try:
+        return json.loads(MODEL_RESIDENCY_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return {"state": "unknown"}
+
+
+def _write_model_residency(state: str, reason: str) -> None:
+    MODEL_RESIDENCY_FILE.write_text(
+        json.dumps(
+            {
+                "state": state,
+                "reason": reason,
+                "model": MODEL,
+                "updated_at_utc": _utc_now().isoformat(),
+            },
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+
+def sync_model_residency(market: dict | None = None) -> dict:
+    """Load Qwen only while gold is quoting; unload and skip calls when closed."""
+    market = market if market is not None else gold_market_open()
+    desired = "loaded" if market.get("open") else "unloaded"
+    current = _read_model_residency().get("state")
+    if current == desired:
+        return {
+            "state": desired,
+            "changed": False,
+            "market": market,
+        }
+    try:
+        if desired == "loaded":
+            warm_model()
+        else:
+            unload_model()
+        _write_model_residency(desired, str(market.get("reason") or desired))
+        logging.info(
+            "Model residency -> %s (market_open=%s reason=%s)",
+            desired,
+            market.get("open"),
+            market.get("reason"),
+        )
+        return {"state": desired, "changed": True, "market": market}
+    except Exception:
+        logging.exception("Model residency sync failed desired=%s", desired)
+        return {"state": current or "unknown", "changed": False, "market": market, "error": True}
 
 
 def normalize_confidence(value, default=0) -> int:
@@ -315,8 +461,27 @@ def is_qwen_owned(position) -> bool:
 
 
 def connect_mt5() -> None:
-    if mt5.initialize():
+    if mt5.initialize(path=DEFAULT_TERMINAL) or mt5.initialize():
         return
-    terminal = r"C:\Program Files\MetaTrader 5\terminal64.exe"
-    if not mt5.initialize(path=terminal):
-        raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
+    raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
+
+
+def self_test_market_hours() -> None:
+    saturday = datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)  # Sat
+    sunday_morning = datetime(2026, 8, 9, 10, 0, tzinfo=timezone.utc)
+    sunday_evening = datetime(2026, 8, 9, 22, 30, tzinfo=timezone.utc)
+    friday_evening = datetime(2026, 8, 7, 21, 30, tzinfo=timezone.utc)
+    monday = datetime(2026, 8, 10, 9, 0, tzinfo=timezone.utc)
+    assert calendar_gold_market_open(saturday) is False
+    assert calendar_gold_market_open(sunday_morning) is False
+    assert calendar_gold_market_open(sunday_evening) is True
+    assert calendar_gold_market_open(friday_evening) is False
+    assert calendar_gold_market_open(monday) is True
+    print("review_shared market-hours self-test passed")
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        self_test_market_hours()

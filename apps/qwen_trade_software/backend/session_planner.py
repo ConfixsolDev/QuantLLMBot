@@ -27,8 +27,10 @@ from review_shared import (
     MODEL,
     PLANNER_STATE_FILE,
     STORE_ROOT,
+    gold_market_open,
     ollama_generate,
     read_json_safe,
+    sync_model_residency,
     write_json_atomic,
 )
 from tick_data_archive import (
@@ -54,9 +56,13 @@ DEFAULT_PLANNER_STATE = {
     "session_plan": None,
     "hourly_updates": [],
     "session_verdicts": [],
+    "trade_idea_stack": None,
     "planner_status": "starting",
     "last_error": None,
 }
+
+PLAN_STATUS_VALUES = ("on_track", "drifting", "invalidated")
+LAYER_IDEA_STATUS = ("active", "revised", "invalidated")
 
 _LOG_HANDLER = logging.handlers.TimedRotatingFileHandler(
     filename=LOG_DIR / "session-planner.log", when="midnight", encoding="utf-8"
@@ -145,7 +151,7 @@ def read_chart_candles(
     count: int = 200,
     db_path: Path = DEFAULT_DB,
 ) -> list[dict]:
-    if timeframe not in ("M5", "M15", "H1"):
+    if timeframe not in ("M5", "M15", "H1", "H4"):
         raise ValueError(f"Unsupported timeframe: {timeframe}")
     if not db_path.exists():
         return []
@@ -297,6 +303,177 @@ def planner_facts(symbol: str = SYMBOL) -> dict:
     }
 
 
+def live_mid_from_facts(facts: dict) -> float | None:
+    """Authoritative live mid from cache quote; never trust a model-emitted price."""
+    quote = (facts.get("minute") or {}).get("quote") or {}
+    try:
+        bid = quote.get("bid")
+        ask = quote.get("ask")
+        if bid is not None and ask is not None:
+            return round((float(bid) + float(ask)) / 2.0, 3)
+        if bid is not None:
+            return round(float(bid), 3)
+        if ask is not None:
+            return round(float(ask), 3)
+    except (TypeError, ValueError):
+        return None
+    return None
+
+
+def price_deviation_limit(live_price: float) -> float:
+    """Max allowed distance from live for planner geometry (XAUUSD units)."""
+    return round(max(80.0, float(live_price) * 0.02), 3)
+
+
+def _collect_plan_prices(plan: dict) -> list[tuple[str, float]]:
+    prices: list[tuple[str, float]] = []
+    for name in ("bullish_scenario", "bearish_scenario"):
+        scenario = plan.get(name) if isinstance(plan.get(name), dict) else {}
+        invalidation = scenario.get("invalidation")
+        if invalidation is not None:
+            try:
+                prices.append((f"{name}.invalidation", float(invalidation)))
+            except (TypeError, ValueError):
+                prices.append((f"{name}.invalidation", float("nan")))
+        for index, target in enumerate(scenario.get("targets") or []):
+            try:
+                prices.append((f"{name}.targets[{index}]", float(target)))
+            except (TypeError, ValueError):
+                prices.append((f"{name}.targets[{index}]", float("nan")))
+    for index, level in enumerate(plan.get("key_levels") or []):
+        if not isinstance(level, dict):
+            continue
+        try:
+            prices.append((f"key_levels[{index}].price", float(level.get("price"))))
+        except (TypeError, ValueError):
+            prices.append((f"key_levels[{index}].price", float("nan")))
+    for index, zone in enumerate(plan.get("entry_zones") or []):
+        if not isinstance(zone, dict):
+            continue
+        bounds = zone.get("zone") or []
+        if len(bounds) == 2:
+            try:
+                lo, hi = float(bounds[0]), float(bounds[1])
+                prices.append((f"entry_zones[{index}].lo", lo))
+                prices.append((f"entry_zones[{index}].hi", hi))
+            except (TypeError, ValueError):
+                prices.append((f"entry_zones[{index}].zone", float("nan")))
+        for field in ("invalidation", "target"):
+            if zone.get(field) is None:
+                continue
+            try:
+                prices.append((f"entry_zones[{index}].{field}", float(zone[field])))
+            except (TypeError, ValueError):
+                prices.append((f"entry_zones[{index}].{field}", float("nan")))
+    return prices
+
+
+def apply_live_price_sanity(
+    plan: dict,
+    live_price: float | None,
+    *,
+    source: str = "cache_quote",
+    overwrite_reference: bool = True,
+    check_stored_reference: bool = False,
+) -> dict:
+    """Bind reference_price to live mid and veto invented geometry.
+
+    Model-emitted reference_price has been observed wildly wrong (e.g. ~3541
+    vs live ~4342). Code owns the reference; scenario/key/zone prices must
+    stay within a live-relative band or the plan is marked not tradeable.
+    """
+    prior_reference = plan.get("reference_price")
+    try:
+        prior_reference_f = float(prior_reference) if prior_reference is not None else None
+    except (TypeError, ValueError):
+        prior_reference_f = None
+
+    failures: list[str] = []
+    if live_price is None or live_price <= 0:
+        failures.append("live_price_unavailable")
+        if overwrite_reference:
+            plan["reference_price"] = prior_reference_f or 0.0
+        sanity = {
+            "ok": False,
+            "live_price": None,
+            "reference_price": plan.get("reference_price"),
+            "prior_reference_price": prior_reference_f,
+            "max_deviation_allowed": None,
+            "source": source,
+            "failures": failures,
+        }
+        plan["price_sanity"] = sanity
+        plan["tradeable"] = False
+        return sanity
+
+    live_price = float(live_price)
+    limit = price_deviation_limit(live_price)
+    if overwrite_reference:
+        plan["reference_price"] = live_price
+        # Defense in depth: if a model still emitted a fake anchor, record it.
+        if prior_reference_f is not None and abs(prior_reference_f - live_price) > limit:
+            failures.append(
+                f"prior_reference_price:{prior_reference_f:.3f} vs live:{live_price:.3f}"
+            )
+
+    if (
+        check_stored_reference
+        and prior_reference_f is not None
+        and abs(prior_reference_f - live_price) > limit
+    ):
+        failures.append(
+            f"reference_price:{prior_reference_f:.3f} vs live:{live_price:.3f}"
+        )
+
+    for label, price in _collect_plan_prices(plan):
+        if price != price:  # NaN
+            failures.append(f"{label}:not_a_number")
+            continue
+        if abs(price - live_price) > limit:
+            failures.append(f"{label}:{price:.3f} vs live:{live_price:.3f}")
+
+    ok = not failures
+    sanity = {
+        "ok": ok,
+        "live_price": live_price,
+        "reference_price": plan.get("reference_price"),
+        "prior_reference_price": prior_reference_f,
+        "max_deviation_allowed": limit,
+        "source": source,
+        "failures": failures,
+    }
+    plan["price_sanity"] = sanity
+    if not ok and overwrite_reference:
+        plan["tradeable"] = False
+        validator = plan.get("validator")
+        if isinstance(validator, dict):
+            notes = str(validator.get("notes") or "").strip()
+            extra = "live price sanity failed: " + "; ".join(failures[:3])
+            validator["notes"] = (notes + " | " + extra).strip(" |")[:200]
+            validator["tradeable"] = False
+    return sanity
+
+
+def live_sanity_snapshot(plan: dict | None, live_price: float | None) -> dict | None:
+    """Re-check stored plan geometry against current live mid for Plan View."""
+    if not plan or live_price is None or live_price <= 0:
+        return None
+    probe = {
+        "reference_price": plan.get("reference_price"),
+        "bullish_scenario": plan.get("bullish_scenario"),
+        "bearish_scenario": plan.get("bearish_scenario"),
+        "key_levels": plan.get("key_levels"),
+        "entry_zones": plan.get("entry_zones"),
+    }
+    return apply_live_price_sanity(
+        probe,
+        live_price,
+        source="live_recheck",
+        overwrite_reference=False,
+        check_stored_reference=False,
+    )
+
+
 def _prompt(role: str, facts: dict) -> str:
     core_skill = (STORE_ROOT / "core_skill.md").read_text(encoding="utf-8")
     contract = load_prompt_section(role, STORE_ROOT)
@@ -354,11 +531,330 @@ def validator_schema() -> dict:
     }
 
 
-def day_plan_schema() -> dict:
+def _h4_idea_schema(include_status: bool = False) -> dict:
+    props = {
+        "side": {"type": "string", "enum": ["buy", "sell", "neutral"]},
+        "thesis": {"type": "string", "maxLength": 160},
+        "invalidation": {"type": "number"},
+        "targets": {
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 1,
+            "maxItems": 3,
+        },
+        "key_level_refs": {
+            "type": "array",
+            "items": {"type": "string", "maxLength": 60},
+            "maxItems": 6,
+        },
+    }
+    required = ["side", "thesis", "invalidation", "targets", "key_level_refs"]
+    if include_status:
+        props["status"] = {"type": "string", "enum": list(LAYER_IDEA_STATUS)}
+        required.append("status")
+    return {
+        "type": "object",
+        "properties": props,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _h1_idea_schema() -> dict:
     return {
         "type": "object",
         "properties": {
-            "reference_price": {"type": "number"},
+            "summary": {"type": "string", "maxLength": 160},
+            "levels": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "price": {"type": "number"},
+                        "label": {"type": "string", "maxLength": 60},
+                    },
+                    "required": ["price", "label"],
+                    "additionalProperties": False,
+                },
+                "maxItems": 6,
+            },
+            "invalidation": {"type": "number"},
+        },
+        "required": ["summary", "levels", "invalidation"],
+        "additionalProperties": False,
+    }
+
+
+def _m15_idea_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "side": {"type": "string", "enum": ["buy", "sell"]},
+            "pullback_zone": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 2,
+                "maxItems": 2,
+            },
+            "invalidation": {"type": "number"},
+            "target": {"type": "number"},
+        },
+        "required": ["side", "pullback_zone", "invalidation", "target"],
+        "additionalProperties": False,
+    }
+
+
+def _layer_validation_schema() -> dict:
+    status = {"type": "string", "enum": list(PLAN_STATUS_VALUES)}
+    return {
+        "type": "object",
+        "properties": {"h4": status, "h1": status, "m15": status},
+        "required": ["h4", "h1", "m15"],
+        "additionalProperties": False,
+    }
+
+
+def _side_from_scenario(active: str) -> str:
+    if active == "bullish":
+        return "buy"
+    if active == "bearish":
+        return "sell"
+    return "neutral"
+
+
+def _fallback_h4_from_day_plan(plan: dict) -> dict:
+    bull = plan.get("bullish_scenario") or {}
+    bear = plan.get("bearish_scenario") or {}
+    # Prefer the scenario whose invalidation is farther from mid of targets (proxy).
+    bull_targets = list(bull.get("targets") or [])
+    bear_targets = list(bear.get("targets") or [])
+    use_bull = len(bull_targets) >= len(bear_targets)
+    scenario = bull if use_bull else bear
+    side = "buy" if use_bull else "sell"
+    refs = [str(row.get("label") or "") for row in (plan.get("key_levels") or [])[:6]]
+    refs = [r for r in refs if r]
+    return {
+        "side": side,
+        "thesis": str(scenario.get("trigger") or "H4 day thesis")[:160],
+        "invalidation": float(scenario.get("invalidation") or plan.get("reference_price") or 0.0),
+        "targets": [float(t) for t in (scenario.get("targets") or [plan.get("reference_price") or 0.0])[:3]],
+        "key_level_refs": refs or ["day_key_level"],
+        "status": "active",
+        "revision": 0,
+    }
+
+
+def _fallback_h1_from_session(plan: dict, h4: dict) -> dict:
+    levels = []
+    for zone in plan.get("entry_zones") or []:
+        z = zone.get("zone") or []
+        if len(z) == 2:
+            levels.append({"price": float(z[0]), "label": f"{zone.get('side', 'zone')}_lo"})
+            levels.append({"price": float(z[1]), "label": f"{zone.get('side', 'zone')}_hi"})
+    if not levels:
+        for ref, price in zip(h4.get("key_level_refs") or [], h4.get("targets") or []):
+            levels.append({"price": float(price), "label": str(ref)})
+    return {
+        "summary": str(plan.get("summary") or "H1 refine of day idea")[:160],
+        "levels": levels[:6],
+        "invalidation": float(
+            (plan.get("entry_zones") or [{}])[0].get("invalidation")
+            if plan.get("entry_zones")
+            else h4.get("invalidation")
+            or 0.0
+        ),
+        "status": "active",
+    }
+
+
+def _fallback_m15_from_session(plan: dict, h4: dict) -> dict | None:
+    zones = plan.get("entry_zones") or []
+    if not zones:
+        if h4.get("side") in ("buy", "sell") and h4.get("targets"):
+            inv = float(h4.get("invalidation") or 0.0)
+            tgt = float(h4["targets"][0])
+            mid = (inv + tgt) / 2.0
+            width = abs(tgt - inv) * 0.08
+            return {
+                "side": h4["side"],
+                "pullback_zone": [round(mid - width, 3), round(mid + width, 3)],
+                "invalidation": inv,
+                "target": tgt,
+                "status": "active",
+            }
+        return None
+    zone = zones[0]
+    z = list(zone.get("zone") or [0.0, 0.0])
+    return {
+        "side": zone.get("side") or _side_from_scenario(plan.get("active_scenario", "neutral")),
+        "pullback_zone": [float(z[0]), float(z[1])],
+        "invalidation": float(zone.get("invalidation") or h4.get("invalidation") or 0.0),
+        "target": float(zone.get("target") or (h4.get("targets") or [0.0])[0]),
+        "status": "active",
+    }
+
+
+def build_initial_trade_idea_stack(day_plan: dict) -> dict:
+    raw = day_plan.get("trade_idea_h4")
+    if isinstance(raw, dict) and raw.get("thesis"):
+        h4 = {
+            "side": raw.get("side") if raw.get("side") in ("buy", "sell", "neutral") else "neutral",
+            "thesis": str(raw.get("thesis") or "")[:160],
+            "invalidation": float(raw.get("invalidation") or 0.0),
+            "targets": [float(t) for t in (raw.get("targets") or [])[:3]],
+            "key_level_refs": [str(x)[:60] for x in (raw.get("key_level_refs") or [])[:6]],
+            "status": "active",
+            "revision": 0,
+        }
+        if not h4["targets"]:
+            h4 = _fallback_h4_from_day_plan(day_plan)
+    else:
+        h4 = _fallback_h4_from_day_plan(day_plan)
+    return {
+        "day_idea_id": day_plan.get("day_plan_id"),
+        "h4": h4,
+        "h1": None,
+        "m15": None,
+        "revisions": [],
+        "layer_validation": {"h4": "pending", "h1": "pending", "m15": "pending"},
+        "updated_at_utc": iso_utc(utc_now()),
+    }
+
+
+def revise_trade_idea_stack(
+    stack: dict | None,
+    session_plan: dict,
+    prior_verdicts: list[dict],
+) -> dict:
+    base = dict(stack or {})
+    day_idea_id = session_plan.get("day_plan_id") or base.get("day_idea_id")
+    prior_h4 = dict((base.get("h4") or {}))
+    raw_h4 = session_plan.get("trade_idea_h4")
+    if isinstance(raw_h4, dict) and raw_h4.get("thesis"):
+        h4 = {
+            "side": raw_h4.get("side")
+            if raw_h4.get("side") in ("buy", "sell", "neutral")
+            else prior_h4.get("side", "neutral"),
+            "thesis": str(raw_h4.get("thesis") or prior_h4.get("thesis") or "")[:160],
+            "invalidation": float(
+                raw_h4.get("invalidation")
+                if raw_h4.get("invalidation") is not None
+                else prior_h4.get("invalidation")
+                or 0.0
+            ),
+            "targets": [float(t) for t in (raw_h4.get("targets") or prior_h4.get("targets") or [])[:3]],
+            "key_level_refs": [
+                str(x)[:60]
+                for x in (raw_h4.get("key_level_refs") or prior_h4.get("key_level_refs") or [])[:6]
+            ],
+            "status": raw_h4.get("status")
+            if raw_h4.get("status") in LAYER_IDEA_STATUS
+            else "revised",
+            "revision": int(prior_h4.get("revision") or 0) + 1,
+        }
+    else:
+        h4 = dict(prior_h4) if prior_h4 else {
+            "side": _side_from_scenario(session_plan.get("active_scenario", "neutral")),
+            "thesis": str(session_plan.get("summary") or "Session-revised day idea")[:160],
+            "invalidation": 0.0,
+            "targets": [],
+            "key_level_refs": [],
+            "status": "revised",
+            "revision": 1,
+        }
+        h4["status"] = "revised"
+        h4["revision"] = int(h4.get("revision") or 0) + (0 if prior_h4 else 0)
+        if prior_h4:
+            h4["revision"] = int(prior_h4.get("revision") or 0) + 1
+
+    raw_h1 = session_plan.get("trade_idea_h1")
+    if isinstance(raw_h1, dict) and raw_h1.get("summary"):
+        h1 = {
+            "summary": str(raw_h1.get("summary") or "")[:160],
+            "levels": [
+                {"price": float(row.get("price")), "label": str(row.get("label") or "")[:60]}
+                for row in (raw_h1.get("levels") or [])[:6]
+                if isinstance(row, dict) and row.get("price") is not None
+            ],
+            "invalidation": float(raw_h1.get("invalidation") or h4.get("invalidation") or 0.0),
+            "status": "active",
+        }
+    else:
+        h1 = _fallback_h1_from_session(session_plan, h4)
+
+    raw_m15 = session_plan.get("trade_idea_m15")
+    if isinstance(raw_m15, dict) and raw_m15.get("pullback_zone"):
+        zone = list(raw_m15.get("pullback_zone") or [0.0, 0.0])
+        m15 = {
+            "side": raw_m15.get("side")
+            if raw_m15.get("side") in ("buy", "sell")
+            else (h4.get("side") if h4.get("side") in ("buy", "sell") else "buy"),
+            "pullback_zone": [float(zone[0]), float(zone[1])],
+            "invalidation": float(raw_m15.get("invalidation") or h4.get("invalidation") or 0.0),
+            "target": float(raw_m15.get("target") or (h4.get("targets") or [0.0])[0]),
+            "status": "active",
+        }
+    else:
+        m15 = _fallback_m15_from_session(session_plan, h4)
+
+    prior = prior_verdicts[-1] if prior_verdicts else {}
+    revisions = list(base.get("revisions") or [])
+    revisions.append(
+        {
+            "session": session_plan.get("session"),
+            "from_revision": int(prior_h4.get("revision") or 0),
+            "to_revision": int(h4.get("revision") or 0),
+            "prior_verdict_summary": str(prior.get("planned_vs_actual") or prior.get("lesson_candidate") or "")[:200],
+            "performance": str(prior.get("scenario_outcome") or "none")[:40],
+            "change_summary": str(
+                session_plan.get("revision_note") or session_plan.get("summary") or "session revise"
+            )[:160],
+            "at_utc": iso_utc(utc_now()),
+        }
+    )
+    return {
+        "day_idea_id": day_idea_id,
+        "h4": h4,
+        "h1": h1,
+        "m15": m15,
+        "revisions": revisions[-12:],
+        "layer_validation": base.get("layer_validation")
+        or {"h4": "pending", "h1": "pending", "m15": "pending"},
+        "updated_at_utc": iso_utc(utc_now()),
+    }
+
+
+def apply_layer_validation(stack: dict | None, layer_validation: dict | None, plan_status: str) -> dict:
+    base = dict(stack or {})
+    lv = dict(base.get("layer_validation") or {})
+    incoming = layer_validation if isinstance(layer_validation, dict) else {}
+    for key in ("h4", "h1", "m15"):
+        value = incoming.get(key)
+        if value in PLAN_STATUS_VALUES:
+            lv[key] = value
+        elif key not in lv:
+            lv[key] = plan_status if plan_status in PLAN_STATUS_VALUES else "pending"
+    # Mirror overall invalidation onto H4 idea status when needed.
+    h4 = dict(base.get("h4") or {})
+    if lv.get("h4") == "invalidated":
+        h4["status"] = "invalidated"
+    for layer_key, idea_key in (("h1", "h1"), ("m15", "m15")):
+        idea = base.get(idea_key)
+        if isinstance(idea, dict) and lv.get(layer_key) == "invalidated":
+            idea = dict(idea)
+            idea["status"] = "invalidated"
+            base[idea_key] = idea
+    base["h4"] = h4
+    base["layer_validation"] = lv
+    base["updated_at_utc"] = iso_utc(utc_now())
+    return base
+
+
+def day_plan_schema() -> dict:
+    # reference_price is code-owned from the live cache quote after generation.
+    return {
+        "type": "object",
+        "properties": {
             "bullish_scenario": {
                 "type": "object",
                 "properties": {
@@ -401,13 +897,14 @@ def day_plan_schema() -> dict:
                 },
                 "required": list(PLANNING_SESSIONS),
             },
+            "trade_idea_h4": _h4_idea_schema(include_status=False),
         },
         "required": [
-            "reference_price",
             "bullish_scenario",
             "bearish_scenario",
             "key_levels",
             "expected_session_behaviour",
+            "trade_idea_h4",
         ],
         "additionalProperties": False,
     }
@@ -434,8 +931,21 @@ def session_plan_schema() -> dict:
                 },
                 "maxItems": 4,
             },
+            "trade_idea_h4": _h4_idea_schema(include_status=True),
+            "trade_idea_h1": _h1_idea_schema(),
+            "trade_idea_m15": _m15_idea_schema(),
+            "revision_note": {"type": "string", "maxLength": 160},
         },
-        "required": ["active_scenario", "confidence", "summary", "entry_zones"],
+        "required": [
+            "active_scenario",
+            "confidence",
+            "summary",
+            "entry_zones",
+            "trade_idea_h4",
+            "trade_idea_h1",
+            "trade_idea_m15",
+            "revision_note",
+        ],
         "additionalProperties": False,
     }
 
@@ -444,11 +954,12 @@ def hourly_update_schema() -> dict:
     return {
         "type": "object",
         "properties": {
-            "plan_status": {"type": "string", "enum": ["on_track", "drifting", "invalidated"]},
+            "plan_status": {"type": "string", "enum": list(PLAN_STATUS_VALUES)},
             "confidence_delta": {"type": "integer", "minimum": -30, "maximum": 30},
             "note": {"type": "string", "maxLength": 160},
+            "layer_validation": _layer_validation_schema(),
         },
-        "required": ["plan_status", "confidence_delta", "note"],
+        "required": ["plan_status", "confidence_delta", "note", "layer_validation"],
         "additionalProperties": False,
     }
 
@@ -478,16 +989,19 @@ def run_validator(plan_artifact: dict, facts: dict) -> dict:
     return plan_artifact
 
 
-def generate_day_plan(clock: dict, late: bool = False) -> dict:
+def generate_day_plan(clock: dict, late: bool = False) -> tuple[dict, dict]:
     trading_date = date.fromisoformat(clock["trading_date_utc"])
     facts = planner_facts()
     facts["clock"] = clock
     facts["previous_verdicts"] = load_previous_day_verdicts(trading_date)
-    facts["reference_price"] = (
-        facts.get("minute", {}).get("quote", {}).get("bid")
-        or facts.get("minute", {}).get("quote", {}).get("ask")
-        or 0.0
-    )
+    live_price = live_mid_from_facts(facts)
+    facts["reference_price"] = live_price or 0.0
+    facts["reference_price_source"] = "cache_quote_mid"
+    facts["trade_idea_rules"] = {
+        "one_day_idea": True,
+        "h4_owns_day_thesis": True,
+        "no_m1_ideas": True,
+    }
     plan = _call_model("qwen_day_plan", facts, day_plan_schema())
     plan["artifact"] = "day_plan"
     plan["day_plan_id"] = day_plan_id(trading_date)
@@ -495,16 +1009,27 @@ def generate_day_plan(clock: dict, late: bool = False) -> dict:
     plan["late"] = late
     plan["generated_at_utc"] = iso_utc(utc_now())
     plan = run_validator(plan, facts)
+    sanity = apply_live_price_sanity(plan, live_price, source="cache_quote_mid")
+    stack = build_initial_trade_idea_stack(plan)
+    plan["trade_idea_stack"] = stack
+    logging.info(
+        "Day plan price sanity ok=%s live=%s failures=%s h4_side=%s",
+        sanity.get("ok"),
+        sanity.get("live_price"),
+        sanity.get("failures"),
+        (stack.get("h4") or {}).get("side"),
+    )
     append_tick_record("day-plans", plan)
-    return plan
+    return plan, stack
 
 
 def generate_session_plan(
     clock: dict,
     day_plan: dict,
     prior_verdicts: list[dict],
+    trade_idea_stack: dict | None = None,
     late: bool = False,
-) -> dict:
+) -> tuple[dict, dict]:
     session = clock["session"]
     if session not in PLANNING_SESSIONS:
         session = "asia"
@@ -513,7 +1038,17 @@ def generate_session_plan(
     facts["clock"] = clock
     facts["day_plan"] = day_plan
     facts["prior_session_verdicts"] = prior_verdicts
-    facts["reference_price"] = day_plan.get("reference_price", 0.0)
+    facts["trade_idea_stack"] = trade_idea_stack or day_plan.get("trade_idea_stack")
+    live_price = live_mid_from_facts(facts)
+    facts["reference_price"] = live_price or day_plan.get("reference_price") or 0.0
+    facts["reference_price_source"] = "cache_quote_mid"
+    facts["trade_idea_rules"] = {
+        "revise_same_day_idea": True,
+        "h1_refine_only": True,
+        "m15_pullback_only": True,
+        "no_m1_ideas": True,
+        "use_prior_session_performance": True,
+    }
     plan = _call_model("qwen_session_plan", facts, session_plan_schema())
     plan["artifact"] = "session_plan"
     plan["session_plan_id"] = session_plan_id(trading_date, session)
@@ -523,8 +1058,22 @@ def generate_session_plan(
     plan["late"] = late
     plan["generated_at_utc"] = iso_utc(utc_now())
     plan = run_validator(plan, facts)
+    sanity = apply_live_price_sanity(plan, live_price, source="cache_quote_mid")
+    stack = revise_trade_idea_stack(
+        trade_idea_stack or day_plan.get("trade_idea_stack"),
+        plan,
+        prior_verdicts,
+    )
+    plan["trade_idea_stack"] = stack
+    logging.info(
+        "Session plan price sanity ok=%s live=%s failures=%s revision=%s",
+        sanity.get("ok"),
+        sanity.get("live_price"),
+        sanity.get("failures"),
+        (stack.get("h4") or {}).get("revision"),
+    )
     append_tick_record("session-plans", plan)
-    return plan
+    return plan, stack
 
 
 def generate_hourly_update(
@@ -532,7 +1081,8 @@ def generate_hourly_update(
     day_plan: dict,
     session_plan: dict,
     hour_start: datetime,
-) -> dict:
+    trade_idea_stack: dict | None = None,
+) -> tuple[dict, dict]:
     trading_date = date.fromisoformat(clock["trading_date_utc"])
     hour_ohlc = hour_ohlc_from_h1(SYMBOL, hour_start)
     key_levels = day_plan.get("key_levels", [])
@@ -544,6 +1094,7 @@ def generate_hourly_update(
         else ""
     )
     observed = observed_from_ohlc(hour_ohlc)
+    stack_in = trade_idea_stack or session_plan.get("trade_idea_stack") or day_plan.get("trade_idea_stack")
     facts = {
         "symbol": SYMBOL,
         "clock": clock,
@@ -559,8 +1110,19 @@ def generate_hourly_update(
         },
         "session_plan_summary": session_plan.get("summary", ""),
         "active_scenario": session_plan.get("active_scenario", "neutral"),
+        "trade_idea_stack": stack_in,
+        "trade_idea_rules": {
+            "validate_layers": ["h4", "h1", "m15"],
+            "no_m1_ideas": True,
+        },
     }
-    delta = _call_model("qwen_hourly_update", facts, hourly_update_schema(), 256)
+    delta = _call_model("qwen_hourly_update", facts, hourly_update_schema(), 320)
+    layer_validation = delta.get("layer_validation") or {
+        "h4": delta["plan_status"],
+        "h1": delta["plan_status"],
+        "m15": delta["plan_status"],
+    }
+    stack = apply_layer_validation(stack_in, layer_validation, delta["plan_status"])
     update = {
         "artifact": "hourly_update",
         "hourly_id": hourly_id(trading_date, hour_start.hour),
@@ -572,11 +1134,12 @@ def generate_hourly_update(
         "plan_status": delta["plan_status"],
         "confidence_delta": delta["confidence_delta"],
         "note": delta["note"],
+        "layer_validation": stack.get("layer_validation"),
         "actual_vs_expected": facts["actual_vs_expected_seed"],
         "generated_at_utc": iso_utc(utc_now()),
     }
     append_tick_record("hourly-updates", update)
-    return update
+    return update, stack
 
 
 def generate_session_verdict(
@@ -699,11 +1262,41 @@ class SessionPlanner:
         self.state["clock"] = clock
         self.state["symbol"] = SYMBOL
 
+        market = gold_market_open(now)
+        sync_model_residency(market)
+
+        # Keep / rebuild trade_idea_stack even when the market is closed so Plan View
+        # can still show the last H4→H1→M15 idea hierarchy.
+        day_plan = self.state.get("day_plan")
+        if day_plan and not self.state.get("trade_idea_stack"):
+            stack = build_initial_trade_idea_stack(day_plan)
+            session_plan = self.state.get("session_plan")
+            if session_plan:
+                stack = revise_trade_idea_stack(
+                    stack,
+                    session_plan,
+                    self.state.get("session_verdicts") or [],
+                )
+                session_plan["trade_idea_stack"] = stack
+            day_plan["trade_idea_stack"] = stack
+            self.state["trade_idea_stack"] = stack
+            self.state["day_plan"] = day_plan
+
+        if not market.get("open"):
+            self._set_status("market_closed")
+            logging.info(
+                "Market closed (%s); Qwen unloaded/idle — skip planner cycle",
+                market.get("reason"),
+            )
+            return
+
         if should_generate_day_plan(now, self.state):
             self._set_status("generating")
             try:
-                self.state["day_plan"] = generate_day_plan(clock, late=now.hour != 23)
-                logging.info("Day plan generated: %s", self.state["day_plan"]["day_plan_id"])
+                day_plan, stack = generate_day_plan(clock, late=now.hour != 23)
+                self.state["day_plan"] = day_plan
+                self.state["trade_idea_stack"] = stack
+                logging.info("Day plan generated: %s", day_plan["day_plan_id"])
             except Exception as error:
                 logging.exception("Day plan generation failed")
                 self._set_status("error", str(error))
@@ -714,19 +1307,27 @@ class SessionPlanner:
             self._set_status("waiting_day_plan")
             return
 
+        # Backfill stack for plans created before trade_idea_stack existed.
+        if not self.state.get("trade_idea_stack"):
+            self.state["trade_idea_stack"] = build_initial_trade_idea_stack(day_plan)
+            day_plan["trade_idea_stack"] = self.state["trade_idea_stack"]
+
         need_session, session_name = should_generate_session_plan(now, self.state)
         if need_session and session_name:
             self._set_status("generating")
             try:
-                self.state["session_plan"] = generate_session_plan(
+                session_plan, stack = generate_session_plan(
                     clock,
                     day_plan,
                     self.state.get("session_verdicts", []),
+                    trade_idea_stack=self.state.get("trade_idea_stack"),
                     late=now.hour != SESSION_OPEN_HOUR.get(session_name, 0),
                 )
+                self.state["session_plan"] = session_plan
+                self.state["trade_idea_stack"] = stack
                 logging.info(
                     "Session plan generated: %s",
-                    self.state["session_plan"]["session_plan_id"],
+                    session_plan["session_plan_id"],
                 )
             except Exception as error:
                 logging.exception("Session plan generation failed")
@@ -758,8 +1359,15 @@ class SessionPlanner:
                 try:
                     hour_start = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
                     hour_clock = build_clock(hour_start + timedelta(minutes=30))
-                    update = generate_hourly_update(hour_clock, day_plan, session_plan, hour_start)
+                    update, stack = generate_hourly_update(
+                        hour_clock,
+                        day_plan,
+                        session_plan,
+                        hour_start,
+                        trade_idea_stack=self.state.get("trade_idea_stack"),
+                    )
                     self.state.setdefault("hourly_updates", []).append(update)
+                    self.state["trade_idea_stack"] = stack
                     self.last_hourly_key = hour_key
                     logging.info("Hourly update generated: %s", update["hourly_id"])
                 except Exception as error:
@@ -791,5 +1399,63 @@ def main() -> None:
         time.sleep(max(1, INTERVAL_SECONDS - elapsed))
 
 
+def self_test_price_sanity() -> None:
+    live = 4342.5
+    invented = {
+        "reference_price": 3541.0,
+        "bullish_scenario": {
+            "trigger": "accept above",
+            "targets": [3550.0, 3560.0],
+            "invalidation": 3530.0,
+            "evidence": ["H4_1"],
+        },
+        "bearish_scenario": {
+            "trigger": "reject",
+            "targets": [3520.0],
+            "invalidation": 3555.0,
+            "evidence": ["H1_1"],
+        },
+        "key_levels": [{"price": 3540.0, "label": "asia high", "role": "resistance"}],
+        "validator": {"verdict": "agree", "notes": "ok", "tradeable": True},
+        "tradeable": True,
+    }
+    sanity = apply_live_price_sanity(invented, live, source="self-test")
+    assert invented["reference_price"] == live
+    assert sanity["ok"] is False
+    assert invented["tradeable"] is False
+    assert sanity["prior_reference_price"] == 3541.0
+    assert any("targets" in item or "invalidation" in item or "key_levels" in item
+               for item in sanity["failures"])
+    coherent = {
+        "bullish_scenario": {
+            "trigger": "accept",
+            "targets": [4355.0],
+            "invalidation": 4320.0,
+            "evidence": ["H4_1"],
+        },
+        "bearish_scenario": {
+            "trigger": "reject",
+            "targets": [4310.0],
+            "invalidation": 4360.0,
+            "evidence": ["H1_1"],
+        },
+        "key_levels": [{"price": 4340.0, "label": "pivot", "role": "two_sided"}],
+        "validator": {"verdict": "agree", "notes": "ok", "tradeable": True},
+        "tradeable": True,
+    }
+    ok = apply_live_price_sanity(coherent, live, source="self-test")
+    assert ok["ok"] is True
+    assert coherent["reference_price"] == live
+    assert coherent["tradeable"] is True
+    recheck = live_sanity_snapshot(coherent, live)
+    assert recheck and recheck["ok"] is True
+    print("session_planner price-sanity self-test passed")
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        self_test_price_sanity()
+    else:
+        main()

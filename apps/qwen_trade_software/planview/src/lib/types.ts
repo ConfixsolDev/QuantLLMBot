@@ -1,4 +1,6 @@
 export type PlanStatus = "on_track" | "drifting" | "invalidated";
+export type LayerValidationStatus = PlanStatus | "pending";
+export type IdeaLayerStatus = "active" | "revised" | "invalidated";
 
 export interface Clock {
   utc_time: string;
@@ -31,6 +33,65 @@ export interface Validator {
   tradeable: boolean;
 }
 
+export interface PriceSanity {
+  ok: boolean;
+  live_price: number | null;
+  reference_price?: number | null;
+  prior_reference_price?: number | null;
+  max_deviation_allowed?: number | null;
+  source?: string;
+  failures: string[];
+}
+
+export interface TradeIdeaH4 {
+  side: "buy" | "sell" | "neutral";
+  thesis: string;
+  invalidation: number;
+  targets: number[];
+  key_level_refs: string[];
+  status: IdeaLayerStatus;
+  revision: number;
+}
+
+export interface TradeIdeaH1 {
+  summary: string;
+  levels: { price: number; label: string }[];
+  invalidation: number;
+  status: IdeaLayerStatus | string;
+}
+
+export interface TradeIdeaM15 {
+  side: "buy" | "sell";
+  pullback_zone: [number, number] | number[];
+  invalidation: number;
+  target: number;
+  status: IdeaLayerStatus | string;
+}
+
+export interface TradeIdeaRevision {
+  session?: string;
+  from_revision?: number;
+  to_revision?: number;
+  prior_verdict_summary?: string;
+  performance?: string;
+  change_summary?: string;
+  at_utc?: string;
+}
+
+export interface TradeIdeaStack {
+  day_idea_id?: string;
+  h4: TradeIdeaH4 | null;
+  h1: TradeIdeaH1 | null;
+  m15: TradeIdeaM15 | null;
+  revisions: TradeIdeaRevision[];
+  layer_validation: {
+    h4: LayerValidationStatus;
+    h1: LayerValidationStatus;
+    m15: LayerValidationStatus;
+  };
+  updated_at_utc?: string;
+}
+
 export interface DayPlan {
   artifact: "day_plan";
   day_plan_id: string;
@@ -40,8 +101,10 @@ export interface DayPlan {
   bearish_scenario: Scenario;
   key_levels: KeyLevel[];
   expected_session_behaviour: Record<string, string>;
+  trade_idea_stack?: TradeIdeaStack;
   validator?: Validator;
   tradeable?: boolean;
+  price_sanity?: PriceSanity;
 }
 
 export interface EntryZone {
@@ -61,6 +124,7 @@ export interface SessionPlan {
   confidence: number;
   summary: string;
   entry_zones: EntryZone[];
+  trade_idea_stack?: TradeIdeaStack;
   validator?: Validator;
   tradeable?: boolean;
 }
@@ -83,6 +147,11 @@ export interface HourlyUpdate {
   confidence_delta: number;
   levels_touched: { price: number; label: string; result: string }[];
   note: string;
+  layer_validation?: {
+    h4: LayerValidationStatus;
+    h1: LayerValidationStatus;
+    m15: LayerValidationStatus;
+  };
   actual_vs_expected: { expected: string; observed: string; match: boolean };
 }
 
@@ -96,6 +165,15 @@ export interface SessionVerdict {
   lesson_candidate: string;
 }
 
+export interface RuntimeStatus {
+  model?: string;
+  model_installed?: boolean;
+  model_resident?: boolean;
+  model_device?: "GPU" | "CPU" | "MIXED" | "unloaded" | string;
+  mt5_connected?: boolean;
+  planner_alive?: boolean;
+}
+
 export interface PlannerState {
   updated_at_utc: string;
   symbol: string;
@@ -104,10 +182,21 @@ export interface PlannerState {
   session_plan: SessionPlan | null;
   hourly_updates: HourlyUpdate[];
   session_verdicts: SessionVerdict[];
+  trade_idea_stack?: TradeIdeaStack | null;
   planner_status: string;
   last_error: string | null;
   generated_at_utc?: string;
   planner_alive?: boolean;
+  live_price?: number | null;
+  day_plan_live_sanity?: PriceSanity | null;
+  session_plan_live_sanity?: PriceSanity | null;
+  model?: string;
+  model_installed?: boolean;
+  model_resident?: boolean;
+  model_device?: string;
+  model_size_vram?: number;
+  mt5_connected?: boolean;
+  runtime_status?: RuntimeStatus;
 }
 
 export interface ExecutionPlan {

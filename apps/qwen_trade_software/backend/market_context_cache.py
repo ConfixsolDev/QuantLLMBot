@@ -30,7 +30,7 @@ import MetaTrader5 as mt5
 
 SCHEMA_VERSION = 1
 QUALIFICATION_VERSION = 2
-MODEL = "qwen-trading-v002:latest"
+MODEL = "qwen-trading-v003:latest"
 OLLAMA_GENERATE = "http://127.0.0.1:11434/api/generate"
 OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
 OLLAMA_PS = "http://127.0.0.1:11434/api/ps"
@@ -62,6 +62,11 @@ TIMEFRAME_SECONDS = {
     "H4": 14400,
     "D1": 86400,
 }
+# Minute packet must outlive the cache worker interval with slack. Runtime uses
+# --interval 30; a 2-minute TTL was expiring whenever a cycle stalled past the
+# next refresh and blocked entry with entry_cache:minute:expired while the
+# structural manifest still looked ready.
+MINUTE_PACKET_TTL = timedelta(minutes=4)
 MT5_TIMEFRAMES = {
     "M1": mt5.TIMEFRAME_M1,
     "M5": mt5.TIMEFRAME_M5,
@@ -1351,7 +1356,7 @@ class ContextProjectionBuilder:
             payload,
             source_hash=raw_hash,
             evidence_ids=evidence,
-            expires_at=as_of + timedelta(minutes=2),
+            expires_at=as_of + MINUTE_PACKET_TTL,
         )
 
 
@@ -3488,8 +3493,17 @@ def latest_entry_context(
             if value["cache_epoch"] != compatible.get(name)
         ]
         minute = objects["minute"]
+        minute_soft_ok = False
         if minute.get("expires_at_utc") and as_utc(minute["expires_at_utc"]) < checked_at:
-            epoch_failures.append("entry_cache:minute:expired")
+            # Soft-extend only when the closed M1 in the packet is still the
+            # latest completed M1. A new M1 requires a rebuilt minute packet.
+            closed_m1_id = (minute.get("payload") or {}).get("closed_m1", {}).get("id")
+            latest_m1 = cache.latest_completed(symbol, "M1", 1)
+            latest_m1_id = latest_m1[-1]["evidence_id"] if latest_m1 else None
+            if closed_m1_id and closed_m1_id == latest_m1_id:
+                minute_soft_ok = True
+            else:
+                epoch_failures.append("entry_cache:minute:expired")
         if epoch_failures:
             return {
                 "status": "blocked",
@@ -3532,6 +3546,7 @@ def latest_entry_context(
             "validated_at_utc": manifest["validated_at_utc"],
             "decision_time_utc": minute["payload"].get("decision_time_utc"),
             "expires_at_utc": minute.get("expires_at_utc"),
+            "minute_ttl_soft_ok": minute_soft_ok,
             "epochs": {
                 "structural": structure["cache_epoch"],
                 "levels": levels["cache_epoch"],

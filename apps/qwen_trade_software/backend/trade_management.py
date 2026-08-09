@@ -49,7 +49,8 @@ from review_shared import (
     normalize_text,
     ollama_generate,
     read_json_safe,
-    warm_model,
+    gold_market_open,
+    sync_model_residency,
     write_json_atomic,
 )
 from tick_data_archive import append_qwen_decision, append_tick_record
@@ -95,6 +96,35 @@ _LOG_HANDLER = logging.handlers.TimedRotatingFileHandler(
 _LOG_HANDLER.suffix = "%Y-%m-%d"
 _LOG_HANDLER.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 logging.basicConfig(level=logging.INFO, handlers=[_LOG_HANDLER])
+
+
+def _model_status_label(model: str = MODEL) -> str:
+    """Live Ollama residency label: Loaded on GPU|CPU|MIXED, or Unloaded."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=2) as response:
+            running = json.loads(response.read().decode("utf-8")).get("models", [])
+        resident = next(
+            (
+                row
+                for row in running
+                if row.get("name") == model
+                or str(row.get("name") or "").startswith(model.split(":")[0])
+            ),
+            None,
+        )
+        if not resident:
+            return "Unloaded"
+        size = int(resident.get("size") or 0)
+        vram = int(resident.get("size_vram") or 0)
+        if vram <= 0:
+            return "Loaded on CPU"
+        if size > 0 and vram >= size * 0.9:
+            return "Loaded on GPU"
+        return "Loaded MIXED"
+    except Exception:
+        return "Status unknown"
 
 
 def position_to_dict(position) -> dict:
@@ -333,7 +363,7 @@ def update_dashboard(positions, levels_by_symbol, today, review=None) -> None:
         {
             "connected": True,
             "model": MODEL,
-            "model_status": "Loaded on CPU",
+            "model_status": _model_status_label(),
             "symbol": symbol,
             "price": tick.bid if tick else 0.0,
             "change": 0.0,
@@ -792,13 +822,25 @@ def main() -> None:
     while True:
         started = time.monotonic()
         try:
-            warm_model()
-            connect_mt5()
-            review_positions()
+            market = gold_market_open()
+            sync_model_residency(market)
+            if not market.get("open"):
+                logging.info(
+                    "Market closed (%s); Qwen unloaded/idle — skip management cycle",
+                    market.get("reason"),
+                )
+            else:
+                connect_mt5()
+                try:
+                    review_positions()
+                finally:
+                    mt5.shutdown()
         except Exception:
             logging.exception("Management review cycle failed")
-        finally:
-            mt5.shutdown()
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
         elapsed = time.monotonic() - started
         time.sleep(max(1, INTERVAL_SECONDS - elapsed))
 

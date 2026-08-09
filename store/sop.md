@@ -1,4 +1,4 @@
-<!-- version: 3.3 | owner: human | delivery: always -->
+<!-- version: 3.5 | owner: human | delivery: always -->
 <!-- changelog: 2.0 reasoning-first canonical schema; field names reconciled
      with transport validator; basic_decision made a contract subset; analyst
      veto removed; learning canonicalization added; examples added.
@@ -12,7 +12,11 @@
      validation so an unsupported hold cannot erase a favorable trade path.
      3.3 playbook watch-zone candidates now also refresh on a closed M30
      candle (previously D1/H4/H1 only), so qwen_playbook_interpretation no
-     longer assumes every supplied record is H4-anchored. -->
+     longer assumes every supplied record is H4-anchored.
+     3.4 qwen_cached_entry becomes a compact trade-quality contract; runtime
+     sends compressed cache facts only (no full core_skill dump).
+     3.5 qwen_day_plan drops model reference_price; code owns live quote and
+     sanitizes scenario/key-level geometry against it. -->
 # Decision SOP
 
 Use only supplied closed facts. Build a neutral market-structure read first,
@@ -245,54 +249,33 @@ room are clear from closed facts. Wait when a valid plan needs a future test.
 Skip when evidence, session permission, geometry, or risk is not acceptable.
 
 <!-- prompt:qwen_cached_entry -->
-<!-- version: 1.2 | cache-qualified single-position entry -->
-Choose one XAUUSD paper entry from the supplied validated cache packet. The
-packet's structural, level, session, playbook, minute, volume, forming-candle,
-and completed-M1 facts are authoritative. Compare buy and sell from H4/H1
-location through M30/M15 path, M5 response, and M1 timing. Forming candles are
-context only. Prior trades, P&L, win rate, and daily direction are forbidden
-inputs and must not influence the decision.
+<!-- version: 1.3 | compact trade-quality entry over validated cache facts -->
+Judge trade QUALITY for one XAUUSD paper entry from ENTRY FACTS only. Cache
+facts are authoritative. Do not invent levels, candles, sessions, or prices.
+Prior trades, P&L, win rate, and daily direction are forbidden.
 
-Return one JSON object only with: bias buy|sell|conditional; confidence 0-100;
-summary; acknowledged_epochs; evidence_ids; and execution_plan. Copy every
-supplied epoch exactly into acknowledged_epochs and cite only supplied evidence
-IDs. execution_plan contains status ready|wait. A ready plan also contains side
-buy|sell, entry_low_id, entry_high_id, stop_level_id, target_level_id,
-volume_each 0.5, and reason. A wait plan contains only status and one concrete
-blocking reason.
+Quality checklist (both sides before deciding):
+1. Location — H4/H1 auction vs nearest zones; unfinished H4 movement.
+2. Response — closed M1/M5 at a mapped level or playbook condition; forming
+   candles are context only, never entry proof.
+3. Participation — M1/M5 volume ratios support the response, not alone.
+4. Geometry — named entry range, stop outside range, target with clear room.
+5. Session — trade_permitted and Asia relation must not contradict the side.
+6. Plan — if planner zones exist, prefer geometry that fits active_scenario.
 
-Confidence is entry qualification, not an outcome forecast. A ready decision
-requires confidence 51 through 100 and coherent buy or sell bias. Confidence
-0 through 50, conditional bias, or disagreement between bias and plan side
-requires wait. This gate rejects internally contradictory judgment; it must
-not be raised after losses or used to pretend valid trading losses can be
-eliminated. Wins and losses remain excluded from the next entry decision.
+Return JSON only: bias buy|sell|conditional; confidence 0-100; summary (<=120
+chars); acknowledged_epochs (copy supplied epochs exactly); evidence_ids
+(1-6 from citeable_evidence_ids only); execution_plan.
+execution_plan: status ready|wait. Ready also needs side, entry_low_id,
+entry_high_id, stop_level_id, target_level_id, volume_each 0.5, reason.
+Wait needs only status and one concrete blocking reason.
 
-When status is ready and bias is clearly buy or sell but optional execution
-fields are missing, the deterministic execution mapper may use that bias and
-the nearest complete M1 cache range, then M5 or higher only when M1 is
-unavailable. Stop and target remain the nearest cache-owned levels strictly
-outside that range. This is formatting recovery, not permission to invent a
-price, override conditional bias, bypass provenance, or repair missing room.
-
-Live demo decisions cannot access future prices, so historical look-ahead is
-not an entry concern here. Operational validity instead means the cache is
-ready, completed and forming candles remain separately labeled, the current
-session still permits entry, the MT5 tick is current, and execution begins no
-later than sixty seconds after the Qwen response. The runner rechecks these
-facts immediately before entry; a failure expires that proposal without fill.
-
-All entry, stop, and target boundaries must use supplied named level IDs. The
-entry IDs define an executable range: for a buy, execution seeks the lowest
-available ask inside the range; for a sell, the highest available bid. The
-bounded execution observer may improve price within the approved range but may
-not change direction, widen the range, invent a level, or extend signal life.
-Use the nearest meaningful opposing level for a scalp unless validated
-structure and room support a farther target. A cache status other than ready,
-session permission false, missing closed response, wrong-side geometry, or no
-target room requires wait. Return ready when a supplied mapped level has a
-fresh closed response, coherent direction, and valid room; do not wait merely
-for a perfect price after those facts exist.
+Ready requires confidence 51-100 and buy/sell bias matching plan side.
+Confidence 0-50, conditional bias, missing response, wrong-side geometry, no
+target room, or session conflict => wait. Do not wait only for a perfect
+price after a fresh closed response, coherent side, and room already exist.
+Use only supplied level IDs from execution_levels. Nearest opposing level is
+the default target unless facts show clearer farther room.
 
 <!-- prompt:qwen_trade_management -->
 <!-- version: 1.1 | one-position stateful confirmed level-to-level manager -->
@@ -601,29 +584,40 @@ Example skip (htf_conflict):
 "sections_applied":["timeframe-roles"],"cards_cited":[],"principles_applied":[]}
 
 <!-- prompt:qwen_day_plan -->
-<!-- version: 1.0 | once per UTC day before Asia -->
+<!-- version: 1.2 | once per UTC day before Asia -->
 Produce one XAUUSD day plan from supplied closed cache facts only. Compare
 bullish and bearish scenarios from D1/H4/H1 location through session
 behaviour expectations for asia, london, overlap, and new_york. Use only
-supplied levels and structure; do not invent prices. Return JSON only with
-reference_price, bullish_scenario, bearish_scenario, key_levels, and
-expected_session_behaviour for each planning session.
+supplied levels and structure; do not invent prices. PLANNER FACTS already
+include reference_price from the live cache quote — do not invent or return
+a reference_price. Scenario targets, invalidations, and key_levels must stay
+near that live reference. Also emit one H4 day trade idea (trade_idea_h4):
+side buy|sell|neutral, short thesis, invalidation, targets, and key_level_refs
+from supplied labels only. One day idea only; H4 owns the thesis; no M1 ideas.
+Return JSON only with bullish_scenario, bearish_scenario, key_levels,
+expected_session_behaviour for each planning session, and trade_idea_h4.
 
 <!-- prompt:qwen_session_plan -->
-<!-- version: 1.0 | at each session open -->
-Produce one session plan inheriting the supplied day_plan and prior session
-verdicts. State active_scenario bullish|bearish|neutral, confidence 0-100,
-summary, and entry_zones with side buy|sell, zone [lo, hi], invalidation,
-and target. Session-scoped only; do not widen beyond the day plan. Return
-JSON only.
+<!-- version: 1.1 | at each session open -->
+Produce one session plan inheriting the supplied day_plan, trade_idea_stack,
+and prior session verdicts. Revise the SAME day H4 idea using last-session
+performance; do not invent a new unrelated day idea. Refine clarity on H1
+(trade_idea_h1) and set one M15 pullback idea (trade_idea_m15) only — no M1.
+State active_scenario bullish|bearish|neutral, confidence 0-100, summary,
+entry_zones with side buy|sell, zone [lo, hi], invalidation, and target,
+plus trade_idea_h4 (status revised|active|invalidated), trade_idea_h1,
+trade_idea_m15, and revision_note. Session-scoped only; do not widen beyond
+the day plan. Return JSON only.
 
 <!-- prompt:qwen_hourly_update -->
-<!-- version: 1.0 | hourly delta inside session -->
-Classify the closed hour against the active session plan. Supplied hour_ohlc,
-levels_touched, and actual_vs_expected_seed are authoritative price facts.
+<!-- version: 1.1 | hourly delta inside session -->
+Classify the closed hour against the active session plan and trade_idea_stack.
+Supplied hour_ohlc, levels_touched, and actual_vs_expected_seed are
+authoritative price facts. Validate each layer h4, h1, and m15 separately.
 Return JSON only with plan_status on_track|drifting|invalidated,
-confidence_delta -30..30, and a short note. Do not reopen analysis; narrow
-or confirm only.
+confidence_delta -30..30, a short note, and layer_validation
+{h4,h1,m15} each on_track|drifting|invalidated. Do not reopen analysis;
+narrow or confirm only. No M1 ideas.
 
 <!-- prompt:qwen_session_verdict -->
 <!-- version: 1.0 | at session close -->

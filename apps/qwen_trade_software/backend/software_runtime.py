@@ -138,6 +138,8 @@ class QwenTradeSoftware:
                 "market_context_cache.py",
                 "--no-qwen",
                 "--no-minute-benchmark",
+                "--interval",
+                "30",
             ),
             "paper_runner": ("paper_runner.py",),
             "session_planner": ("session_planner.py",),
@@ -170,10 +172,16 @@ class QwenTradeSoftware:
         self._start_child("reviewer", "reviewer.py")
         if not self._wait_for(self.DASHBOARD_HEALTH, 30):
             raise RuntimeError("Reviewer dashboard API did not become ready")
-        # Load Qwen into Ollama memory before the --no-qwen cache worker runs.
-        # Otherwise the first cache tick marks model_resident=false and blocks entry.
+        # Load Qwen only when gold is quoting; unload when the market is closed.
+        # Otherwise a weekend/off-hours start leaves the model pinned for nothing,
+        # and a closed-market first cache tick can mark model_resident=false.
         warm = subprocess.run(
-            [str(self.PYTHON), "-c", "from review_shared import warm_model; warm_model()"],
+            [
+                str(self.PYTHON),
+                "-c",
+                "from review_shared import sync_model_residency; "
+                "print(sync_model_residency())",
+            ],
             cwd=self.APP_DIR,
             capture_output=True,
             text=True,
@@ -182,15 +190,17 @@ class QwenTradeSoftware:
             check=False,
         )
         if warm.returncode != 0:
-            logging.warning("Model warm-up failed: %s", warm.stderr[-300:])
+            logging.warning("Model residency sync failed: %s", warm.stderr[-300:])
         else:
-            logging.info("Qwen model warmed before cache worker start")
+            logging.info("Model residency sync: %s", (warm.stdout or "").strip()[-300:])
         self._start_child("trade_management", "trade_management.py")
         self._start_child(
             "context_cache",
             "market_context_cache.py",
             "--no-qwen",
             "--no-minute-benchmark",
+            "--interval",
+            "30",
         )
         self._start_child("paper_runner", "paper_runner.py")
         self._start_child("session_planner", "session_planner.py")

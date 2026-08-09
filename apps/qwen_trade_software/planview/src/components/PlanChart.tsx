@@ -13,14 +13,17 @@ import type {
   Candle,
   DayPlan,
   HourlyUpdate,
+  RuntimeStatus,
   SessionPlan,
   TradeIdea,
+  TradeIdeaStack,
 } from "@/lib/types";
 
 const STATUS_COLORS: Record<string, string> = {
   on_track: "#22c55e",
   drifting: "#f59e0b",
   invalidated: "#ef4444",
+  pending: "#64748b",
 };
 
 interface PlanChartProps {
@@ -28,10 +31,16 @@ interface PlanChartProps {
   dayPlan: DayPlan | null;
   sessionPlan: SessionPlan | null;
   tradeIdea: TradeIdea | null;
+  tradeIdeaStack: TradeIdeaStack | null;
   hourlyUpdates: HourlyUpdate[];
   selectedHourlyId: string | null;
   onSelectHour: (hourlyId: string) => void;
   timeframe: string;
+  runtime?: RuntimeStatus | null;
+}
+
+function statusColor(status?: string | null): string {
+  return STATUS_COLORS[status || "pending"] || STATUS_COLORS.pending;
 }
 
 export function PlanChart({
@@ -39,10 +48,12 @@ export function PlanChart({
   dayPlan,
   sessionPlan,
   tradeIdea,
+  tradeIdeaStack,
   hourlyUpdates,
   selectedHourlyId,
   onSelectHour,
   timeframe,
+  runtime,
 }: PlanChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -115,49 +126,88 @@ export function PlanChart({
     levelLinesRef.current = [];
     zoneLinesRef.current = [];
 
-    for (const level of dayPlan?.key_levels ?? []) {
+    const t0 = (candles[0]?.time ?? 0) as unknown as import("lightweight-charts").UTCTimestamp;
+    const t1 = (candles[candles.length - 1]?.time ?? 0) as unknown as import("lightweight-charts").UTCTimestamp;
+    const span = (price: number, color: string, title: string, style: LineStyle, width: 1 | 2 = 1) => {
       const line = chart.addLineSeries({
-        color: "#d4a017",
-        lineWidth: 1,
-        lineStyle: LineStyle.Dashed,
-        title: level.label,
+        color,
+        lineWidth: width,
+        lineStyle: style,
+        title,
       });
       line.setData([
-        {
-          time: (candles[0]?.time ?? 0) as unknown as import("lightweight-charts").UTCTimestamp,
-          value: level.price,
-        },
-        {
-          time: (candles[candles.length - 1]?.time ?? 0) as unknown as import("lightweight-charts").UTCTimestamp,
-          value: level.price,
-        },
+        { time: t0, value: price },
+        { time: t1, value: price },
       ]);
-      levelLinesRef.current.push(line);
-    }
+      return line;
+    };
 
-    for (const zone of sessionPlan?.entry_zones ?? []) {
-      const [lo, hi] = zone.zone;
-      for (const price of [lo, hi]) {
-        const line = chart.addLineSeries({
-          color: zone.side === "buy" ? "#3b82f6" : "#f97316",
-          lineWidth: 1,
-          lineStyle: LineStyle.Solid,
-          title: `${zone.side} zone`,
-        });
-        line.setData([
-          {
-            time: (candles[0]?.time ?? 0) as unknown as import("lightweight-charts").UTCTimestamp,
-            value: price,
-          },
-          {
-            time: (candles[candles.length - 1]?.time ?? 0) as unknown as import("lightweight-charts").UTCTimestamp,
-            value: price,
-          },
-        ]);
-        zoneLinesRef.current.push(line);
+    const stack = tradeIdeaStack;
+    const lv = stack?.layer_validation;
+
+    if (timeframe === "H4" && stack?.h4) {
+      const color = statusColor(lv?.h4);
+      levelLinesRef.current.push(
+        span(stack.h4.invalidation, color, `H4 inv ${stack.h4.side}`, LineStyle.Dashed, 2),
+      );
+      for (const [idx, target] of stack.h4.targets.entries()) {
+        levelLinesRef.current.push(
+          span(target, "#d4a017", `H4 TP${idx + 1}`, LineStyle.Dotted, 2),
+        );
+      }
+    } else if (timeframe === "H1") {
+      if (stack?.h1) {
+        const color = statusColor(lv?.h1);
+        levelLinesRef.current.push(
+          span(stack.h1.invalidation, color, "H1 inv", LineStyle.Dashed, 2),
+        );
+        for (const level of stack.h1.levels ?? []) {
+          levelLinesRef.current.push(
+            span(level.price, "#38bdf8", level.label || "H1", LineStyle.Solid, 1),
+          );
+        }
+      } else {
+        for (const level of dayPlan?.key_levels ?? []) {
+          levelLinesRef.current.push(
+            span(level.price, "#d4a017", level.label, LineStyle.Dashed, 1),
+          );
+        }
+      }
+    } else {
+      // M15 — pullback idea + session zones fallback
+      if (stack?.m15) {
+        const color = statusColor(lv?.m15);
+        const [lo, hi] = stack.m15.pullback_zone;
+        zoneLinesRef.current.push(
+          span(Number(lo), color, `M15 zone lo`, LineStyle.Solid, 2),
+        );
+        zoneLinesRef.current.push(
+          span(Number(hi), color, `M15 zone hi`, LineStyle.Solid, 2),
+        );
+        zoneLinesRef.current.push(
+          span(stack.m15.invalidation, "#ef4444", "M15 SL", LineStyle.Dashed, 2),
+        );
+        zoneLinesRef.current.push(
+          span(stack.m15.target, "#22c55e", "M15 TP", LineStyle.Dashed, 2),
+        );
+      } else {
+        for (const zone of sessionPlan?.entry_zones ?? []) {
+          const [lo, hi] = zone.zone;
+          for (const price of [lo, hi]) {
+            zoneLinesRef.current.push(
+              span(
+                price,
+                zone.side === "buy" ? "#3b82f6" : "#f97316",
+                `${zone.side} zone`,
+                LineStyle.Solid,
+                1,
+              ),
+            );
+          }
+        }
       }
     }
-  }, [dayPlan, sessionPlan, candles]);
+  }, [dayPlan, sessionPlan, candles, tradeIdeaStack, timeframe]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -166,6 +216,8 @@ export function PlanChart({
     for (const line of ideaLinesRef.current) series.removePriceLine(line);
     ideaLinesRef.current = [];
 
+    // Paper execution idea only on M15 as an extra overlay when ready.
+    if (timeframe !== "M15") return;
     const plan = tradeIdea?.execution_plan;
     if (!plan || plan.status !== "ready") return;
 
@@ -193,62 +245,131 @@ export function PlanChart({
 
     addIdeaLine(plan.entry_low, `${sideLabel} entry low`, entryColor, LineStyle.Solid);
     addIdeaLine(plan.entry_high, `${sideLabel} entry high`, entryColor, LineStyle.Solid);
-    addIdeaLine(plan.stop_loss, "SL", "#ef4444", LineStyle.Dashed);
-    addIdeaLine(plan.take_profit, "TP", "#22c55e", LineStyle.Dashed);
-  }, [tradeIdea]);
+    addIdeaLine(plan.stop_loss, "Paper SL", "#ef4444", LineStyle.Dashed);
+    addIdeaLine(plan.take_profit, "Paper TP", "#22c55e", LineStyle.Dashed);
+  }, [tradeIdea, timeframe]);
 
-  const ideaPlan =
-    tradeIdea?.execution_plan?.status === "ready"
-      ? tradeIdea.execution_plan
-      : null;
+  const h4 = tradeIdeaStack?.h4;
+  const lv = tradeIdeaStack?.layer_validation;
+  const selectedHour = hourlyUpdates.find((u) => u.hourly_id === selectedHourlyId);
+  const hourLv = selectedHour?.layer_validation;
+
+  const device = runtime?.model_device || "unloaded";
+  const deviceTone =
+    device === "GPU"
+      ? "border-emerald-700 bg-emerald-950/40 text-emerald-300"
+      : device === "CPU" || device === "MIXED"
+        ? "border-amber-700 bg-amber-950/30 text-amber-200"
+        : "border-slate-700 bg-slate-900 text-slate-400";
 
   return (
     <div className="card space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
             Chart · {timeframe}
           </h2>
-          {ideaPlan && (
-            <span
-              className={`rounded px-2 py-0.5 text-xs font-semibold ${
-                ideaPlan.side === "buy"
-                  ? "bg-sky-500/15 text-sky-300"
-                  : "bg-purple-500/15 text-purple-300"
-              }`}
-            >
-              Idea: {ideaPlan.side?.toUpperCase()} {ideaPlan.entry_low}–
-              {ideaPlan.entry_high} · SL {ideaPlan.stop_loss} · TP{" "}
-              {ideaPlan.take_profit}
+          <span className={`rounded border px-2 py-0.5 text-xs font-semibold ${deviceTone}`}>
+            Model on {device}
+          </span>
+          {h4 && (
+            <span className="rounded bg-slate-900 px-2 py-1 text-xs text-amber-200">
+              Day H4 rev {h4.revision} · {h4.side.toUpperCase()} · {h4.status}
             </span>
           )}
+          {tradeIdeaStack?.revisions?.length ? (
+            <span className="rounded bg-slate-900 px-2 py-1 text-xs text-violet-300">
+              Session revises {tradeIdeaStack.revisions.length}
+            </span>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2 text-xs">
-          {hourlyUpdates.map((update) => (
-            <button
-              key={update.hourly_id}
-              type="button"
-              onClick={() => onSelectHour(update.hourly_id)}
-              className={`rounded px-2 py-1 ${
-                selectedHourlyId === update.hourly_id
-                  ? "ring-1 ring-gold"
-                  : "opacity-80 hover:opacity-100"
-              }`}
-              style={{
-                backgroundColor: `${STATUS_COLORS[update.plan_status]}33`,
-                color: STATUS_COLORS[update.plan_status],
-              }}
-            >
-              H{update.clock.utc_hour}
-            </button>
-          ))}
+          {(["h4", "h1", "m15"] as const).map((layer) => {
+            const status = hourLv?.[layer] || lv?.[layer] || "pending";
+            return (
+              <span
+                key={layer}
+                className="rounded px-2 py-1"
+                style={{
+                  backgroundColor: `${statusColor(status)}33`,
+                  color: statusColor(status),
+                }}
+              >
+                {layer.toUpperCase()} {status}
+              </span>
+            );
+          })}
         </div>
       </div>
-      <div ref={containerRef} className="w-full" />
+
+      <div className="flex flex-wrap gap-2 text-xs">
+        {hourlyUpdates.map((update) => (
+          <button
+            key={update.hourly_id}
+            type="button"
+            onClick={() => onSelectHour(update.hourly_id)}
+            className={`rounded px-2 py-1 ${
+              selectedHourlyId === update.hourly_id
+                ? "ring-1 ring-gold"
+                : "opacity-80 hover:opacity-100"
+            }`}
+            style={{
+              backgroundColor: `${STATUS_COLORS[update.plan_status]}33`,
+              color: STATUS_COLORS[update.plan_status],
+            }}
+          >
+            H{update.clock.utc_hour}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-col gap-3 lg:flex-row">
+        <div ref={containerRef} className="min-w-0 flex-1" />
+        <aside className="w-full shrink-0 space-y-2 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs lg:w-52">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+            Connections
+          </h3>
+          <div
+            className={`rounded border px-2 py-2 ${
+              runtime?.model_resident
+                ? "border-emerald-800 text-emerald-300"
+                : "border-rose-900 text-rose-300"
+            }`}
+          >
+            <p className="font-semibold">Model</p>
+            <p className="mt-0.5 break-all text-slate-300">
+              {(runtime?.model || "qwen-trading").replace(":latest", "")}
+            </p>
+            <p className="mt-1">{runtime?.model_resident ? `Resident · ${device}` : "Not loaded"}</p>
+          </div>
+          <div
+            className={`rounded border px-2 py-2 ${
+              runtime?.mt5_connected
+                ? "border-emerald-800 text-emerald-300"
+                : "border-rose-900 text-rose-300"
+            }`}
+          >
+            <p className="font-semibold">MT5</p>
+            <p className="mt-1">
+              {runtime?.mt5_connected ? "Connected" : "Disconnected"}
+            </p>
+          </div>
+          <div
+            className={`rounded border px-2 py-2 ${
+              runtime?.planner_alive
+                ? "border-emerald-800 text-emerald-300"
+                : "border-amber-800 text-amber-200"
+            }`}
+          >
+            <p className="font-semibold">Planner</p>
+            <p className="mt-1">{runtime?.planner_alive ? "Online" : "Offline"}</p>
+          </div>
+        </aside>
+      </div>
       <p className="text-xs text-slate-500">
-        Gold dashed lines = day key levels. Blue/orange bands = session entry zones.
-        Labeled price lines = active trade idea (entry zone, SL red, TP green).
-        Hour buttons color by plan_status (on_track / drifting / invalidated).
+        H4 = day thesis (inv + targets). H1 = refine levels. M15 = pullback zone + SL/TP.
+        Ribbon shows layer validation (hour selection overrides with that hour&apos;s
+        layer_validation). Gold/amber = H4, sky = H1, green/red = M15 targets/stops.
       </p>
     </div>
   );

@@ -40,7 +40,7 @@ Write-Host "Running cache self-test..." -ForegroundColor Yellow
 
 Write-Host ""
 Write-Host "Done. Still required outside this script:" -ForegroundColor Cyan
-Write-Host "  - Ollama with qwen-trading-v002:latest registered"
+Write-Host "  - Ollama with qwen-trading-v003:latest registered"
 Write-Host "  - MetaTrader 5 terminal installed and logged in"
 Write-Host "  - IIS + GoldFlowDesk website at C:\inetpub\GoldFlowDesk (for full runtime)"
 Write-Host "Start the app with: powershell -ExecutionPolicy Bypass -File `"$Backend\start-reviewer.ps1`""

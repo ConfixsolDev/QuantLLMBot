@@ -31,6 +31,7 @@ from review_shared import (
     ENTRY_STATE_FILE,
     LOG_DIR,
     MANAGEMENT_STATE_FILE,
+    MODEL,
     PLANNER_STATE_FILE,
     STORE_ROOT,
     _dated_log_files,
@@ -42,10 +43,18 @@ from review_shared import (
     ollama_generate,
     read_json_safe,
     save_review_tickets,
-    warm_model,
+    gold_market_open,
+    sync_model_residency,
     write_json_atomic,
 )
-from session_planner import DEFAULT_PLANNER_STATE, load_plan_history, read_chart_candles
+from session_planner import (
+    DEFAULT_PLANNER_STATE,
+    live_mid_from_facts,
+    live_sanity_snapshot,
+    load_plan_history,
+    planner_facts,
+    read_chart_candles,
+)
 from tick_data_archive import append_qwen_decision, append_tick_record
 
 
@@ -69,6 +78,61 @@ def latest_paper_execution():
                 return json.loads(line)
             except json.JSONDecodeError:
                 continue
+    return None
+
+
+def wait_decision_signature(review: dict, entry_cache: dict) -> str:
+    """Stable identity for a non-model wait so identical blocks are not re-logged."""
+    plan = review.get("execution_plan") if isinstance(review.get("execution_plan"), dict) else {}
+    if plan.get("status") != "wait":
+        return ""
+    session = entry_cache.get("session") if isinstance(entry_cache.get("session"), dict) else {}
+    return json.dumps(
+        {
+            "reason": plan.get("reason"),
+            "failures": sorted(review.get("entry_validation_failures") or []),
+            "cache_status": entry_cache.get("status"),
+            "cache_reason": entry_cache.get("reason"),
+            "session": session.get("session"),
+            "trade_permitted": session.get("trade_permitted"),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def latest_wait_decision_signature() -> str | None:
+    """Return wait signature of the newest paper proposal, if it was a wait."""
+    for path in _dated_log_files("paper-proposals"):
+        for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+            if not line.strip():
+                continue
+            try:
+                proposal = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            qwen = proposal.get("qwen") if isinstance(proposal.get("qwen"), dict) else {}
+            plan = (
+                qwen.get("execution_plan")
+                if isinstance(qwen.get("execution_plan"), dict)
+                else {}
+            )
+            if plan.get("status") != "wait":
+                return None
+            cache = (
+                proposal.get("market", {}).get("cache_context")
+                if isinstance(proposal.get("market"), dict)
+                else {}
+            )
+            review = {
+                "execution_plan": plan,
+                "entry_validation_failures": (
+                    qwen.get("entry_validation_failures")
+                    or (cache or {}).get("failures")
+                    or []
+                ),
+            }
+            return wait_decision_signature(review, cache or {})
     return None
 
 
@@ -121,6 +185,9 @@ def append_paper_proposal(
             "execution_plan": review.get(
                 "execution_plan",
                 {"status": "wait", "reason": "No paper execution plan."},
+            ),
+            "entry_validation_failures": review.get(
+                "entry_validation_failures", []
             ),
             "decision_wall_seconds": decision_wall_seconds,
             "decision_duration_ns": decision_duration_ns,
@@ -186,10 +253,209 @@ def cache_levels_for_decision(entry_cache: dict) -> dict:
     return grouped
 
 
-def entry_decision_schema(entry_cache: dict, decision_levels: dict) -> dict:
-    level_ids = sorted(
-        row["id"] for rows in decision_levels.values() for row in rows
-    )
+def _slim_candle(row: dict) -> dict:
+    return {
+        "id": row.get("evidence_id"),
+        "o": row.get("open"),
+        "h": row.get("high"),
+        "l": row.get("low"),
+        "c": row.get("close"),
+        "v": row.get("tick_volume"),
+    }
+
+
+def _execution_level_ladder(
+    decision_levels: dict, mid_price: float, each_side: int = 6
+) -> list[dict]:
+    """Nearest named levels above and below price for geometry only."""
+    rows = [
+        {
+            "id": str(row["id"]),
+            "tf": timeframe,
+            "lo": float(row["price"]),
+            "hi": float(row["zone_high"]),
+            "role": row.get("role"),
+        }
+        for timeframe, level_rows in decision_levels.items()
+        for row in level_rows
+    ]
+    rows.sort(key=lambda item: item["lo"])
+    below = [row for row in rows if row["hi"] <= mid_price][-each_side:]
+    above = [row for row in rows if row["lo"] > mid_price][:each_side]
+    return below + above
+
+
+def compact_entry_facts(
+    entry_cache: dict,
+    decision_levels: dict,
+    planner_context: dict,
+    symbol: str,
+) -> dict:
+    """Compress validated cache into trade-quality facts only.
+
+    Research-aligned assembly: static contract stays short; runtime injects
+    only decision-relevant cache fields (location, response, participation,
+    geometry, session, thin planner). Drops full core_skill and duplicated
+    minute/structure/level dumps that previously bloated entry to ~14KB+.
+    """
+    minute = entry_cache.get("minute") or {}
+    quote = minute.get("quote") or {}
+    mid = float(quote.get("bid") or quote.get("ask") or 0.0)
+    structure = entry_cache.get("structure") or {}
+    location = {}
+    for timeframe, value in (structure.get("timeframe_location") or {}).items():
+        if not isinstance(value, dict):
+            continue
+        latest = value.get("latest_completed") or {}
+        location[timeframe] = {
+            "location": value.get("location"),
+            "auction": value.get("auction_state"),
+            "close": latest.get("close"),
+            "evidence_ids": value.get("evidence_ids") or [],
+        }
+
+    def zone_ref(zone: dict | None) -> dict | None:
+        if not isinstance(zone, dict):
+            return None
+        return {
+            "id": zone.get("level_id"),
+            "lo": zone.get("zone_low"),
+            "hi": zone.get("zone_high"),
+            "role": zone.get("role"),
+        }
+
+    playbooks = []
+    for row in (entry_cache.get("playbooks") or [])[:3]:
+        playbooks.append(
+            {
+                "id": row.get("playbook_id"),
+                "level_id": row.get("level_id"),
+                "buy": row.get("buy_condition"),
+                "sell": row.get("sell_condition"),
+                "missing": row.get("missing_evidence"),
+                "evidence_ids": row.get("evidence_ids") or [],
+            }
+        )
+
+    recent = {}
+    for timeframe, keep in (("M1", 3), ("M5", 3), ("M15", 2), ("M30", 2)):
+        rows = (entry_cache.get("recent_closed") or {}).get(timeframe) or []
+        recent[timeframe] = [_slim_candle(row) for row in rows[-keep:]]
+
+    forming = minute.get("forming") or {}
+    forming_slim = {
+        timeframe: {
+            "id": row.get("id"),
+            "o": row.get("open"),
+            "h": row.get("high"),
+            "l": row.get("low"),
+            "cur": row.get("current"),
+        }
+        for timeframe, row in forming.items()
+        if timeframe in ("M1", "M5") and isinstance(row, dict)
+    }
+
+    closed_m1 = minute.get("closed_m1") or {}
+    execution_levels = _execution_level_ladder(decision_levels, mid)
+    session = entry_cache.get("session") or {}
+    session_plan = (planner_context or {}).get("session_plan_summary") or {}
+    planner = {
+        "status": (planner_context or {}).get("planner_status"),
+        "day_plan_id": (planner_context or {}).get("day_plan_id"),
+        "session_plan_id": (planner_context or {}).get("session_plan_id"),
+        "tradeable": bool(session_plan.get("tradeable")),
+        "active_scenario": session_plan.get("active_scenario"),
+        "confidence": session_plan.get("confidence"),
+        "entry_zones": session_plan.get("entry_zones") or [],
+    }
+
+    known = set(entry_cache.get("known_evidence_ids") or [])
+    citeable: list[str] = []
+    seen: set[str] = set()
+
+    def _add_cite(value: str | None) -> None:
+        if not value or value in seen or value not in known:
+            return
+        seen.add(value)
+        citeable.append(value)
+
+    for value in location.values():
+        for evidence_id in value.get("evidence_ids") or []:
+            _add_cite(evidence_id)
+    for playbook in playbooks:
+        _add_cite(playbook.get("level_id"))
+        for evidence_id in playbook.get("evidence_ids") or []:
+            _add_cite(evidence_id)
+    _add_cite(closed_m1.get("id"))
+    for rows in recent.values():
+        for row in rows:
+            _add_cite(row.get("id"))
+    for row in execution_levels:
+        _add_cite(row.get("id"))
+    for row in minute.get("nearby_levels") or []:
+        _add_cite(row.get("id"))
+
+    return {
+        "symbol": symbol,
+        "quote": {
+            "bid": quote.get("bid"),
+            "ask": quote.get("ask"),
+            "spread": quote.get("spread"),
+            "age_ms": quote.get("age_ms"),
+        },
+        "validated_at_utc": entry_cache.get("validated_at_utc"),
+        "decision_time_utc": entry_cache.get("decision_time_utc"),
+        "epochs": entry_cache.get("epochs"),
+        "session": {
+            "session": session.get("session"),
+            "trade_permitted": session.get("trade_permitted"),
+            "asia_high": session.get("asia_high"),
+            "asia_low": session.get("asia_low"),
+            "asia_relation": session.get("asia_relation"),
+        },
+        "location": location,
+        "h4_state": structure.get("current_h4_state"),
+        "nearest_lower_zone": zone_ref(structure.get("nearest_lower_zone")),
+        "nearest_upper_zone": zone_ref(structure.get("nearest_upper_zone")),
+        "playbooks": playbooks,
+        "closed_m1": {
+            "id": closed_m1.get("id"),
+            "o": closed_m1.get("open"),
+            "h": closed_m1.get("high"),
+            "l": closed_m1.get("low"),
+            "c": closed_m1.get("close"),
+            "v": closed_m1.get("tick_volume"),
+        },
+        "forming": forming_slim,
+        "volume": minute.get("volume") or {},
+        "nearby_levels": minute.get("nearby_levels") or [],
+        "recent_closed": recent,
+        "execution_levels": execution_levels,
+        "planner": planner,
+        "citeable_evidence_ids": citeable,
+    }
+
+
+def build_entry_prompt(facts: dict) -> str:
+    """Compact entry prompt: short trade-quality contract + compressed facts."""
+    contract = load_prompt_section("qwen_cached_entry", STORE_ROOT)
+    return contract + "\n\nENTRY FACTS:\n" + json.dumps(facts, separators=(",", ":"))
+
+
+def entry_decision_schema(entry_cache: dict, decision_levels: dict, facts: dict | None = None) -> dict:
+    if facts and facts.get("execution_levels"):
+        level_ids = sorted({row["id"] for row in facts["execution_levels"]})
+    else:
+        level_ids = sorted(
+            row["id"] for rows in decision_levels.values() for row in rows
+        )
+    if not level_ids:
+        level_ids = ["__no_level__"]
+    evidence_enum = list(facts.get("citeable_evidence_ids") or []) if facts else []
+    if not evidence_enum:
+        evidence_enum = list(entry_cache.get("known_evidence_ids") or [])
+    if not evidence_enum:
+        evidence_enum = ["__no_evidence__"]
     epochs = entry_cache["epochs"]
     return {
         "type": "object",
@@ -210,7 +476,7 @@ def entry_decision_schema(entry_cache: dict, decision_levels: dict) -> dict:
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "enum": entry_cache["known_evidence_ids"],
+                    "enum": evidence_enum,
                 },
                 "minItems": 1,
                 "maxItems": 6,
@@ -371,10 +637,89 @@ def validate_entry_against_plan(execution_plan: dict, planner_context: dict) -> 
     return failures
 
 
+def _ollama_runtime_status(model: str = MODEL) -> dict:
+    """Return residency + GPU/CPU placement from Ollama /api/ps."""
+    import urllib.request
+
+    status = {
+        "model": model,
+        "model_installed": False,
+        "model_resident": False,
+        "model_device": "unloaded",
+        "size_vram": 0,
+        "size": 0,
+    }
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=3) as response:
+            tags = json.loads(response.read().decode("utf-8")).get("models", [])
+        status["model_installed"] = any(
+            row.get("name") == model or str(row.get("name") or "").startswith(model.split(":")[0])
+            for row in tags
+        )
+    except Exception:
+        logging.debug("Ollama tags lookup failed", exc_info=True)
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=3) as response:
+            running = json.loads(response.read().decode("utf-8")).get("models", [])
+        resident = next(
+            (
+                row
+                for row in running
+                if row.get("name") == model
+                or str(row.get("name") or "").startswith(model.split(":")[0])
+            ),
+            None,
+        )
+        if resident:
+            size = int(resident.get("size") or 0)
+            vram = int(resident.get("size_vram") or 0)
+            status["model_resident"] = True
+            status["size"] = size
+            status["size_vram"] = vram
+            if vram <= 0:
+                status["model_device"] = "CPU"
+            elif size > 0 and vram >= size * 0.9:
+                status["model_device"] = "GPU"
+            else:
+                status["model_device"] = "MIXED"
+    except Exception:
+        logging.debug("Ollama ps lookup failed", exc_info=True)
+    return status
+
+
 def build_plan_snapshot() -> dict:
     planner = read_json_safe(PLANNER_STATE_FILE, DEFAULT_PLANNER_STATE)
     planner["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
     planner["planner_alive"] = _planner_process_alive()
+    try:
+        facts = planner_facts(str(planner.get("symbol") or "XAUUSDr"))
+        live_price = live_mid_from_facts(facts)
+    except Exception:
+        logging.exception("Plan snapshot live price lookup failed")
+        live_price = None
+    planner["live_price"] = live_price
+    planner["day_plan_live_sanity"] = live_sanity_snapshot(
+        planner.get("day_plan"), live_price
+    )
+    planner["session_plan_live_sanity"] = live_sanity_snapshot(
+        planner.get("session_plan"), live_price
+    )
+    management = read_json_safe(MANAGEMENT_STATE_FILE, DEFAULT_MANAGEMENT_STATE)
+    runtime = _ollama_runtime_status(str(management.get("model") or MODEL))
+    planner["model"] = runtime["model"]
+    planner["model_installed"] = runtime["model_installed"]
+    planner["model_resident"] = runtime["model_resident"]
+    planner["model_device"] = runtime["model_device"]
+    planner["model_size_vram"] = runtime["size_vram"]
+    planner["mt5_connected"] = bool(management.get("connected"))
+    planner["runtime_status"] = {
+        "model": runtime["model"],
+        "model_installed": runtime["model_installed"],
+        "model_resident": runtime["model_resident"],
+        "model_device": runtime["model_device"],
+        "mt5_connected": bool(management.get("connected")),
+        "planner_alive": planner["planner_alive"],
+    }
     return planner
 
 
@@ -547,8 +892,25 @@ def generate_dashboard_deal_sheet() -> dict:
     decision_wall_seconds = None
     decision_duration_ns = None
     prompt_text = None
+    market = gold_market_open()
 
-    if entry_cache.get("status") != "ready":
+    if not market.get("open"):
+        review = {
+            "bias": "conditional",
+            "confidence": 0,
+            "summary": "Gold market closed; Qwen is unloaded until quotes resume.",
+            "acknowledged_epochs": {},
+            "evidence_ids": [],
+            "execution_plan": {
+                "status": "wait",
+                "reason": f"market_closed:{market.get('reason')}",
+            },
+            "entry_validation_failures": [
+                f"entry:market_closed:{market.get('reason')}"
+            ],
+        }
+        raw_response = json.dumps(review, separators=(",", ":"))
+    elif entry_cache.get("status") != "ready":
         review = {
             "bias": "conditional",
             "confidence": 0,
@@ -574,48 +936,28 @@ def generate_dashboard_deal_sheet() -> dict:
         }
         raw_response = json.dumps(review, separators=(",", ":"))
     else:
-        core_skill = (STORE_ROOT / "core_skill.md").read_text(
-            encoding="utf-8"
+        facts = compact_entry_facts(
+            entry_cache, decision_levels, planner_context, symbol
         )
-        contract = load_prompt_section("qwen_cached_entry", STORE_ROOT)
-        prompt = (
-            core_skill
-            + "\n\n"
-            + contract
-            + "\n\nENTRY FACTS:\n"
-            + json.dumps(
-                {
-                    "symbol": symbol,
-                    "price": entry_cache["minute"]["quote"],
-                    "validated_at_utc": entry_cache["validated_at_utc"],
-                    "decision_time_utc": entry_cache["decision_time_utc"],
-                    "epochs": entry_cache["epochs"],
-                    "structure": entry_cache["structure"],
-                    "session": entry_cache["session"],
-                    "playbooks": entry_cache["playbooks"],
-                    "minute": entry_cache["minute"],
-                    "recent_closed": entry_cache["recent_closed"],
-                    "levels_by_timeframe": decision_levels,
-                    "allowed_evidence_ids": entry_cache["known_evidence_ids"],
-                    "planner_context": planner_context,
-                },
-                separators=(",", ":"),
-            )
-        )
+        prompt = build_entry_prompt(facts)
         prompt_text = prompt
+        prompt_bytes = len(prompt.encode("utf-8"))
         decision_started = time.monotonic()
         result = ollama_generate(
             prompt,
             timeout=None,
-            num_predict=512,
-            num_ctx=8192,
-            format_schema=entry_decision_schema(entry_cache, decision_levels),
+            num_predict=320,
+            num_ctx=4096,
+            format_schema=entry_decision_schema(
+                entry_cache, decision_levels, facts
+            ),
         )
         decision_wall_seconds = round(time.monotonic() - decision_started, 3)
         decision_duration_ns = result.get("total_duration")
         logging.info(
-            "Qwen entry decision took %.2fs (model total_duration=%sns)",
+            "Qwen entry decision took %.2fs prompt_bytes=%d (model total_duration=%sns)",
             decision_wall_seconds,
+            prompt_bytes,
             decision_duration_ns,
         )
         raw_response = result.get("response", "{}")
@@ -645,21 +987,6 @@ def generate_dashboard_deal_sheet() -> dict:
                 }
                 provenance_failures.extend(plan_failures)
         review["entry_validation_failures"] = provenance_failures
-    append_qwen_decision(
-        decision_type="entry",
-        symbol=symbol,
-        price=snapshot.get("price"),
-        prompt_text=prompt_text,
-        raw_response=raw_response,
-        parsed=review,
-        model=snapshot.get("model") or "qwen-trading-v002:latest",
-        duration_ns=decision_duration_ns,
-        context={
-            "cache_status": entry_cache.get("status"),
-            "session": entry_cache.get("session"),
-            "execution_plan": review.get("execution_plan"),
-        },
-    )
     if (
         review["execution_plan"].get("status") == "ready"
         and review.get("invalidation") is None
@@ -668,18 +995,55 @@ def generate_dashboard_deal_sheet() -> dict:
             "level_id": review["execution_plan"]["stop_level_id"],
             "price": review["execution_plan"]["stop_loss"],
         }
-    proposal = append_paper_proposal(
-        snapshot,
-        review,
-        raw_response,
-        decision_wall_seconds,
-        decision_duration_ns,
-        prompt_text,
-        planner_context,
+
+    # No-model wait churn: identical cache/session blocks used to rewrite a
+    # fresh proposal every 30s. Keep UI state fresh; only audit when the wait
+    # signature changes or Qwen actually ran.
+    model_called = prompt_text is not None
+    wait_signature = wait_decision_signature(review, entry_cache)
+    skip_wait_audit = (
+        not model_called
+        and bool(wait_signature)
+        and wait_signature == latest_wait_decision_signature()
     )
     entry_state = read_json_safe(
         ENTRY_STATE_FILE, {"qwen": dict(DEFAULT_ENTRY_QWEN_STATE)}
     )
+    if skip_wait_audit:
+        proposal_id = entry_state.get("qwen", {}).get("proposal_id") or "wait-deduped"
+        logging.info(
+            "Skipped identical wait proposal audit signature=%s",
+            wait_signature,
+        )
+    else:
+        append_qwen_decision(
+            decision_type="entry",
+            symbol=symbol,
+            price=snapshot.get("price"),
+            prompt_text=prompt_text,
+            raw_response=raw_response,
+            parsed=review,
+            model=snapshot.get("model") or "qwen-trading-v003:latest",
+            duration_ns=decision_duration_ns,
+            context={
+                "cache_status": entry_cache.get("status"),
+                "session": entry_cache.get("session"),
+                "execution_plan": review.get("execution_plan"),
+                "prompt_bytes": len(prompt_text.encode("utf-8")) if prompt_text else 0,
+                "entry_prompt_mode": "compact_trade_quality_v1",
+                "wait_signature": wait_signature or None,
+            },
+        )
+        proposal = append_paper_proposal(
+            snapshot,
+            review,
+            raw_response,
+            decision_wall_seconds,
+            decision_duration_ns,
+            prompt_text,
+            planner_context,
+        )
+        proposal_id = proposal["proposal_id"]
     entry_state["qwen"] = {
         "bias": review.get("bias", "Conditional"),
         "confidence": normalize_confidence(review.get("confidence"), 0),
@@ -690,9 +1054,10 @@ def generate_dashboard_deal_sheet() -> dict:
             review.get("invalidation"), review["execution_plan"]
         ),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
-        "proposal_id": proposal["proposal_id"],
+        "proposal_id": proposal_id,
         "proposal_price": snapshot.get("price"),
         "execution_plan": review["execution_plan"],
+        "wait_deduped": skip_wait_audit,
     }
     write_json_atomic(ENTRY_STATE_FILE, entry_state)
     return build_snapshot()
@@ -707,6 +1072,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "http://localhost",
             "http://127.0.0.1",
             "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
             "http://localhost:8080",
             "http://127.0.0.1:8080",
             "http://localhost:8088",
@@ -850,6 +1218,148 @@ def generate_automatic_deal_sheet() -> None:
         QWEN_DECISION_LOCK.release()
 
 
+def self_test_entry_prompt() -> None:
+    """Verify compact entry prompt stays far below the old ~14KB+ core_skill dump."""
+    entry_cache = {
+        "status": "ready",
+        "validated_at_utc": "2026-08-09T00:00:00Z",
+        "decision_time_utc": "2026-08-09T00:00:00Z",
+        "epochs": {
+            "structural": "s1",
+            "levels": "l1",
+            "session": "ss1",
+            "playbooks": "p1",
+            "minute": "m1",
+        },
+        "structure": {
+            "current_h4_state": "forming_active",
+            "nearest_lower_zone": {
+                "level_id": "H1_SUP_1",
+                "zone_low": 3300.0,
+                "zone_high": 3301.0,
+                "role": "support",
+            },
+            "nearest_upper_zone": {
+                "level_id": "H1_RES_1",
+                "zone_low": 3310.0,
+                "zone_high": 3311.0,
+                "role": "resistance",
+            },
+            "timeframe_location": {
+                "H4": {
+                    "location": "inside_prior",
+                    "auction_state": "balance",
+                    "latest_completed": {"close": 3305.0},
+                    "evidence_ids": ["H4_1", "H4_2"],
+                },
+                "H1": {
+                    "location": "above_prior",
+                    "auction_state": "acceptance",
+                    "latest_completed": {"close": 3306.0},
+                    "evidence_ids": ["H1_1", "H1_2"],
+                },
+            },
+        },
+        "session": {
+            "session": "london",
+            "trade_permitted": True,
+            "asia_high": 3312.0,
+            "asia_low": 3298.0,
+            "asia_relation": "inside",
+        },
+        "playbooks": [
+            {
+                "playbook_id": "pb1",
+                "level_id": "H1_RES_1",
+                "buy_condition": "M5 close reclaim above H1_RES_1",
+                "sell_condition": "M1 fail close below H1_RES_1",
+                "missing_evidence": None,
+                "evidence_ids": ["H1_1"],
+            }
+        ],
+        "minute": {
+            "quote": {"bid": 3305.5, "ask": 3305.7, "spread": 0.2, "age_ms": 40},
+            "closed_m1": {
+                "id": "M1_1",
+                "open": 3305.0,
+                "high": 3306.0,
+                "low": 3304.5,
+                "close": 3305.4,
+                "tick_volume": 120,
+            },
+            "forming": {
+                "M1": {"id": "M1f", "open": 3305.4, "high": 3305.8, "low": 3305.2, "current": 3305.6},
+                "H4": {"id": "H4f", "open": 1, "high": 2, "low": 0, "current": 1},
+            },
+            "volume": {"M1_ratio": 1.2, "M5_ratio": 0.9},
+            "nearby_levels": [{"id": "H1_RES_1", "price": 3310.0, "distance": 4.5}],
+        },
+        "recent_closed": {
+            "M1": [
+                {
+                    "evidence_id": f"M1_{index}",
+                    "open": 3300 + index,
+                    "high": 3301 + index,
+                    "low": 3299 + index,
+                    "close": 3300.5 + index,
+                    "tick_volume": 100 + index,
+                }
+                for index in range(5)
+            ],
+            "M5": [],
+            "M15": [],
+            "M30": [],
+        },
+        "levels": [
+            {
+                "level_id": "H1_SUP_1",
+                "timeframe": "H1",
+                "zone_low": 3300.0,
+                "zone_high": 3301.0,
+                "role": "support",
+            },
+            {
+                "level_id": "H1_RES_1",
+                "timeframe": "H1",
+                "zone_low": 3310.0,
+                "zone_high": 3311.0,
+                "role": "resistance",
+            },
+        ],
+        "known_evidence_ids": [
+            "H4_1", "H4_2", "H1_1", "H1_2", "M1_0", "M1_1", "M1_2", "M1_3", "M1_4",
+            "H1_SUP_1", "H1_RES_1",
+        ],
+    }
+    decision_levels = cache_levels_for_decision(entry_cache)
+    facts = compact_entry_facts(entry_cache, decision_levels, {}, "XAUUSDr")
+    prompt = build_entry_prompt(facts)
+    prompt_bytes = len(prompt.encode("utf-8"))
+    assert "core_skill" not in prompt
+    assert "ENTRY FACTS" in prompt
+    assert "execution_levels" in facts
+    assert "forming" in facts and "H4" not in facts["forming"]
+    assert prompt_bytes < 6000, prompt_bytes
+    schema = entry_decision_schema(entry_cache, decision_levels, facts)
+    assert "H1_RES_1" in schema["properties"]["execution_plan"]["properties"]["entry_low_id"]["enum"]
+    wait_review = {
+        "execution_plan": {"status": "wait", "reason": "Entry cache blocked."},
+        "entry_validation_failures": ["entry_cache:minute:expired"],
+    }
+    blocked_cache = {
+        "status": "blocked",
+        "reason": "cache_provenance_invalid",
+        "session": {},
+    }
+    sig_a = wait_decision_signature(wait_review, blocked_cache)
+    sig_b = wait_decision_signature(wait_review, blocked_cache)
+    assert sig_a and sig_a == sig_b
+    assert wait_decision_signature(
+        {"execution_plan": {"status": "ready", "reason": "ok"}}, blocked_cache
+    ) == ""
+    print(f"reviewer entry-prompt self-test passed prompt_bytes={prompt_bytes}")
+
+
 def main() -> None:
     # A localhost listener prevents duplicate entry-decision instances.
     singleton = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -864,8 +1374,15 @@ def main() -> None:
     while True:
         started = time.monotonic()
         try:
-            warm_model()
-            generate_automatic_deal_sheet()
+            market = gold_market_open()
+            sync_model_residency(market)
+            if not market.get("open"):
+                logging.info(
+                    "Market closed (%s); Qwen unloaded/idle — skip entry cycle",
+                    market.get("reason"),
+                )
+            else:
+                generate_automatic_deal_sheet()
         except Exception:
             logging.exception("Entry-decision cycle failed")
         elapsed = time.monotonic() - started
@@ -873,4 +1390,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        self_test_entry_prompt()
+    else:
+        main()

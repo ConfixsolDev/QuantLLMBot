@@ -7,7 +7,6 @@ import { SheetView } from "@/views/SheetView";
 import { CheatView } from "@/views/CheatView";
 
 const SNAPSHOT_POLL_MS = 10_000;
-const DEAL_SHEET_POLL_MS = 60_000;
 
 export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot>(DEFAULT_SNAPSHOT);
@@ -26,6 +25,8 @@ export default function App() {
     }
   }, []);
 
+  // Manual only. Backend reviewer already auto-generates every ~30s when flat;
+  // a second Desk timer was dual-firing /deal-sheet and fighting the lock.
   const generateDealSheet = useCallback(async () => {
     setGenerating(true);
     try {
@@ -44,11 +45,6 @@ export default function App() {
     const timer = window.setInterval(loadSnapshot, SNAPSHOT_POLL_MS);
     return () => window.clearInterval(timer);
   }, [loadSnapshot]);
-
-  useEffect(() => {
-    const timer = window.setInterval(generateDealSheet, DEAL_SHEET_POLL_MS);
-    return () => window.clearInterval(timer);
-  }, [generateDealSheet]);
 
   if (view === "sheet") {
     return (

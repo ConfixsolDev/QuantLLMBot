@@ -1,6 +1,6 @@
 "use client";
 
-import type { DayPlan } from "@/lib/types";
+import type { DayPlan, PriceSanity } from "@/lib/types";
 
 function ScenarioCard({
   title,
@@ -42,7 +42,15 @@ function ScenarioCard({
   );
 }
 
-export function DayPlanPanel({ dayPlan }: { dayPlan: DayPlan | null }) {
+export function DayPlanPanel({
+  dayPlan,
+  livePrice,
+  liveSanity,
+}: {
+  dayPlan: DayPlan | null;
+  livePrice?: number | null;
+  liveSanity?: PriceSanity | null;
+}) {
   if (!dayPlan) {
     return (
       <div className="card">
@@ -55,6 +63,15 @@ export function DayPlanPanel({ dayPlan }: { dayPlan: DayPlan | null }) {
   }
 
   const validator = dayPlan.validator;
+  const generatedSanity = dayPlan.price_sanity;
+  const sanity = liveSanity ?? generatedSanity;
+  const sanityOk = sanity?.ok !== false;
+  const live =
+    typeof livePrice === "number"
+      ? livePrice
+      : typeof sanity?.live_price === "number"
+        ? sanity.live_price
+        : null;
 
   return (
     <div className="card space-y-4">
@@ -77,11 +94,35 @@ export function DayPlanPanel({ dayPlan }: { dayPlan: DayPlan | null }) {
           >
             {dayPlan.tradeable ? "Tradeable" : "Not tradeable"}
           </span>
+          <span
+            className={`badge ${sanityOk ? "badge-on_track" : "badge-invalidated"}`}
+          >
+            Price sanity: {sanityOk ? "ok" : "fail"}
+          </span>
         </div>
       </div>
-      <p className="text-sm text-slate-300">
-        Reference {dayPlan.reference_price.toFixed(2)}
-      </p>
+      <div className="space-y-1 text-sm text-slate-300">
+        <p>
+          Reference {Number(dayPlan.reference_price).toFixed(2)}
+          <span className="text-slate-500"> · code-owned live quote</span>
+        </p>
+        {live != null && (
+          <p>
+            Live now {live.toFixed(2)}
+            {sanity?.max_deviation_allowed != null && (
+              <span className="text-slate-500">
+                {" "}
+                · max Δ {sanity.max_deviation_allowed.toFixed(1)}
+              </span>
+            )}
+          </p>
+        )}
+        {!sanityOk && sanity?.failures?.length ? (
+          <p className="text-xs text-rose-300">
+            {sanity.failures.slice(0, 3).join(" · ")}
+          </p>
+        ) : null}
+      </div>
       <div className="grid gap-3 md:grid-cols-2">
         <ScenarioCard
           title="Bullish"

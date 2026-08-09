@@ -132,6 +132,51 @@ def inside_entry_zone(price: float, low: float, high: float) -> bool:
     return low <= price <= high
 
 
+def entry_location(
+    side: str,
+    price: float,
+    low: float,
+    high: float,
+    stop_loss: float | None = None,
+) -> str:
+    """Classify live quote vs the approved entry band.
+
+    - inside_zone: within [low, high]
+    - favorable_outside: better fill than the zone (buy below low, sell above high)
+    - past_stop: already through structural invalidation — never enter
+    - unfavorable_outside: worse / chasing side of the zone — keep waiting
+    """
+    if side == "buy":
+        if stop_loss is not None and price <= float(stop_loss):
+            return "past_stop"
+        if price > high:
+            return "unfavorable_outside"
+        if price < low:
+            return "favorable_outside"
+        return "inside_zone"
+    if stop_loss is not None and price >= float(stop_loss):
+        return "past_stop"
+    if price < low:
+        return "unfavorable_outside"
+    if price > high:
+        return "favorable_outside"
+    return "inside_zone"
+
+
+def entry_price_allowed(
+    side: str,
+    price: float,
+    low: float,
+    high: float,
+    stop_loss: float | None = None,
+) -> bool:
+    """True when price is in-zone or favorably outside it (not chasing, not past stop)."""
+    return entry_location(side, price, low, high, stop_loss) in (
+        "inside_zone",
+        "favorable_outside",
+    )
+
+
 def remaining_signal_seconds(created_at: datetime, now: datetime, ttl: float) -> float:
     return ttl - (now - created_at).total_seconds()
 
@@ -149,7 +194,12 @@ def favorable_price_move(mark: float, average_entry: float, side: str) -> float:
 
 
 class BestPriceRangeTracker:
-    """Enter immediately on the first fresh tick inside Qwen's approved zone.
+    """Enter immediately on the first fresh allowed tick.
+
+    Allowed means inside Qwen's approved zone, or favorably outside it:
+    buy below the zone low, sell above the zone high. Chasing the wrong
+    side of the zone still waits. Price already through the structural
+    stop never enters.
 
     2026-08-06 change: this used to wait up to `observation_seconds` (2s)
     hunting for a small retrace before entering, and if nothing retraced it
@@ -160,7 +210,7 @@ class BestPriceRangeTracker:
     out, not because 89 was actually the best available. `observation_seconds`
     and `retrace_distance` are kept as constructor/CLI arguments -- and are
     still recorded in the logged proposal `plan` for audit continuity -- but
-    no longer gate the entry decision. The first fresh, in-zone tick fires
+    no longer gate the entry decision. The first fresh allowed tick fires
     immediately. `best_seen` is still tracked and reported purely for
     observability (how the actual fill compared to the best price available
     in the brief window before entry), not as a trigger condition.
@@ -188,9 +238,18 @@ class BestPriceRangeTracker:
         inside_range: bool,
         signal_seconds_left: float,
         poll_seconds: float,
+        location: str = "inside_zone",
     ) -> dict:
         if not inside_range:
-            return {"enter": False, "reason": "outside_entry_range"}
+            return {
+                "enter": False,
+                "reason": (
+                    "past_stop"
+                    if location == "past_stop"
+                    else "outside_entry_range"
+                ),
+                "location": location,
+            }
         self.observations += 1
         if self.first_seen is None:
             self.first_seen = now_monotonic
@@ -210,13 +269,15 @@ class BestPriceRangeTracker:
             if self.side == "buy"
             else float(self.best_seen) - float(price)
         )
-        # Fire on the first fresh, in-zone tick -- no waiting, no unconditional
-        # accept-at-timeout. See the class docstring for why the previous
-        # wait-then-accept-anything behavior was removed.
-        reason = "immediate_zone_entry"
+        reason = (
+            "favorable_outside_zone_entry"
+            if location == "favorable_outside"
+            else "immediate_zone_entry"
+        )
         return {
             "enter": True,
             "reason": reason,
+            "location": location,
             "best_price": self.best_seen,
             "current_price": float(price),
             "retrace_distance": round(retrace, 6),
@@ -391,7 +452,11 @@ def _run(args) -> dict:
                     "initial_safety_distance": INITIAL_SAFETY_DISTANCE,
                     "management_owner": "qwen_trade_management",
                     "signal_ttl_seconds": args.signal_ttl_seconds,
-                    "entry_price_policy": "bounded_best_price_in_approved_range",
+                    "entry_price_policy": (
+                        "in_zone_or_favorable_outside;"
+                        "buy_below_low_and_sell_above_high_allowed;"
+                        "unfavorable_chase_waits"
+                    ),
                     "best_price_observation_seconds": args.best_price_observation_seconds,
                     "best_price_retrace": args.best_price_retrace,
                 },
@@ -399,8 +464,8 @@ def _run(args) -> dict:
         )
 
         # Visibility for the two distinct ways the pre-fill wait can stall:
-        # MT5 not handing us a fresh tick at all, versus price simply not
-        # having reached Qwen's approved zone yet. Logged (not gated) so we
+        # MT5 not handing us a fresh tick at all, versus price still on the
+        # unfavorable / chasing side of Qwen's zone. Logged (not gated) so we
         # can tell the two apart from paper-runner.log instead of having to
         # reconstruct it after the fact from execution records, as happened
         # with today's 2026-08-06 review. Neither log line changes behavior;
@@ -462,17 +527,33 @@ def _run(args) -> dict:
 
             entry_quote = fill_price(tick, args.side)
             mark = close_price(tick, args.side)
-            currently_inside_zone = not fills and inside_entry_zone(
-                entry_quote, args.entry_low, args.entry_high
+            location = entry_location(
+                args.side,
+                entry_quote,
+                args.entry_low,
+                args.entry_high,
+                args.stop_loss,
             )
-            if not fills and not currently_inside_zone:
+            currently_allowed = not fills and entry_price_allowed(
+                args.side,
+                entry_quote,
+                args.entry_low,
+                args.entry_high,
+                args.stop_loss,
+            )
+            if not fills and not currently_allowed:
                 now = time.monotonic()
                 if outside_zone_since is None:
                     outside_zone_since = now
                 elif now - outside_zone_since >= STALL_LOG_THRESHOLD_SECONDS:
                     logging.warning(
-                        "paper_executor %s: price %.3f still outside approved zone [%.3f, %.3f] after %.1fs",
-                        execution_id, entry_quote, args.entry_low, args.entry_high,
+                        "paper_executor %s: price %.3f %s vs zone [%.3f, %.3f] stop %.3f after %.1fs",
+                        execution_id,
+                        entry_quote,
+                        location,
+                        args.entry_low,
+                        args.entry_high,
+                        args.stop_loss,
                         now - outside_zone_since,
                     )
                     outside_zone_since = now
@@ -481,9 +562,10 @@ def _run(args) -> dict:
             tracker_state = entry_tracker.observe(
                 entry_quote,
                 time.monotonic(),
-                inside_range=currently_inside_zone,
+                inside_range=currently_allowed,
                 signal_seconds_left=max(0.0, signal_deadline - time.monotonic()),
                 poll_seconds=args.poll_ms / 1000,
+                location=location,
             )
             if not fills and tracker_state.get("enter"):
                 phase = "single_entry"
@@ -684,6 +766,19 @@ def run(args) -> dict:
 def self_test() -> None:
     assert inside_entry_zone(101, 100, 102)
     assert not inside_entry_zone(103, 100, 102)
+    assert entry_location("buy", 101, 100, 102, 97) == "inside_zone"
+    assert entry_location("buy", 99, 100, 102, 97) == "favorable_outside"
+    assert entry_location("buy", 103, 100, 102, 97) == "unfavorable_outside"
+    assert entry_location("buy", 97, 100, 102, 97) == "past_stop"
+    assert entry_location("sell", 101, 100, 102, 105) == "inside_zone"
+    assert entry_location("sell", 103, 100, 102, 105) == "favorable_outside"
+    assert entry_location("sell", 99, 100, 102, 105) == "unfavorable_outside"
+    assert entry_location("sell", 105, 100, 102, 105) == "past_stop"
+    assert entry_price_allowed("buy", 99, 100, 102, 97)
+    assert entry_price_allowed("sell", 103, 100, 102, 105)
+    assert not entry_price_allowed("buy", 103, 100, 102, 97)
+    assert not entry_price_allowed("sell", 99, 100, 102, 105)
+    assert not entry_price_allowed("buy", 97, 100, 102, 97)
     assert average_fill_price([{"price": 101, "volume": 0.5}]) == 101
     assert favorable_price_move(104, 101, "buy") == 3
     assert favorable_price_move(98, 101, "sell") == 3
@@ -697,27 +792,63 @@ def self_test() -> None:
     assert remaining_signal_seconds(
         created, created + timedelta(seconds=60), 60
     ) == 0
-    # 2026-08-06: BestPriceRangeTracker no longer waits for a retrace or a
-    # timeout -- it fires on the first fresh, in-zone tick. These assertions
-    # replace the old wait-then-accept-anything test coverage.
+    # First fresh allowed tick fires immediately (in-zone or favorable outside).
     buy_tracker = BestPriceRangeTracker("buy", 2.0, 0.1)
     first = buy_tracker.observe(
-        101.0, 0.0, inside_range=True, signal_seconds_left=10, poll_seconds=0.25
+        101.0,
+        0.0,
+        inside_range=True,
+        signal_seconds_left=10,
+        poll_seconds=0.25,
+        location="inside_zone",
     )
     assert first["enter"] and first["reason"] == "immediate_zone_entry"
     assert first["best_price"] == 101.0
     assert first["observations"] == 1
+    buy_better = BestPriceRangeTracker("buy", 2.0, 0.1).observe(
+        99.0,
+        0.0,
+        inside_range=True,
+        signal_seconds_left=10,
+        poll_seconds=0.25,
+        location="favorable_outside",
+    )
+    assert buy_better["enter"] and buy_better["reason"] == "favorable_outside_zone_entry"
     outside = BestPriceRangeTracker("buy", 2.0, 0.1).observe(
-        101.0, 0.0, inside_range=False, signal_seconds_left=10, poll_seconds=0.25
+        103.0,
+        0.0,
+        inside_range=False,
+        signal_seconds_left=10,
+        poll_seconds=0.25,
+        location="unfavorable_outside",
     )
     assert not outside["enter"] and outside["reason"] == "outside_entry_range"
     sell_tracker = BestPriceRangeTracker("sell", 1.0, 0.1)
     immediate = sell_tracker.observe(
-        100.0, 0.0, inside_range=True, signal_seconds_left=10, poll_seconds=0.25
+        100.0,
+        0.0,
+        inside_range=True,
+        signal_seconds_left=10,
+        poll_seconds=0.25,
+        location="inside_zone",
     )
     assert immediate["enter"] and immediate["best_price"] == 100.0
+    sell_better = BestPriceRangeTracker("sell", 1.0, 0.1).observe(
+        103.0,
+        0.0,
+        inside_range=True,
+        signal_seconds_left=10,
+        poll_seconds=0.25,
+        location="favorable_outside",
+    )
+    assert sell_better["enter"] and sell_better["reason"] == "favorable_outside_zone_entry"
     improved = sell_tracker.observe(
-        100.2, 1.0, inside_range=True, signal_seconds_left=9, poll_seconds=0.25
+        100.2,
+        1.0,
+        inside_range=True,
+        signal_seconds_left=9,
+        poll_seconds=0.25,
+        location="inside_zone",
     )
     # sell side: a higher price is the favorable direction, so best_price
     # tracking should move up even though entry already fired on the first tick.
