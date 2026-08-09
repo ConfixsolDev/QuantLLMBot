@@ -28,7 +28,10 @@ GoldFlow/Qwen demo-trading application.
 - `backend/paper_executor.py` enforces the MT5 demo-account lock, opens exactly
   one 0.50-lot position, and maintains the broker safety stop. It never adds,
   averages, or closes merely because of elapsed time or small gross profit.
-- `website/` contains the active IIS production bundle served by GoldFlow Desk.
+- `website/` contains the IIS production bundle served by GoldFlow Desk.
+  Build it from source: `desk/npm run build` (writes here).
+- `desk/` is the editable Vite + React source for GoldFlow Desk.
+  Dev: `npm run dev` on port 5173 (proxies API to :48632).
 - `planview/` is the in-repo Next.js Plan View (session hierarchy + chart).
   Dev: `npm run dev` on port 3000. Deploy: `backend/install-planview-iis.ps1`
   (IIS port 8088).

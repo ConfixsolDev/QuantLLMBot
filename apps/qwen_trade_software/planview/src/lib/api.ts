@@ -1,4 +1,4 @@
-import type { CandlesResponse, PlannerState } from "./types";
+import type { CandlesResponse, PlannerState, Snapshot } from "./types";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:48632";
@@ -20,6 +20,10 @@ export function fetchCandles(
   count = 200,
 ): Promise<CandlesResponse> {
   return fetchJson<CandlesResponse>(`/candles?tf=${timeframe}&count=${count}`);
+}
+
+export function fetchSnapshot(): Promise<Snapshot> {
+  return fetchJson<Snapshot>("/snapshot");
 }
 
 export function fetchPlanHistory(date: string) {

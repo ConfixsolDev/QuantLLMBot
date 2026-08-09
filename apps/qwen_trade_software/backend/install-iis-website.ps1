@@ -4,9 +4,23 @@
 $ErrorActionPreference = "Stop"
 $SiteName = "GoldFlowDesk"
 $SiteRoot = "C:\inetpub\GoldFlowDesk"
-$Source = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "..\website"
+$BackendRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$DeskRoot = Join-Path $BackendRoot "..\desk"
+$Source = Join-Path $BackendRoot "..\website"
 
 Write-Host "=== Deploy GoldFlow Desk website to IIS ===" -ForegroundColor Cyan
+
+if (Test-Path (Join-Path $DeskRoot "package.json")) {
+    Write-Host "Building GoldFlow Desk from source..." -ForegroundColor Yellow
+    Push-Location $DeskRoot
+    if (-not (Test-Path "node_modules")) {
+        npm install
+    }
+    npm run build
+    Pop-Location
+} else {
+    Write-Host "Desk source not found; deploying existing website bundle." -ForegroundColor Yellow
+}
 
 $features = @(
     "IIS-WebServerRole",

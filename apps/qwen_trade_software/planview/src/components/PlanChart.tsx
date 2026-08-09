@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import {
   ColorType,
   IChartApi,
+  IPriceLine,
   ISeriesApi,
   LineStyle,
   createChart,
@@ -13,6 +14,7 @@ import type {
   DayPlan,
   HourlyUpdate,
   SessionPlan,
+  TradeIdea,
 } from "@/lib/types";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -25,6 +27,7 @@ interface PlanChartProps {
   candles: Candle[];
   dayPlan: DayPlan | null;
   sessionPlan: SessionPlan | null;
+  tradeIdea: TradeIdea | null;
   hourlyUpdates: HourlyUpdate[];
   selectedHourlyId: string | null;
   onSelectHour: (hourlyId: string) => void;
@@ -35,6 +38,7 @@ export function PlanChart({
   candles,
   dayPlan,
   sessionPlan,
+  tradeIdea,
   hourlyUpdates,
   selectedHourlyId,
   onSelectHour,
@@ -45,6 +49,7 @@ export function PlanChart({
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const levelLinesRef = useRef<ReturnType<IChartApi["addLineSeries"]>[]>([]);
   const zoneLinesRef = useRef<ReturnType<IChartApi["addLineSeries"]>[]>([]);
+  const ideaLinesRef = useRef<IPriceLine[]>([]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -154,12 +159,70 @@ export function PlanChart({
     }
   }, [dayPlan, sessionPlan, candles]);
 
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+
+    for (const line of ideaLinesRef.current) series.removePriceLine(line);
+    ideaLinesRef.current = [];
+
+    const plan = tradeIdea?.execution_plan;
+    if (!plan || plan.status !== "ready") return;
+
+    const sideLabel = (plan.side ?? "").toUpperCase();
+    const entryColor = plan.side === "buy" ? "#38bdf8" : "#c084fc";
+
+    const addIdeaLine = (
+      price: number | undefined,
+      title: string,
+      color: string,
+      lineStyle: LineStyle,
+    ) => {
+      if (typeof price !== "number" || !Number.isFinite(price)) return;
+      ideaLinesRef.current.push(
+        series.createPriceLine({
+          price,
+          color,
+          lineWidth: 2,
+          lineStyle,
+          axisLabelVisible: true,
+          title,
+        }),
+      );
+    };
+
+    addIdeaLine(plan.entry_low, `${sideLabel} entry low`, entryColor, LineStyle.Solid);
+    addIdeaLine(plan.entry_high, `${sideLabel} entry high`, entryColor, LineStyle.Solid);
+    addIdeaLine(plan.stop_loss, "SL", "#ef4444", LineStyle.Dashed);
+    addIdeaLine(plan.take_profit, "TP", "#22c55e", LineStyle.Dashed);
+  }, [tradeIdea]);
+
+  const ideaPlan =
+    tradeIdea?.execution_plan?.status === "ready"
+      ? tradeIdea.execution_plan
+      : null;
+
   return (
     <div className="card space-y-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
-          Chart · {timeframe}
-        </h2>
+        <div className="flex items-center gap-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
+            Chart · {timeframe}
+          </h2>
+          {ideaPlan && (
+            <span
+              className={`rounded px-2 py-0.5 text-xs font-semibold ${
+                ideaPlan.side === "buy"
+                  ? "bg-sky-500/15 text-sky-300"
+                  : "bg-purple-500/15 text-purple-300"
+              }`}
+            >
+              Idea: {ideaPlan.side?.toUpperCase()} {ideaPlan.entry_low}–
+              {ideaPlan.entry_high} · SL {ideaPlan.stop_loss} · TP{" "}
+              {ideaPlan.take_profit}
+            </span>
+          )}
+        </div>
         <div className="flex flex-wrap gap-2 text-xs">
           {hourlyUpdates.map((update) => (
             <button
@@ -184,6 +247,7 @@ export function PlanChart({
       <div ref={containerRef} className="w-full" />
       <p className="text-xs text-slate-500">
         Gold dashed lines = day key levels. Blue/orange bands = session entry zones.
+        Labeled price lines = active trade idea (entry zone, SL red, TP green).
         Hour buttons color by plan_status (on_track / drifting / invalidated).
       </p>
     </div>

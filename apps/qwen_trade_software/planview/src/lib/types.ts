@@ -110,6 +110,32 @@ export interface PlannerState {
   planner_alive?: boolean;
 }
 
+export interface ExecutionPlan {
+  status: "ready" | "wait" | string;
+  side?: "buy" | "sell";
+  entry_low?: number;
+  entry_high?: number;
+  stop_loss?: number;
+  take_profit?: number;
+  decision_confidence?: number;
+  reason?: string;
+}
+
+export interface TradeIdea {
+  bias?: string;
+  confidence?: number;
+  summary?: string;
+  invalidation?: string;
+  updated_at?: string;
+  proposal_id?: string;
+  proposal_price?: number;
+  execution_plan?: ExecutionPlan | null;
+}
+
+export interface Snapshot {
+  qwen?: TradeIdea | null;
+}
+
 export interface Candle {
   time: number;
   open: number;

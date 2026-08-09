@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { fetchCandles, fetchPlan } from "@/lib/api";
-import type { HourlyUpdate, PlannerState } from "@/lib/types";
+import { fetchCandles, fetchPlan, fetchSnapshot } from "@/lib/api";
+import type { HourlyUpdate, PlannerState, TradeIdea } from "@/lib/types";
 import { DayPlanPanel } from "@/components/DayPlanPanel";
 import { HeaderClock } from "@/components/HeaderClock";
 import { HourValidationCard } from "@/components/HourValidationCard";
@@ -19,6 +19,7 @@ export default function PlanViewPage() {
   const [timeframe, setTimeframe] =
     useState<(typeof TIMEFRAMES)[number]>("M15");
   const [selectedHourlyId, setSelectedHourlyId] = useState<string | null>(null);
+  const [tradeIdea, setTradeIdea] = useState<TradeIdea | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadPlan = useCallback(async () => {
@@ -40,11 +41,26 @@ export default function PlanViewPage() {
     }
   }, [timeframe]);
 
+  const loadTradeIdea = useCallback(async () => {
+    try {
+      const snapshot = await fetchSnapshot();
+      setTradeIdea(snapshot.qwen ?? null);
+    } catch {
+      // Trade idea overlay is optional; chart still works without it.
+    }
+  }, []);
+
   useEffect(() => {
     loadPlan();
     const timer = setInterval(loadPlan, 15000);
     return () => clearInterval(timer);
   }, [loadPlan]);
+
+  useEffect(() => {
+    loadTradeIdea();
+    const timer = setInterval(loadTradeIdea, 15000);
+    return () => clearInterval(timer);
+  }, [loadTradeIdea]);
 
   useEffect(() => {
     loadCandles();
@@ -114,6 +130,7 @@ export default function PlanViewPage() {
         candles={candles}
         dayPlan={plan?.day_plan ?? null}
         sessionPlan={plan?.session_plan ?? null}
+        tradeIdea={tradeIdea}
         hourlyUpdates={hourlyUpdates}
         selectedHourlyId={selectedUpdate?.hourly_id ?? null}
         onSelectHour={setSelectedHourlyId}
