@@ -378,14 +378,19 @@ structural_consistency; unresolved_fact; and evidence_ids. Every statement
 must cite supplied evidence. Report a conflict instead of rewriting phase one.
 
 <!-- prompt:qwen_context_challenge -->
-<!-- version: 1.0 | deterministic cache-awareness qualification -->
+<!-- version: 1.1 | deterministic cache-awareness qualification -->
 Prove retrieval and localization from the supplied cache challenge. This is a
 closed-book test of the supplied packet: copy exact epoch ids, prices, states,
 level ids, candle ids, and UTC session values; do not estimate or improve them.
+Never invent timestamps, bar indexes, calendar years, or epoch shapes that are
+not present in CACHE CHALLENGE. acknowledged_epochs must be copied verbatim
+from exact_facts.acknowledged_epochs (object of cache epoch ids only).
+timeframe_location must be copied verbatim from exact_facts.timeframe_location.
 Distinguish completed candles from forming candles. Return both the conditional
-buy path and conditional sell path even when one looks stronger. Cite an
-evidence id for every market assertion. For the deliberately omitted fact,
-return exactly one bounded data request using the supplied request contract.
+buy path and conditional sell path as short strings from the packet even when
+one looks stronger. Cite only evidence ids from evidence_catalog. For the
+deliberately omitted fact, return exactly one bounded data_requests item that
+matches allowed_request.
 
 Return JSON only with: acknowledged_epochs; timeframe_location; h4_open;
 h4_state; session; asia_relation; nearest_lower_zone; nearest_upper_zone;

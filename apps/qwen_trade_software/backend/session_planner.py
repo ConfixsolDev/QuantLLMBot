@@ -23,7 +23,9 @@ from market_context_cache import (
 )
 from review_shared import (
     APP_DIR,
+    DEFAULT_TERMINAL,
     LOG_DIR,
+    MANAGEMENT_STATE_FILE,
     MODEL,
     PLANNER_STATE_FILE,
     STORE_ROOT,
@@ -303,8 +305,48 @@ def planner_facts(symbol: str = SYMBOL) -> dict:
     }
 
 
+def live_mid_from_management() -> float | None:
+    """Fallback mid from the management dashboard when entry-cache quote is empty."""
+    state = read_json_safe(MANAGEMENT_STATE_FILE, {})
+    try:
+        price = float(state.get("price") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return round(price, 3) if price > 0 else None
+
+
+def live_mid_from_mt5(symbol: str = SYMBOL) -> float | None:
+    """Last-resort mid from MT5 when cache/management quotes are unavailable."""
+    try:
+        import MetaTrader5 as mt5
+    except ImportError:
+        return None
+    if not (mt5.initialize(path=DEFAULT_TERMINAL) or mt5.initialize()):
+        return None
+    try:
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            return None
+        bid = float(tick.bid)
+        ask = float(tick.ask)
+        if bid > 0 and ask > 0:
+            return round((bid + ask) / 2.0, 3)
+        if bid > 0:
+            return round(bid, 3)
+        if ask > 0:
+            return round(ask, 3)
+        return None
+    finally:
+        mt5.shutdown()
+
+
 def live_mid_from_facts(facts: dict) -> float | None:
-    """Authoritative live mid from cache quote; never trust a model-emitted price."""
+    """Authoritative live mid; never trust a model-emitted price.
+
+    Prefer the validated minute-cache quote, then management dashboard, then MT5.
+    Missing live mid previously produced hallucinated ~2000 XAU levels that stuck
+    in planner-state for the whole Asia session.
+    """
     quote = (facts.get("minute") or {}).get("quote") or {}
     try:
         bid = quote.get("bid")
@@ -316,8 +358,11 @@ def live_mid_from_facts(facts: dict) -> float | None:
         if ask is not None:
             return round(float(ask), 3)
     except (TypeError, ValueError):
-        return None
-    return None
+        pass
+    management = live_mid_from_management()
+    if management is not None:
+        return management
+    return live_mid_from_mt5(str(facts.get("symbol") or SYMBOL))
 
 
 def price_deviation_limit(live_price: float) -> float:
@@ -365,6 +410,34 @@ def _collect_plan_prices(plan: dict) -> list[tuple[str, float]]:
                 prices.append((f"entry_zones[{index}].{field}", float(zone[field])))
             except (TypeError, ValueError):
                 prices.append((f"entry_zones[{index}].{field}", float("nan")))
+    h4 = plan.get("trade_idea_h4")
+    if isinstance(h4, dict):
+        if h4.get("invalidation") is not None:
+            try:
+                prices.append(("trade_idea_h4.invalidation", float(h4["invalidation"])))
+            except (TypeError, ValueError):
+                prices.append(("trade_idea_h4.invalidation", float("nan")))
+        for index, target in enumerate(h4.get("targets") or []):
+            try:
+                prices.append((f"trade_idea_h4.targets[{index}]", float(target)))
+            except (TypeError, ValueError):
+                prices.append((f"trade_idea_h4.targets[{index}]", float("nan")))
+    m15 = plan.get("trade_idea_m15")
+    if isinstance(m15, dict):
+        zone = m15.get("pullback_zone") or []
+        if len(zone) == 2:
+            try:
+                prices.append(("trade_idea_m15.pullback_lo", float(zone[0])))
+                prices.append(("trade_idea_m15.pullback_hi", float(zone[1])))
+            except (TypeError, ValueError):
+                prices.append(("trade_idea_m15.pullback_zone", float("nan")))
+        for field in ("invalidation", "target"):
+            if m15.get(field) is None:
+                continue
+            try:
+                prices.append((f"trade_idea_m15.{field}", float(m15[field])))
+            except (TypeError, ValueError):
+                prices.append((f"trade_idea_m15.{field}", float("nan")))
     return prices
 
 
@@ -995,12 +1068,15 @@ def generate_day_plan(clock: dict, late: bool = False) -> tuple[dict, dict]:
     facts["clock"] = clock
     facts["previous_verdicts"] = load_previous_day_verdicts(trading_date)
     live_price = live_mid_from_facts(facts)
-    facts["reference_price"] = live_price or 0.0
-    facts["reference_price_source"] = "cache_quote_mid"
+    if live_price is None:
+        raise RuntimeError("live_price_unavailable; defer day plan until quote/MT5 mid exists")
+    facts["reference_price"] = live_price
+    facts["reference_price_source"] = "live_mid"
     facts["trade_idea_rules"] = {
         "one_day_idea": True,
         "h4_owns_day_thesis": True,
         "no_m1_ideas": True,
+        "all_prices_near_reference": True,
     }
     plan = _call_model("qwen_day_plan", facts, day_plan_schema())
     plan["artifact"] = "day_plan"
@@ -1009,7 +1085,7 @@ def generate_day_plan(clock: dict, late: bool = False) -> tuple[dict, dict]:
     plan["late"] = late
     plan["generated_at_utc"] = iso_utc(utc_now())
     plan = run_validator(plan, facts)
-    sanity = apply_live_price_sanity(plan, live_price, source="cache_quote_mid")
+    sanity = apply_live_price_sanity(plan, live_price, source="live_mid")
     stack = build_initial_trade_idea_stack(plan)
     plan["trade_idea_stack"] = stack
     logging.info(
@@ -1040,14 +1116,24 @@ def generate_session_plan(
     facts["prior_session_verdicts"] = prior_verdicts
     facts["trade_idea_stack"] = trade_idea_stack or day_plan.get("trade_idea_stack")
     live_price = live_mid_from_facts(facts)
-    facts["reference_price"] = live_price or day_plan.get("reference_price") or 0.0
-    facts["reference_price_source"] = "cache_quote_mid"
+    if live_price is None:
+        try:
+            live_price = float(day_plan.get("reference_price") or 0.0) or None
+        except (TypeError, ValueError):
+            live_price = None
+    if live_price is None:
+        raise RuntimeError(
+            "live_price_unavailable; defer session plan until quote/MT5 mid exists"
+        )
+    facts["reference_price"] = live_price
+    facts["reference_price_source"] = "live_mid"
     facts["trade_idea_rules"] = {
         "revise_same_day_idea": True,
         "h1_refine_only": True,
         "m15_pullback_only": True,
         "no_m1_ideas": True,
         "use_prior_session_performance": True,
+        "all_prices_near_reference": True,
     }
     plan = _call_model("qwen_session_plan", facts, session_plan_schema())
     plan["artifact"] = "session_plan"
@@ -1058,7 +1144,7 @@ def generate_session_plan(
     plan["late"] = late
     plan["generated_at_utc"] = iso_utc(utc_now())
     plan = run_validator(plan, facts)
-    sanity = apply_live_price_sanity(plan, live_price, source="cache_quote_mid")
+    sanity = apply_live_price_sanity(plan, live_price, source="live_mid")
     stack = revise_trade_idea_stack(
         trade_idea_stack or day_plan.get("trade_idea_stack"),
         plan,
@@ -1191,10 +1277,41 @@ def load_plan_history(trading_date: date) -> dict:
     }
 
 
+def plan_needs_price_repair(plan: dict | None, live_price: float | None = None) -> bool:
+    """True when a stored plan was built without live mid or with invented geometry."""
+    if not isinstance(plan, dict):
+        return False
+    sanity = plan.get("price_sanity") if isinstance(plan.get("price_sanity"), dict) else {}
+    if sanity.get("ok") is False:
+        return True
+    if sanity.get("live_price") in (None, 0, 0.0):
+        failures = sanity.get("failures") or []
+        if "live_price_unavailable" in failures:
+            return True
+    try:
+        reference = float(plan.get("reference_price") or 0.0)
+    except (TypeError, ValueError):
+        reference = 0.0
+    if reference <= 0:
+        return True
+    if live_price is None or live_price <= 0:
+        return False
+    recheck = live_sanity_snapshot(plan, live_price)
+    return bool(recheck and recheck.get("ok") is False)
+
+
 def should_generate_day_plan(now: datetime, state: dict) -> bool:
     trading_date = now.date()
     existing = state.get("day_plan")
     if existing and existing.get("day_plan_id") == day_plan_id(trading_date):
+        live_price = live_mid_from_facts(planner_facts())
+        if plan_needs_price_repair(existing, live_price):
+            logging.info(
+                "Day plan %s needs price repair (sanity=%s); regenerating",
+                existing.get("day_plan_id"),
+                (existing.get("price_sanity") or {}).get("failures"),
+            )
+            return True
         return False
     if now.hour == 23 and now.minute >= 45:
         return True
@@ -1210,7 +1327,14 @@ def should_generate_session_plan(now: datetime, state: dict) -> tuple[bool, str 
     trading_date = now.date()
     existing = state.get("session_plan")
     expected_id = session_plan_id(trading_date, session)
+    live_price = live_mid_from_facts(planner_facts())
     if existing and existing.get("session_plan_id") == expected_id:
+        if plan_needs_price_repair(existing, live_price):
+            logging.info(
+                "Session plan %s needs price repair; regenerating",
+                existing.get("session_plan_id"),
+            )
+            return True, session
         return False, session
     open_hour = SESSION_OPEN_HOUR[session]
     if now.hour == open_hour and now.minute < 30:
@@ -1296,6 +1420,8 @@ class SessionPlanner:
                 day_plan, stack = generate_day_plan(clock, late=now.hour != 23)
                 self.state["day_plan"] = day_plan
                 self.state["trade_idea_stack"] = stack
+                # Price-repaired day plans invalidate the prior session geometry.
+                self.state["session_plan"] = None
                 logging.info("Day plan generated: %s", day_plan["day_plan_id"])
             except Exception as error:
                 logging.exception("Day plan generation failed")
@@ -1378,14 +1504,33 @@ class SessionPlanner:
         self._set_status("ready")
 
 
+def _accept_singleton_probes(singleton: socket.socket) -> None:
+    """Drain health-check connects so the listen backlog never fills."""
+    while True:
+        try:
+            conn, _addr = singleton.accept()
+            conn.close()
+        except OSError:
+            return
+
+
 def main() -> None:
     singleton = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         singleton.bind(("127.0.0.1", 48634))
-        singleton.listen(1)
+        singleton.listen(8)
     except OSError:
         logging.error("Session planner already running")
         return
+
+    import threading
+
+    threading.Thread(
+        target=_accept_singleton_probes,
+        args=(singleton,),
+        name="planner-singleton-accept",
+        daemon=True,
+    ).start()
 
     logging.info("Session planner starting; interval=%ds", INTERVAL_SECONDS)
     planner = SessionPlanner()

@@ -45,6 +45,7 @@ CACHE_DIR = APP_DIR / "cache"
 # wherever these .py files run from, the cache travels with them.
 DEFAULT_DB = CACHE_DIR / "market_context.sqlite3"
 MODEL_LOCK_FILE = CACHE_DIR / "qwen-model.lock"
+CONTEXT_CYCLE_LOCK_FILE = CACHE_DIR / "context-cycle.lock"
 # The knowledge store (core_skill.md, sop.md, etc.) now lives at the app's
 # own root -- APP_DIR.parents[2] resolves to that root the same way the git
 # HEAD lookup elsewhere in this file already does, so this needs no
@@ -156,10 +157,9 @@ def git_version() -> str:
 
 
 @contextlib.contextmanager
-def model_generation_lock(timeout: float | None = None):
-    """Serialize Ollama generations across reviewer and cache processes."""
-    MODEL_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    handle = MODEL_LOCK_FILE.open("a+b")
+def _exclusive_file_lock(path: Path, *, timeout: float | None, label: str):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a+b")
     if handle.seek(0, os.SEEK_END) == 0:
         handle.write(b"0")
         handle.flush()
@@ -172,7 +172,7 @@ def model_generation_lock(timeout: float | None = None):
         except OSError:
             if timeout is not None and time.monotonic() - started >= timeout:
                 handle.close()
-                raise TimeoutError("Qwen model generation lock timed out")
+                raise TimeoutError(f"{label} timed out")
             time.sleep(0.1)
     try:
         yield
@@ -182,6 +182,24 @@ def model_generation_lock(timeout: float | None = None):
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         finally:
             handle.close()
+
+
+@contextlib.contextmanager
+def model_generation_lock(timeout: float | None = None):
+    """Serialize Ollama generations across reviewer and cache processes."""
+    with _exclusive_file_lock(
+        MODEL_LOCK_FILE, timeout=timeout, label="Qwen model generation lock"
+    ):
+        yield
+
+
+@contextlib.contextmanager
+def context_cycle_lock(timeout: float | None = None):
+    """Serialize full context-cache cycles so workers cannot race the SQLite cache."""
+    with _exclusive_file_lock(
+        CONTEXT_CYCLE_LOCK_FILE, timeout=timeout, label="Context cache cycle lock"
+    ):
+        yield
 
 
 def load_prompt_section(name: str, store_root: Path = DEFAULT_STORE_ROOT) -> str:
@@ -2511,7 +2529,9 @@ class QwenContextShadow:
             structural_result = self.ollama.generate(
                 prompt,
                 num_ctx=12288,
-                num_predict=550,
+                # 550 truncated mid-evidence_ids (~1320 chars). Pinning + 1024
+                # leaves headroom for the two long candle evidence ids.
+                num_predict=1024,
                 timeout=None,
                 format_schema=structural_schema,
             )
@@ -2914,6 +2934,9 @@ class QwenContextShadow:
                     "required": list(value),
                     "additionalProperties": False,
                 }
+            if isinstance(value, list):
+                # Pin the whole list; Ollama format schemas accept array enums.
+                return {"type": "array", "enum": [value]}
             if value is None:
                 return {"type": "null"}
             if isinstance(value, bool):
@@ -2926,49 +2949,47 @@ class QwenContextShadow:
             row["test_id"]: exact_schema(row["answer"])
             for row in challenge["localization_tests"]
         }
+        # Pin every exact_facts field to the packet values so the model cannot
+        # invent timestamps / bar indexes / alternate epoch shapes (v003 habit).
+        exact = challenge["expected_exact"]
+        known_ids = list(challenge["known_evidence_ids"])
+        expected_request = (challenge["expected_data_requests"] or [None])[0]
+        pinned_properties = {
+            key: exact_schema(value) for key, value in exact.items()
+        }
+        pinned_properties["localization_answers"] = {
+            "type": "object",
+            "properties": localization_properties,
+            "required": list(localization_properties),
+            "additionalProperties": False,
+        }
+        pinned_properties["evidence_ids"] = {
+            "type": "array",
+            "items": (
+                {"type": "string", "enum": known_ids}
+                if known_ids
+                else {"type": "string"}
+            ),
+            "minItems": 1,
+            "maxItems": min(4, max(1, len(known_ids) or 1)),
+            "uniqueItems": True,
+        }
+        if expected_request is not None:
+            pinned_properties["data_requests"] = {
+                "type": "array",
+                "items": exact_schema(expected_request),
+                "minItems": 1,
+                "maxItems": 1,
+            }
+        else:
+            pinned_properties["data_requests"] = {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+            }
         challenge_schema = {
             "type": "object",
-            "properties": {
-                "acknowledged_epochs": {"type": "object"},
-                "timeframe_location": {"type": "object"},
-                "h4_open": {"type": ["number", "null"]},
-                "h4_state": {"type": "string"},
-                "session": {"type": "string"},
-                "asia_relation": {"type": "string"},
-                "nearest_lower_zone": {"type": ["object", "null"]},
-                "nearest_upper_zone": {"type": ["object", "null"]},
-                "active_playbook_ids": {
-                    "type": "array", "items": {"type": "string"}, "maxItems": 3,
-                },
-                "conditional_buy_path": {"type": ["string", "null"], "maxLength": 120},
-                "conditional_sell_path": {"type": ["string", "null"], "maxLength": 120},
-                "unresolved_fact": {"type": "string", "maxLength": 120},
-                "localization_answers": {
-                    "type": "object",
-                    "properties": localization_properties,
-                    "required": list(localization_properties),
-                    "additionalProperties": False,
-                },
-                "evidence_ids": {
-                    "type": "array", "items": {"type": "string"},
-                    "minItems": 1, "maxItems": 4,
-                },
-                "data_requests": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "timeframe": {"type": "string"},
-                            "completed_bars": {"type": "integer"},
-                            "fields": {"type": "array", "items": {"type": "string"}},
-                            "reason": {"type": "string"},
-                        },
-                        "required": ["timeframe", "completed_bars", "fields", "reason"],
-                        "additionalProperties": False,
-                    },
-                    "minItems": 1, "maxItems": 1,
-                },
-            },
+            "properties": pinned_properties,
             "required": [
                 "acknowledged_epochs", "timeframe_location", "h4_open", "h4_state",
                 "session", "asia_relation", "nearest_lower_zone", "nearest_upper_zone",
@@ -2980,7 +3001,7 @@ class QwenContextShadow:
         result = self.ollama.generate(
             prompt,
             num_ctx=8192,
-            num_predict=850,
+            num_predict=1024,
             timeout=None,
             format_schema=challenge_schema,
         )
@@ -3179,6 +3200,9 @@ class QwenContextShadow:
             )
 
         started = time.perf_counter()
+        # Warmup can take minutes; recompute raw_hash so the minute packet is
+        # not written with a stale hash while another worker ingested ticks.
+        raw_hash = self.cache.raw_hash(self.symbol)
         minute = self.builder.build_minute(
             as_of, quote, raw_hash, structure, levels, session, playbooks
         )
@@ -3186,6 +3210,13 @@ class QwenContextShadow:
 
         started = time.perf_counter()
         gate_b, gate_b_failures, derived_metrics = self.validator.gate_b()
+        # If another cycle raced between minute write and gate_b, rebuild once.
+        if not gate_b and "derived:minute:source_hash_mismatch" in gate_b_failures:
+            raw_hash = self.cache.raw_hash(self.symbol)
+            minute = self.builder.build_minute(
+                as_of, quote, raw_hash, structure, levels, session, playbooks
+            )
+            gate_b, gate_b_failures, derived_metrics = self.validator.gate_b()
         timings["derived_validation_ms"] = (time.perf_counter() - started) * 1000
 
         prior_epochs = (prior_manifest or {}).get("compatible_epochs", {})
@@ -3217,6 +3248,18 @@ class QwenContextShadow:
             resident.get("resident")
             and resident.get("digest") == resident.get("resident_digest")
         )
+        # Long warmup/challenge generations can drop residency briefly; a
+        # one-token warm restores keep_alive=-1 before the manifest is written.
+        if not model_resident and challenge_valid:
+            try:
+                self.ollama.warm()
+            except Exception:
+                logging.exception("Post-challenge model warm failed")
+            resident = self.ollama.model_info()
+            model_resident = bool(
+                resident.get("resident")
+                and resident.get("digest") == resident.get("resident_digest")
+            )
         failures = (
             gate_a_failures
             + gate_b_failures
@@ -3594,10 +3637,11 @@ def run_service(args: argparse.Namespace) -> None:
         shadow = QwenContextShadow(cache, source, ollama, Path(args.store_root))
         while True:
             try:
-                manifest = shadow.run_once(
-                    run_qwen=not args.no_qwen,
-                    benchmark_minute=not args.no_minute_benchmark,
-                )
+                with context_cycle_lock():
+                    manifest = shadow.run_once(
+                        run_qwen=not args.no_qwen,
+                        benchmark_minute=not args.no_minute_benchmark,
+                    )
                 print(json.dumps(manifest, indent=2), flush=True)
                 logging.info(
                     "Context cycle status=%s failures=%s",
