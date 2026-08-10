@@ -105,7 +105,7 @@ def entry_ex(
     s3 = {
         "example_id": eid, "detector_type": "heuristic", "detector_name": detector_name,
         "input_signals": ["price", "levels", "h4_fib", "m1_ema", "session"],
-        "logic": logic, "thresholds": {"tp_usd": [5, 12], "sl_usd": [3, 4]},
+        "logic": logic, "thresholds": {"tp_usd": [5, 20], "sl_usd": [5, 10]},
         "output": "enum(valid, invalid)",
     }
     s4 = {

@@ -5,7 +5,7 @@ Append expanded curriculum: M15/H1/H4 nested moments, balanced buy/sell, fakeout
 Training sample standard (Meta LIMA / instruction-tuning surveys):
 - Quality > quantity; consistent schema; no hallucinated fields
 - Each example: LEVEL + HTF + MTF(M15) + LTF(M5/M1) nested path
-- Balanced long/short; explicit TP $5-$9 on XAU micro trades
+- Balanced long/short; zone SL/TP in gold price (M15≥$5/$5, H4≥$10/$20)
 - Fakeout = breach + close back inside (Grimes/Dalton), not narrative
 """
 
@@ -33,7 +33,7 @@ def ex(eid, topic, title, setup, decision, invalidation, why, evidence, bucket,
          "invalidation": invalidation, "why": why, "evidence": evidence, "bucket": bucket},
         {"example_id": eid, "detector_type": "heuristic", "detector_name": detector_name,
          "input_signals": ["price", "volume", "time", "bars", "levels"],
-         "logic": logic, "thresholds": {"tp_usd": [5, 9]}, "output": det_out},
+         "logic": logic, "thresholds": {"tp_usd": [5, 20], "sl_usd": [5, 10]}, "output": det_out},
         {"example_id": eid, "detector_output": detector_output, "trade_decision": trade_decision,
          "decision_conditions": conditions, "evidence_label": evidence,
          "conviction_score": conviction, "risk_control": risk},
@@ -47,7 +47,7 @@ NEW_PRINCIPLES = [
         "principle_name": "M15 Moment — Last 5–10 Minutes at Level",
         "core_concept": "On XAUUSD, the actionable part of an M15 bar is often the final 5–10 minutes: acceleration into a level, wick rejection, or acceptance. Read M15 from closed M5 segments inside; M1 is timing-only after M5 confirms.",
         "foundational_rule": "State M15[-n] path built from M5[-k..]: e.g. last 5min M15 move $7 into H1 level + M5 bear engulf = M15 rejection. Do not trade M1 spike before M5 close.",
-        "why_matters": "Operator TP is $5–$9; M15 end-bar moments at levels are the bridge between H1 structure and executable micro moves.",
+        "why_matters": "Operator uses zone gold SL/TP (M15≥$5/$5); M15 end-bar moments at levels bridge H1 structure to executable entries.",
         "evidence_strength": "strong",
         "applies_to_detectors": ["m15_endbar_moment", "m15_fractal_from_m5"],
     },

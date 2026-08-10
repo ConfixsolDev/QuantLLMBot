@@ -119,8 +119,10 @@ Setup: {example.get('setup', 'N/A')}
 Based on the principles above and the trade setup, decide using this contract:
 Entry role: Action open|wait|skip; Direction buy|sell|none; Confidence 0-100;
 Auction State; Skip Reason Code when skip; Target Mode; Missing Fact when wait;
-named Key Levels; Entry/SL/TP when open.
+named Key Levels; Entry/SL/TP when open; Trade Reason (concept + why this side);
+Confirmation Reason (which closed candle proves the direction).
 Management role: Management Action hold|protect|close at one decision level.
+Teach concepts and closed-bar confirmation — not entry prices alone.
 Session permission and closed-bar acceptance override pattern names."""
 
     # Bridge toward live qwen_cached_entry + qwen_trade_management.
@@ -136,6 +138,8 @@ Session permission and closed-bar acceptance override pattern names."""
     skip_code = contract.get("skip_reason_code")
     target_mode = contract.get("target_mode") or "none"
     missing_fact = contract.get("missing_fact")
+    trade_reason = contract.get("trade_reason") or contract.get("decision_conditions") or ""
+    confirmation_reason = contract.get("confirmation_reason") or ""
     action = contract.get("action")
     direction = contract.get("direction")
     if not action or not direction:
@@ -199,18 +203,26 @@ with conditions '{summary}' → management_action={mgmt} (never average/reverse)
         is_no_trade = action in ("wait", "skip") or entry in (0, 0.0, None)
         skip_line = f"Skip Reason Code: {skip_code}" if action == "skip" and skip_code else "Skip Reason Code: none"
         miss_line = f"Missing Fact: {missing_fact}" if action == "wait" and missing_fact else "Missing Fact: none"
+        reason_line = trade_reason or summary or "Concept + location decide; entries alone do not."
+        confirm_line = confirmation_reason or (
+            "Closed M1/M5 response at the mapped zone required; forming candles are context only."
+        )
         if is_no_trade:
             trade_mgmt = f"""Key Levels: {key_levels}
 Entry: N/A
 Stop Loss: N/A
 Take Profit: N/A
-Execution Plan: status={'skip' if action == 'skip' else 'wait'}"""
+Execution Plan: status={'skip' if action == 'skip' else 'wait'}
+Trade Reason: {reason_line}
+Confirmation Reason: {confirm_line}"""
         else:
             trade_mgmt = f"""Key Levels: {key_levels}
 Entry: {entry}
-Stop Loss: {sl} (${sl_usd} beyond invalidation)
-Take Profit: {tp} (${tp_usd} target)
-Execution Plan: status=ready side={direction}"""
+Stop Loss: {sl} (${sl_usd} gold beyond invalidation zone)
+Take Profit: {tp} (${tp_usd} gold target zone)
+Execution Plan: status=ready side={direction}
+Trade Reason: {reason_line}
+Confirmation Reason: {confirm_line}"""
 
         response = f"""Role: entry
 Action: {action}
@@ -230,9 +242,11 @@ Conviction Score: {contract.get('conviction_score', 0.5)}
 
 Summary: {summary}
 
-Reasoning: The detector output indicates '{contract.get('detector_output', 'neutral')}'.
-Given the conditions '{summary}',
-the appropriate trade decision is '{trade_decision}' with risk controls: {contract.get('risk_control', 'None specified')}."""
+Reasoning: Concept and closed-candle confirmation first.
+Detector '{contract.get('detector_output', 'neutral')}' with conditions '{summary}'.
+Trade Reason: {reason_line}
+Confirmation Reason: {confirm_line}
+Decision '{trade_decision}' with risk controls: {contract.get('risk_control', 'None specified')}."""
 
     return {
         "instruction": instruction.strip(),

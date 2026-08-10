@@ -56,7 +56,7 @@ NEW_PRINCIPLES = [
         "topic": "08_range_trading",
         "principle_name": "H4 Range Edge Fade — Sharp LTF Trend Into Boundary",
         "core_concept": "Inside an H4 bracket, expect clean H1/M5 trends from mid to edge (Grimes). Fade the edge when magnet bar runs into boundary + rejection on M15; TP mid-range or $6–$8 — not a full H4 reversal thesis.",
-        "foundational_rule": "H4 range width $15–$25 typical on gold: trade edges only, skip middle third. Log nested: H4 box high/low, H1 push into edge, M15 wick rejection, M5 fade entry. Stop $3–$4 beyond edge.",
+        "foundational_rule": "H4 range width $15–$25 typical on gold: trade edges only, skip middle third. Log nested: H4 box high/low, H1 push into edge, M15 wick rejection, M5 fade entry. Stop beyond edge at TF gold mins (M15≥$5, H4≥$10); TP next opposing named level (H4≥$20).",
         "why_matters": "Range is ~70–80% of sessions; H4-bracket fades with nested LTF path are high-frequency quality setups distinct from trend reversal.",
         "evidence_strength": "moderate",
         "applies_to_detectors": ["h4_range_edge_fade", "ltf_trend_to_range_edge"],

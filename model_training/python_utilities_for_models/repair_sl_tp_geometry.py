@@ -2,10 +2,12 @@
 """
 Repair stage_04 SL/TP geometry and ambiguous dual-direction labels.
 
-Fixes from dataset audit:
-- 09_27: short rejection setup wrongly given long geometry
-- SL$10 / TP$7 rows violate P047 (R:R >= 1.5) — normalize to SL$3 / TP$7
-- Ambiguous Short/Long labels forced to long geometry → Wait (no position)
+Legacy one-shot audit fixes (side flips / ambiguous waits). Do **not** use this
+script to force tiny SL$3 / TP$7 — that teaching is obsolete for v004.
+
+For zone-based gold-price SL/TP (M15≥5/5, H1≥7/10, H4≥10/20) run:
+  python repair_zone_sl_tp_v004.py
+See model_training/CURRICULUM_AND_DATA_PREP.md §1.1.
 """
 
 from __future__ import annotations

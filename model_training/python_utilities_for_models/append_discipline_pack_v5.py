@@ -301,10 +301,10 @@ def rewrite_poison(s2: dict, s3: dict, s4: dict) -> None:
             "detector_output": "failure_test_close_inside_short",
             "evidence_label": "strong",
             "conviction_score": 0.86,
-            "entry_price": 2661.0, "sl_price": 2664.0, "tp_price": 2654.0,
-            "sl_usd": 3.0, "tp_usd": 7.0,
+            "entry_price": 2661.0, "sl_price": 2668.0, "tp_price": 2641.0,
+            "sl_usd": 7.0, "tp_usd": 20.0,
             "key_levels": "M15_SWING_HIGH=2662, H1_RESISTANCE=2663",
-            "risk_control": "SL $3.0 at 2664.0 | TP $7.0 at 2654.0 | Entry 2661.0",
+            "risk_control": "SL $7.0 gold at 2668.0 | TP $20.0 gold at 2641.0 | Entry 2661.0",
             "pattern_type": "fakeout",
         })
 
@@ -338,7 +338,7 @@ def ex(
     s3 = {
         "example_id": eid, "detector_type": "heuristic", "detector_name": detector_name,
         "input_signals": ["price", "volume", "time", "bars", "levels"],
-        "logic": logic, "thresholds": {"tp_usd": [5, 12], "sl_usd": [3, 4]},
+        "logic": logic, "thresholds": {"tp_usd": [5, 20], "sl_usd": [5, 10]},
         "output": "enum(valid, invalid)",
     }
     s4 = {

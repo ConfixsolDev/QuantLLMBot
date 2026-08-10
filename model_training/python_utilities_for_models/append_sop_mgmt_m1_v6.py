@@ -110,7 +110,7 @@ def entry_ex(
     s3 = {
         "example_id": eid, "detector_type": "heuristic", "detector_name": detector_name,
         "input_signals": ["price", "volume", "time", "bars", "levels", "session"],
-        "logic": logic, "thresholds": {"tp_usd": [5, 12], "sl_usd": [3, 4]},
+        "logic": logic, "thresholds": {"tp_usd": [5, 20], "sl_usd": [5, 10]},
         "output": "enum(valid, invalid)",
     }
     s4 = {
@@ -270,7 +270,7 @@ NEW = [
     ),
     entry_ex(
         "01_35", "01_market", "SKIP fixed_profile_mismatch — stop/target won't fit",
-        "Valid H4 rejection short idea | execution_profile fixed_r 3-stop / targets 6,9,12 | Nearest opposing level only $4 away | Geometry cannot fit | skip_reason_code=fixed_profile_mismatch.",
+        "Valid H4 rejection short idea | needs H4 zone room SL≥$10 TP≥$20 gold | Nearest opposing level only $4 away | Geometry cannot fit | skip_reason_code=fixed_profile_mismatch.",
         "Skip", "Room ≥6 units appears or profile not supplied", "SOP fixed_profile_mismatch", "strong", "A",
         "sop_skip_fixed_profile", "valid_structure AND room<min_target", "skip_fixed_profile",
         "Skip", "fixed_profile_mismatch — structure ok, room fails 6-unit min", 0.84,

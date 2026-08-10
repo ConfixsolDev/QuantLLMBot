@@ -44,7 +44,7 @@ def ex(
         "example_id": eid, "detector_type": "heuristic", "detector_name": detector_name,
         "input_signals": ["price", "volume", "time", "bars", "levels"],
         "logic": logic,
-        "thresholds": {"tp_usd": [5, 12], "sl_usd": [3, 4], "pattern": pattern_type},
+        "thresholds": {"tp_usd": [5, 20], "sl_usd": [5, 10], "pattern": pattern_type},
         "output": det_out,
     }
     s4 = {
@@ -73,7 +73,7 @@ NEW_PRINCIPLES = [
         "topic": "05_ict_concepts",
         "principle_name": "Fakeout vs Breakout — Close Location Discriminator",
         "core_concept": "FAKEOUT: price breaches reference level, then SAME or NEXT bar of that TF CLOSES back INSIDE the level/zone. BREAKOUT: bar CLOSES OUTSIDE level + (2 closes outside OR retest holds broken level). No narrative — close location only.",
-        "foundational_rule": "Fade fakeouts at level with SL $3–$4 beyond sweep extreme, TP $5–$9. With breakout: enter on retest hold or 2nd close; SL $3 below break level; TP next opposing HTF level.",
+        "foundational_rule": "Fade fakeouts at level with zone SL beyond sweep extreme (M15≥$5 gold; H4≥$10) and TP at next opposing named level (M15≥$5; H4≥$20). With breakout: enter on retest hold or 2nd close; SL beyond break level to TF min; TP next opposing HTF level.",
         "why_matters": "Gold routinely stop-runs session/swing levels; model must classify sweep vs acceptance before trade management.",
         "evidence_strength": "strong",
         "applies_to_detectors": ["fakeout_close_inside", "breakout_close_outside", "breakout_retest_hold"],

@@ -7,7 +7,7 @@ Distilled from CANDLE_MOMENT_AND_SESSION_DISTILLATION.md + core_skill.md:
 - Read order D1→H4→H1→M15→M5→M1; underlying bars inside parent
 - XAU routine day = $60–$90 range; D1 trend shift ~1–2×/month
 - Named level IDs (H4_PREVIOUS_HIGH, M15_PREVIOUS_LOW, D1_PIVOT_PP, …)
-- Every trade row: Entry, SL ($3–$4), TP ($5–$9 micro / $12–$18 range leg)
+- Every trade row: Entry, zone SL/TP in gold price (M15≥$5/$5, H1≥$7/$10, H4≥$10/$20)
 """
 
 import json
@@ -42,7 +42,7 @@ def ex(
     s3 = {
         "example_id": eid, "detector_type": "heuristic", "detector_name": detector_name,
         "input_signals": ["price", "volume", "time", "bars", "levels"],
-        "logic": logic, "thresholds": {"tp_usd": [5, 9], "sl_usd": [3, 4]}, "output": det_out,
+        "logic": logic, "thresholds": {"tp_usd": [5, 20], "sl_usd": [5, 10]}, "output": det_out,
     }
     s4 = {
         "example_id": eid, "detector_output": detector_output, "trade_decision": trade_decision,
@@ -79,8 +79,8 @@ NEW_PRINCIPLES = [
         "principle_id": "P047",
         "topic": "02_market_structure",
         "principle_name": "Named Level IDs + Mandatory SL/TP on Every Decision",
-        "core_concept": "Use dashboard level IDs: H4_PREVIOUS_HIGH, H1_SUPPORT, M15_PREVIOUS_LOW, D1_PIVOT_PP, ASIA_SESSION_HIGH. Every actionable decision states Entry, Stop Loss ($3–$4 beyond invalidation), Take Profit ($5–$9 micro; $12–$18 range leg). Wait/Skip = SL/TP N/A.",
-        "foundational_rule": "SL beyond structure invalidation price, not arbitrary. TP at next opposing level or micro target. Risk:reward ≥ 1:1.5 on XAU micro scalps minimum.",
+        "core_concept": "Use dashboard level IDs: H4_PREVIOUS_HIGH, H1_SUPPORT, M15_PREVIOUS_LOW, D1_PIVOT_PP, ASIA_SESSION_HIGH. Every actionable decision states Entry plus zone-based Stop/Target in gold price (not account dollars): M15/M30 SL≥$5 TP≥$5; H1 SL≥$7 TP≥$10; H4/D1 SL≥$10 TP≥$20 on named S/R. Wait/Skip = SL/TP N/A.",
+        "foundational_rule": "SL beyond named structure invalidation; TP at next opposing named level. Pad beyond the level to TF mins when nearer. Never invent levels.",
         "why_matters": "Model weakness is trade management; explicit SL/TP + level map in every training response teaches executable output, not narrative only.",
         "evidence_strength": "strong",
         "applies_to_detectors": ["level_id_map", "sl_tp_contract", "zone_to_trigger_playbook"],

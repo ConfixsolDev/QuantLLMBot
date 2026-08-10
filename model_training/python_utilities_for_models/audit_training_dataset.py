@@ -49,8 +49,18 @@ def main() -> None:
         print(f"  {v:3d}  {k}")
 
     print("=== TRADE MGMT FIELDS ===")
-    for k in ("key_levels", "entry_price", "sl_price", "tp_price", "sl_usd", "tp_usd", "pattern_type"):
-        print(f"  {k}: {sum(k in r for r in s4)}/{len(s4)}")
+    for k in (
+        "key_levels", "entry_price", "sl_price", "tp_price", "sl_usd", "tp_usd",
+        "pattern_type", "trade_reason", "confirmation_reason",
+    ):
+        print(f"  {k}: {sum(k in r and bool(r.get(k)) for r in s4)}/{len(s4)}")
+    thin_reason = [
+        r["example_id"]
+        for r in s4
+        if len(str(r.get("trade_reason") or "")) < 40
+        or len(str(r.get("confirmation_reason") or "")) < 40
+    ]
+    print(f"thin_reason_or_confirmation={len(thin_reason)} sample={thin_reason[:10]}")
 
     bad = []
     for r in s4:

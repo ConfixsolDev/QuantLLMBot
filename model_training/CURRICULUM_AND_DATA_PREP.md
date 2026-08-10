@@ -2,7 +2,7 @@
 
 **THE ONLY process document** for curriculum, data preparation, tick→train loop, and Colab training.
 
-Last updated: 2026-08-09
+Last updated: 2026-08-10
 
 ---
 
@@ -80,6 +80,32 @@ store/                                 ← live LLM template (core_skill + sop)
 | Fib | Supplied H4/daily IDs | Consume location — never recalculate |
 
 Doctrine live prompts: `store/core_skill.md`, `store/sop.md`.
+
+### 1.1 v004 SL/TP geometry (gold price, zone-based)
+
+`$N` in curriculum SL/TP means **gold price change** (XAU points), not account P&L dollars.
+Open-entry samples place stop/target on **named support/resistance**, not a tiny fixed pad.
+
+| Structure TF | Min SL | Min TP | Placement |
+|--------------|--------|--------|-----------|
+| M15 / M30 | **5** | **5** | Beyond named invalidation / next opposing named level |
+| H1 | **7** | **10** | Same mid ladder |
+| H4 / D1 | **10** | **20** | Proper H4/D1 S/R; pad to mins if nearer level is tighter |
+
+Rules: prefer `key_levels` prices on the correct side of entry; if nearer than the TF min, pad **beyond that level** to the min; no inventing geometry when no usable opposing level → wait/skip with SL/TP N/A. Repair util: `python_utilities_for_models/repair_zone_sl_tp_v004.py`.
+
+### 1.2 v004 reason + candle confirmation (teach concepts, not entries alone)
+
+Every stage_04 row (open / wait / skip / management) must carry:
+
+| Field | Purpose |
+|-------|---------|
+| `trade_reason` | Distilled **concept** from `knowledge/topics/` + why this side/action at the named zone |
+| `confirmation_reason` | Which **closed** candle/response proves (or is still missing for) that direction |
+
+Sample Prepared text (`scripts/utils.py`) must show both lines. Forming candles are never confirmation. Read distilled topics when enriching — do not invent SMC narratives. Enrich util: `python_utilities_for_models/enrich_trade_reasons_v004.py`.
+
+Aim for LoRA capability: location → auction → closed response → side, with explicit reasons — not price memorization.
 
 ---
 
@@ -255,8 +281,10 @@ Volume uses **`tick_volume`** (+ ratio vs 20-bar median) — same signal family 
 ### 4.6 Curriculum stage_04 (entry)
 
 ```json
-{"example_id":"04_40","role":"entry","action":"open","direction":"buy","confidence":80,"auction_state":"rejection","skip_reason_code":null,"target_mode":"scalp","key_levels":"H4_FIB_618=2655.2,...","entry_price":2656.0,"sl_price":2653.0,"tp_price":2660.0,"sl_usd":3.0,"tp_usd":4.0,"trade_decision":"Long scalp","conviction_score":0.8,"evidence_label":"strong","missing_fact":null}
+{"example_id":"04_40","role":"entry","action":"open","direction":"buy","confidence":80,"auction_state":"rejection","skip_reason_code":null,"target_mode":"scalp","key_levels":"H4_FIB_618=2655.2,H4_PREVIOUS_LOW=2646.0,H1_RESISTANCE=2676.0","entry_price":2656.0,"sl_price":2646.0,"tp_price":2676.0,"sl_usd":10.0,"tp_usd":20.0,"trade_decision":"Long scalp","trade_reason":"Concept: H4/H1 locate the auction; M15 times the response. Reason: buy because auction reads rejection at H4_FIB_618.","confirmation_reason":"Confirmation: closed M5 bullish response at H4_FIB_618; forming candles are not proof.","conviction_score":0.8,"evidence_label":"strong","missing_fact":null}
 ```
+
+`sl_usd` / `tp_usd` = gold price distance from entry. `trade_reason` + `confirmation_reason` are required for Sample Prepared / LoRA.
 
 ### 4.7 Curriculum stage_04 (management)
 
@@ -300,6 +328,8 @@ Hyperparameters: repo `scripts/config.py` (5 epochs, warmup 5, QLoRA r=16).
 | v5 | `append_discipline_pack_v5.py` | Poison rewrite, holdout, action/direction |
 | v6 | `append_sop_mgmt_m1_v6.py` | Skip codes, management, M1 double-test |
 | v7 | `append_fib_ema_v7.py` | H4 fib consume + M1 EMA 3/14/31 |
+| v004 geom | `repair_zone_sl_tp_v004.py` | Zone-based gold SL/TP mins (M15≥5/5, H1≥7/10, H4≥10/20) |
+| v004 reasons | `enrich_trade_reasons_v004.py` | trade_reason + confirmation_reason from distilled topics |
 
 Bump a row here when a pack lands. Do not create a second history doc.
 
