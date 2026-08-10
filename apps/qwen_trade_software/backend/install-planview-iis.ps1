@@ -18,7 +18,7 @@ try {
     npm run build
     $OutDir = Join-Path $PlanViewDir "out"
     if (-not (Test-Path $OutDir)) {
-        throw "Build did not produce out/ — check next.config.ts output: export"
+        throw "Build did not produce out/ - check next.config.ts output: export"
     }
     Write-Host "Copying to $SiteRoot..." -ForegroundColor Yellow
     New-Item -ItemType Directory -Force -Path $SiteRoot | Out-Null
@@ -39,4 +39,4 @@ if (-not (Get-Website -Name $SiteName -ErrorAction SilentlyContinue)) {
 
 Start-Service W3SVC
 Write-Host "Plan View deployed. Test: http://127.0.0.1:8088/" -ForegroundColor Green
-Write-Host "Dev mode: cd planview && npm run dev  (http://localhost:3000)" -ForegroundColor Green
+Write-Host "Dev mode: cd planview; npm run dev  (http://localhost:3000)" -ForegroundColor Green

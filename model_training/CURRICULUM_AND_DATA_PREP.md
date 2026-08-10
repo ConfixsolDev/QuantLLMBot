@@ -60,7 +60,7 @@ store/                                 ← live LLM template (core_skill + sop)
 
 | Cadence | What happens |
 |---------|----------------|
-| **Every trading day** | Live app archives ticks → `tick_data/YYYY-MM-DD/`. Human/agent review → promote lessons into lean `store/` + curated stage_02/04 rows. Distilled topics stay the doctrine source. |
+| **Every trading day** | Live app archives ticks → `tick_data/YYYY-MM-DD/` (including hierarchical trade-idea stack H4→H1→M15 + hourly layer validation for v004 fuel). Human/agent review → promote lessons into lean `store/` + curated stage_02/04 rows. Distilled topics stay the doctrine source. |
 | **Through the week** | Curriculum JSONL and store mature in place (append packs only when evidence warrants). No requirement to re-export raw MT5 for the weekend train. |
 | **Weekend train** | Freeze current `knowledge/stage_0*.jsonl` + store versions → zip → Colab QLoRA → eval holdout → export GGUF. Compare to last week’s eval. |
 | **MT5 historical export** | Optional / one-time / rare tooling for structure research. **Not** the weekly training fuel for v4+. |

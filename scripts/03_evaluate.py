@@ -26,8 +26,8 @@ from config import (
 )
 from utils import (
     load_jsonl, setup_logging, extract_decision, extract_conviction_score,
-    extract_action_direction, compute_exact_match, compute_decision_agreement,
-    format_principle_context,
+    extract_action_direction, extract_evidence_label, compute_exact_match,
+    compute_decision_agreement, format_principle_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -154,6 +154,8 @@ def evaluate_on_test_set(
     references = []
     conviction_predictions = []
     conviction_references = []
+    evidence_predictions = []
+    evidence_references = []
     raw_responses = []
     action_pairs = []
 
@@ -172,16 +174,20 @@ def evaluate_on_test_set(
         pred_decision = extract_decision(response) or "UNKNOWN"
         pred_conviction = extract_conviction_score(response) or 0.5
         pred_action, pred_direction = extract_action_direction(response)
+        pred_evidence = extract_evidence_label(response)
 
         ref_decision = contract.get('trade_decision', 'HOLD')
         ref_conviction = float(contract.get('conviction_score', 0.5))
         ref_action = contract.get("action")
         ref_direction = contract.get("direction")
+        ref_evidence = (contract.get("evidence_label") or "").strip().lower() or None
 
         predictions.append(pred_decision)
         references.append(ref_decision)
         conviction_predictions.append(pred_conviction)
         conviction_references.append(ref_conviction)
+        evidence_predictions.append(pred_evidence)
+        evidence_references.append(ref_evidence)
         raw_responses.append(response)
         action_pairs.append((pred_action, pred_direction, ref_action, ref_direction))
 
@@ -198,6 +204,13 @@ def evaluate_on_test_set(
 
     conviction_mae = float(np.mean(np.abs(conviction_preds_np - conviction_refs_np)))
     conviction_rmse = float(np.sqrt(np.mean((conviction_preds_np - conviction_refs_np) ** 2)))
+
+    evidence_hits = sum(
+        1 for pe, re in zip(evidence_predictions, evidence_references)
+        if pe and re and pe == re
+    )
+    n_ev = max(1, sum(1 for re in evidence_references if re))
+    evidence_acc = evidence_hits / n_ev * 100
 
     action_hits = sum(
         1 for pa, _, ra, _ in action_pairs
@@ -219,6 +232,7 @@ def evaluate_on_test_set(
             "direction_agreement": round(direction_hits / n_ad * 100, 2),
             "conviction_score_mae": round(conviction_mae, 4),
             "conviction_score_rmse": round(conviction_rmse, 4),
+            "evidence_label_accuracy": round(evidence_acc, 2),
         },
         "predictions": [
             {
@@ -231,12 +245,15 @@ def evaluate_on_test_set(
                 "reference_direction": rd,
                 "predicted_conviction": round(pred_conv, 4),
                 "reference_conviction": round(ref_conv, 4),
+                "predicted_evidence": pe,
+                "reference_evidence": re,
                 "raw_response": raw,
                 "match": compute_exact_match(pred, ref),
             }
-            for example, pred, ref, pred_conv, ref_conv, raw, (pa, pd, ra, rd) in zip(
+            for example, pred, ref, pred_conv, ref_conv, pe, re, raw, (pa, pd, ra, rd) in zip(
                 test_examples, predictions, references,
-                conviction_predictions, conviction_references, raw_responses,
+                conviction_predictions, conviction_references,
+                evidence_predictions, evidence_references, raw_responses,
                 action_pairs,
             )
         ]
@@ -312,6 +329,8 @@ def main():
     metrics = results["metrics"]
     logger.info(f"Exact Match Decision: {metrics['exact_match_decision']}% ({metrics['exact_match_count']}/{len(test_examples)})")
     logger.info(f"Decision Agreement: {metrics['decision_agreement']}%")
+    logger.info(f"Action Agreement: {metrics['action_agreement']}%")
+    logger.info(f"Direction Agreement: {metrics['direction_agreement']}%")
     logger.info(f"Conviction Score MAE: {metrics['conviction_score_mae']}")
     logger.info(f"Conviction Score RMSE: {metrics['conviction_score_rmse']}")
     logger.info(f"Evidence Label Accuracy: {metrics['evidence_label_accuracy']}%")

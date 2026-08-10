@@ -380,6 +380,17 @@ def extract_action_direction(response_text: str) -> tuple:
     return action, direction
 
 
+def extract_evidence_label(response_text: str) -> Optional[str]:
+    """Extract Evidence: strong|moderate|weak (case-insensitive)."""
+    raw = _field_after(response_text, "Evidence")
+    if not raw:
+        return None
+    label = raw.split()[0].strip().lower().rstrip(".,;")
+    if label in ("strong", "moderate", "weak"):
+        return label
+    return None
+
+
 # ============================================================================
 # LOGGING SETUP
 # ============================================================================
