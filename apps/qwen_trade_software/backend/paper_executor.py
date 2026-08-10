@@ -25,7 +25,10 @@ MONITOR_INTERVAL_SECONDS = 1.0
 # still referenced by a stale caller or an old log-replay tool.
 BEST_PRICE_MINIMUM_OBSERVATION_SECONDS = 0.25
 MIN_ENTRY_CONFIDENCE = 51
-INITIAL_SAFETY_DISTANCE = 5.0
+# Fixed broker bracket at entry. Structure S/R is for management after fill.
+INITIAL_STOP_DISTANCE = 3.0
+INITIAL_TAKE_PROFIT_DISTANCE = 5.0
+INITIAL_SAFETY_DISTANCE = INITIAL_TAKE_PROFIT_DISTANCE
 
 
 def utc_now() -> str:
@@ -116,8 +119,10 @@ def validate_plan(args, proposal: dict) -> None:
         raise RuntimeError("volume must be positive.")
     if args.signal_timeframe not in ("M1", "M5"):
         raise RuntimeError("Demo entries must be generated from M1 or M5.")
-    if not 3 <= args.stop_price_distance <= 5:
-        raise RuntimeError("stop-price-distance must be between 3 and 5.")
+    if abs(float(args.stop_price_distance) - INITIAL_STOP_DISTANCE) > 1e-9:
+        raise RuntimeError(
+            f"stop-price-distance must be the fixed {INITIAL_STOP_DISTANCE} entry bracket."
+        )
 
 
 def fill_price(tick, side: str) -> float:
@@ -340,14 +345,20 @@ def realized_execution_outcome(fills: list[dict], since: datetime) -> dict:
 
 
 def initial_safety_bracket(side: str, order_price: float, digits: int) -> tuple[float, float]:
-    """Return the temporary symmetric broker bracket used until management reviews."""
+    """Fixed $3 stop / $5 target from the fill price."""
     if side == "buy":
-        stop_loss = order_price - INITIAL_SAFETY_DISTANCE
-        take_profit = order_price + INITIAL_SAFETY_DISTANCE
+        stop_loss = order_price - INITIAL_STOP_DISTANCE
+        take_profit = order_price + INITIAL_TAKE_PROFIT_DISTANCE
     else:
-        stop_loss = order_price + INITIAL_SAFETY_DISTANCE
-        take_profit = order_price - INITIAL_SAFETY_DISTANCE
+        stop_loss = order_price + INITIAL_STOP_DISTANCE
+        take_profit = order_price - INITIAL_TAKE_PROFIT_DISTANCE
     return round(stop_loss, digits), round(take_profit, digits)
+
+
+def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[float, float, str]:
+    """Always place the fixed $3/$5 broker bracket; S/R is for management only."""
+    safety_sl, safety_tp = initial_safety_bracket(args.side, order_price, digits)
+    return safety_sl, safety_tp, "fixed_3_5"
 
 
 def submit_single_position(args, execution_id: str, tick):
@@ -355,7 +366,9 @@ def submit_single_position(args, execution_id: str, tick):
     order_price = float(tick.ask if is_buy else tick.bid)
     symbol_info = mt5.symbol_info(args.symbol)
     digits = int(symbol_info.digits) if symbol_info else 3
-    safety_sl, safety_tp = initial_safety_bracket(args.side, order_price, digits)
+    safety_sl, safety_tp, bracket_source = broker_bracket_from_plan(
+        args, order_price, digits
+    )
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": args.symbol,
@@ -377,7 +390,7 @@ def submit_single_position(args, execution_id: str, tick):
     ):
         detail = result.comment if result else str(mt5.last_error())
         raise RuntimeError(f"MT5 demo order rejected: {detail}")
-    return result, safety_sl, safety_tp
+    return result, safety_sl, safety_tp, bracket_source
 
 
 def _run(args) -> dict:
@@ -446,9 +459,18 @@ def _run(args) -> dict:
                     "volume": args.volume,
                     "signal_timeframe": args.signal_timeframe,
                     "stop_price_distance": args.stop_price_distance,
-                    "qwen_reference_sl": args.stop_loss,
-                    "qwen_reference_target": args.take_profit,
-                    "broker_sl_tp": "temporary symmetric 5.0-price safety bracket; structure manager replaces it",
+                    "qwen_reference_sl": getattr(
+                        args, "management_reference_sl", args.stop_loss
+                    ),
+                    "qwen_reference_target": getattr(
+                        args, "management_reference_tp", args.take_profit
+                    ),
+                    "broker_sl_tp": (
+                        "structure support/resistance from plan; "
+                        "trade_management may extend TP after break or cut early"
+                    ),
+                    "initial_stop_distance": INITIAL_STOP_DISTANCE,
+                    "initial_take_profit_distance": INITIAL_TAKE_PROFIT_DISTANCE,
                     "initial_safety_distance": INITIAL_SAFETY_DISTANCE,
                     "management_owner": "qwen_trade_management",
                     "signal_ttl_seconds": args.signal_ttl_seconds,
@@ -569,8 +591,8 @@ def _run(args) -> dict:
             )
             if not fills and tracker_state.get("enter"):
                 phase = "single_entry"
-                order_result, safety_sl, safety_tp = submit_single_position(
-                    args, execution_id, tick
+                order_result, safety_sl, safety_tp, bracket_source = (
+                    submit_single_position(args, execution_id, tick)
                 )
                 actual_fill = float(order_result.price or entry_quote)
                 best_observed = float(tracker_state["best_price"])
@@ -597,10 +619,14 @@ def _run(args) -> dict:
                     "retcode": int(order_result.retcode),
                     "stop_loss": safety_sl,
                     "take_profit": safety_tp,
-                    "sl_source": "temporary_5_price_safety",
-                    "tp_source": "temporary_5_price_safety",
-                    "management_reference_sl": args.stop_loss,
-                    "management_reference_tp": args.take_profit,
+                    "sl_source": bracket_source,
+                    "tp_source": bracket_source,
+                    "management_reference_sl": getattr(
+                        args, "management_reference_sl", args.stop_loss
+                    ),
+                    "management_reference_tp": getattr(
+                        args, "management_reference_tp", args.take_profit
+                    ),
                 }
                 fills.append(fill)
                 if first_fill_monotonic is None:
@@ -629,12 +655,18 @@ def _run(args) -> dict:
                 average_entry = average_fill_price(fills)
                 price_move = favorable_price_move(mark, average_entry, args.side)
                 peak_price_move = max(peak_price_move, price_move)
+                structural_tp = getattr(
+                    args, "management_reference_tp", args.take_profit
+                )
+                structural_sl = getattr(
+                    args, "management_reference_sl", args.stop_loss
+                )
                 structural_target_distance = favorable_price_move(
-                    args.take_profit, average_entry, args.side
+                    structural_tp, average_entry, args.side
                 )
                 giveback = peak_price_move - price_move
                 adverse_price_move = max(0.0, -price_move)
-                active_stop_distance = abs(average_entry - args.stop_loss)
+                active_stop_distance = abs(average_entry - float(structural_sl))
                 now_monotonic = time.monotonic()
                 if (
                     last_monitor_monotonic is None
@@ -659,7 +691,7 @@ def _run(args) -> dict:
                                 100 * adverse_price_move / max(active_stop_distance, 0.001),
                                 1,
                             ),
-                            "structural_target": args.take_profit,
+                            "structural_target": structural_tp,
                             "structural_target_distance": round(
                                 structural_target_distance, 3
                             ),

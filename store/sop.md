@@ -1,4 +1,4 @@
-<!-- version: 3.5 | owner: human | delivery: always -->
+<!-- version: 3.7 | owner: human | delivery: always -->
 <!-- changelog: 2.0 reasoning-first canonical schema; field names reconciled
      with transport validator; basic_decision made a contract subset; analyst
      veto removed; learning canonicalization added; examples added.
@@ -16,7 +16,11 @@
      3.4 qwen_cached_entry becomes a compact trade-quality contract; runtime
      sends compressed cache facts only (no full core_skill dump).
      3.5 qwen_day_plan drops model reference_price; code owns live quote and
-     sanitizes scenario/key-level geometry against it. -->
+     sanitizes scenario/key-level geometry against it.
+     3.6 entry focuses on S/R zones + confidence; runtime places fixed $3/$5;
+     trade_management improves SL/TP via structure levels.
+     3.7 entry must take first valid closed M1/M5 at S/R; forbid perpetual
+     confirmation waits when side and confidence already clear. -->
 # Decision SOP
 
 Use only supplied closed facts. Build a neutral market-structure read first,
@@ -249,19 +253,34 @@ room are clear from closed facts. Wait when a valid plan needs a future test.
 Skip when evidence, session permission, geometry, or risk is not acceptable.
 
 <!-- prompt:qwen_cached_entry -->
-<!-- version: 1.3 | compact trade-quality entry over validated cache facts -->
+<!-- version: 1.7 | decisive S/R + confidence entry; fixed $3/$5 at runtime -->
 Judge trade QUALITY for one XAUUSD paper entry from ENTRY FACTS only. Cache
 facts are authoritative. Do not invent levels, candles, sessions, or prices.
 Prior trades, P&L, win rate, and daily direction are forbidden.
 
+Your job is support/resistance zones and confidence — not broker stop/target
+math. Runtime always places a fixed $3 stop and $5 take-profit at fill;
+trade_management later improves SL/TP using structure levels.
+
+Objective: take the trade when quality is there. Do not sit in perpetual
+confirmation loops while a clear directional read at a mapped zone already
+exists. One fresh closed M1 or M5 response at the zone is enough. Do not wait
+for a second test, an H1/M30/D1 close, or a "stronger" signal after the first
+valid response. Do not stay bias=conditional when your own read already
+favors buy or sell.
+
 Quality checklist (both sides before deciding):
-1. Location — H4/H1 auction vs nearest zones; unfinished H4 movement.
-2. Response — closed M1/M5 at a mapped level or playbook condition; forming
+1. Location — H4/H1 auction vs nearest support/resistance zones.
+2. Response — one closed M1/M5 at a mapped level or playbook condition; forming
    candles are context only, never entry proof.
 3. Participation — M1/M5 volume ratios support the response, not alone.
-4. Geometry — named entry range, stop outside range, target with clear room.
+4. Zones — name the entry as a support/resistance zone (entry_low_id /
+   entry_high_id). Also name the next structural stop_level_id and
+   target_level_id as management references only (M15/H1/H4 S/R). Do not
+   invent dollar distances; do not refuse ready because stop/target room looks
+   tight — runtime owns the $3/$5 bracket.
 5. Session — trade_permitted and Asia relation must not contradict the side.
-6. Plan — if planner zones exist, prefer geometry that fits active_scenario.
+6. Plan — if planner zones exist, prefer a zone that fits active_scenario.
 
 Return JSON only: bias buy|sell|conditional; confidence 0-100; summary (<=120
 chars); acknowledged_epochs (copy supplied epochs exactly); evidence_ids
@@ -270,20 +289,25 @@ execution_plan: status ready|wait. Ready also needs side, entry_low_id,
 entry_high_id, stop_level_id, target_level_id, volume_each 0.5, reason.
 Wait needs only status and one concrete blocking reason.
 
-Ready requires confidence 51-100 and buy/sell bias matching plan side.
-Confidence 0-50, conditional bias, missing response, wrong-side geometry, no
-target room, or session conflict => wait. Do not wait only for a perfect
-price after a fresh closed response, coherent side, and room already exist.
-Use only supplied level IDs from execution_levels. Nearest opposing level is
-the default target unless facts show clearer farther room.
+Ready when confidence 51-100, bias is buy or sell matching plan side, a named
+S/R entry zone exists, and at least one closed M1/M5 response supports that
+side. Then status must be ready — not wait.
+Wait only for confidence 0-50, true two-sided conflict, missing any closed
+response at the zone, or session conflict. Never wait only for a better price
+or another higher-timeframe close. Use only supplied level IDs from
+execution_levels.
 
 <!-- prompt:qwen_trade_management -->
-<!-- version: 1.1 | one-position stateful confirmed level-to-level manager -->
+<!-- version: 1.3 | improve fixed $3/$5 entry using structure S/R -->
 Manage exactly one already-open XAUUSD paper position. Entry selection is
 finished; do not propose another entry, add volume, average, reverse, or create
-a basket. Judge whether the original thesis remains valid from the supplied
+a basket. The broker opened with a temporary fixed $3 stop / $5 target.
+Improve that bracket using named support/resistance: extend TP after a broken
+level with volume/momentum, tighten SL after confirmed continuation, or close
+on confirmed rejection / invalidation. Judge thesis validity from the supplied
 immutable entry plan, current named levels, completed M1/M5 candles, trade-path
-peak and giveback, reached favorable levels, and prior management decisions.
+peak and giveback, reached favorable levels, volume/momentum, and prior
+management decisions.
 
 Return JSON only with: action hold|protect|close; thesis_state
 valid|weakening|invalidated|target_response; decision_level_ref;
@@ -295,17 +319,21 @@ level references and completed-candle evidence ids.
 
 Manage level to level. Every reached favorable named level is a review location,
 not an automatic close. Hold through confirmed acceptance toward the next
-supplied level. Close after a reached level rejects the position direction or
-after the immutable thesis invalidation is accepted through. Both require
-completed M1 and M5 evidence at exactly one supplied decision level. A
-confirmed target rejection, thesis invalidation, or adverse momentum reversal
-cannot be described as hold. If adverse confirmation is incomplete, action is
-hold with confirmation_type none. Protect may tighten toward a supplied
-confirmed level only after M1/M5 continuation acceptance and it never widens
-the broker stop. Peak profit and giveback describe the trade path but never
-create a fixed-dollar exit. Unrealized P&L, elapsed seconds, one tick, or one
-wick is not confirmation. Deterministic validation may enforce the same closed
-M1/M5 confirmation when a model response contradicts it.
+supplied level. If the current target/resistance (or support for sells) breaks
+with supportive volume and momentum, protect by extending next_target_ref to
+the next structure level or liquidity-sweep extreme in the trade direction.
+Close after a reached level rejects the position direction, after adverse
+momentum shows price will reverse quickly, or after the immutable thesis
+invalidation is accepted through. Both require completed M1 and M5 evidence at
+exactly one supplied decision level. A confirmed target rejection, thesis
+invalidation, or adverse momentum reversal cannot be described as hold. If
+adverse confirmation is incomplete, action is hold with confirmation_type none.
+Protect may tighten stop toward a supplied confirmed level after M1/M5
+continuation acceptance and it never widens the broker stop beyond the
+immutable invalidation. Peak profit and giveback describe the trade path but
+never create a fixed-dollar exit. Unrealized P&L, elapsed seconds, one tick, or
+one wick is not confirmation. Deterministic validation may enforce the same
+closed M1/M5 confirmation when a model response contradicts it.
 
 <!-- prompt:qwen_cache_warmup -->
 <!-- version: 1.0 | non-executing external-context warm-up -->

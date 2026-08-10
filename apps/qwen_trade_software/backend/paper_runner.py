@@ -28,15 +28,6 @@ BEST_PRICE_RETRACE = 0.10
 RUNNER_LOCK_FILE = APP_DIR / "paper-runner.lock"
 BROKER_TRUTH_REFRESH_SECONDS = 2.0
 _BROKER_COUNT_CACHE = {"checked": 0.0, "count": 0}
-# Below this fraction of remaining-reward to remaining-risk (measured against
-# Qwen's own structural stop/target references, at the live price right
-# before dispatch), a signal is treated as stale rather than executed. This
-# does not change what Qwen decides -- it only stops the runner from chasing
-# a proposal whose edge has already been substantially eaten by the delay
-# between the decision and execution. See PATCH_NOTES_per_day_logs.md /
-# reviewer.py's decision_wall_seconds for the latency this is protecting
-# against.
-MIN_REMAINING_REWARD_RISK_RATIO = 0.4
 
 _LOG_HANDLER = logging.handlers.TimedRotatingFileHandler(
     filename=LOG_FILE, when="midnight", encoding="utf-8"
@@ -146,6 +137,20 @@ def latest_ready_proposal():
 
 def arguments_for(proposal: dict) -> Namespace:
     plan = proposal["qwen"]["execution_plan"]
+    # Broker uses fixed $3/$5 from the plan. Structure S/R prices are management
+    # references only — never used to reject the entry.
+    manage_sl = plan.get("structural_stop_loss")
+    manage_tp = plan.get("structural_take_profit")
+    try:
+        manage_sl = float(manage_sl) if manage_sl is not None else float(plan["stop_loss"])
+    except (TypeError, ValueError):
+        manage_sl = float(plan["stop_loss"])
+    try:
+        manage_tp = (
+            float(manage_tp) if manage_tp is not None else float(plan["take_profit"])
+        )
+    except (TypeError, ValueError):
+        manage_tp = float(plan["take_profit"])
     return Namespace(
         proposal_id=proposal["proposal_id"],
         symbol=proposal["symbol"],
@@ -154,12 +159,14 @@ def arguments_for(proposal: dict) -> Namespace:
         entry_high=float(plan["entry_high"]),
         stop_loss=float(plan["stop_loss"]),
         take_profit=float(plan["take_profit"]),
+        management_reference_sl=manage_sl,
+        management_reference_tp=manage_tp,
         buckets=1,
         volume=float(plan["volume_each"]),
         signal_ttl_seconds=MAX_PROPOSAL_AGE_SECONDS,
         maximum_tick_age_ms=3000,
         poll_ms=250,
-        stop_price_distance=float(plan["stop_price_distance"]),
+        stop_price_distance=float(plan.get("stop_price_distance") or 3.0),
         best_price_observation_seconds=BEST_PRICE_OBSERVATION_SECONDS,
         best_price_retrace=BEST_PRICE_RETRACE,
         signal_timeframe=proposal.get("timeframe", "M1"),
@@ -167,60 +174,8 @@ def arguments_for(proposal: dict) -> Namespace:
     )
 
 
-def entry_reward_risk_eroded(plan: dict, current_price: float) -> bool:
-    """True if execution delay has already eaten most of the trade's edge.
-
-    Compares what's left between the live price right now and Qwen's own
-    structural stop/target references from the plan. A proposal can still
-    be technically inside its originally approved entry_low/entry_high zone
-    and yet have most of its intended reward already gone -- e.g. price
-    drifted up near a buy's own take_profit reference before the order ever
-    filled. That's a real pattern seen in practice (see the 2026-08-06
-    trade review): the fill lands late in the zone, very close to Qwen's
-    own target, with most of the distance to the stop still ahead of it.
-    This does not second-guess Qwen's bias or levels -- it only refuses to
-    chase a signal whose own numbers no longer support the trade.
-    """
-    side = plan.get("side")
-    stop_loss = plan.get("stop_loss")
-    take_profit = plan.get("take_profit")
-    if side not in ("buy", "sell") or stop_loss is None or take_profit is None:
-        return False
-    try:
-        stop_loss = float(stop_loss)
-        take_profit = float(take_profit)
-    except (TypeError, ValueError):
-        return False
-    if side == "buy":
-        remaining_reward = take_profit - current_price
-        remaining_risk = current_price - stop_loss
-    else:
-        remaining_reward = current_price - take_profit
-        remaining_risk = stop_loss - current_price
-    if remaining_risk <= 0:
-        # Price is already past the stop; a different failure path (or the
-        # executor's own entry-range check) handles that case, not this one.
-        return False
-    if remaining_reward <= 0:
-        return True  # price already reached or passed Qwen's own target
-    return (remaining_reward / remaining_risk) < MIN_REMAINING_REWARD_RISK_RATIO
-
-
-def live_price_for(symbol: str, side: str) -> float | None:
-    """Fetch a fresh tick for the staleness check below -- best-effort."""
-    if not mt5.initialize(path=paper_executor.DEFAULT_TERMINAL):
-        return None
-    try:
-        tick = mt5.symbol_info_tick(symbol)
-        if tick is None:
-            return None
-        return float(tick.ask if side == "buy" else tick.bid)
-    finally:
-        mt5.shutdown()
-
-
 def proposal_runtime_failures(proposal: dict) -> list[str]:
-    """Recheck logical qualification and current cache/session before entry."""
+    """Recheck confidence + session/cache before entry. No TP/SL geometry veto."""
     failures = []
     qwen = proposal.get("qwen")
     qwen = qwen if isinstance(qwen, dict) else {}
@@ -238,10 +193,6 @@ def proposal_runtime_failures(proposal: dict) -> list[str]:
         failures.append("confidence_provenance_mismatch")
 
     symbol = str(proposal.get("symbol") or "XAUUSDr")
-    live_price = live_price_for(symbol, plan.get("side"))
-    if live_price is not None and entry_reward_risk_eroded(plan, live_price):
-        failures.append("entry_reward_risk_eroded")
-
     current = latest_entry_context(symbol)
     if current.get("status") != "ready":
         failures.append("current_cache_not_ready")
@@ -255,17 +206,13 @@ def proposal_runtime_failures(proposal: dict) -> list[str]:
     for field in ("trading_date_utc", "session"):
         if original_session.get(field) != current_session.get(field):
             failures.append(f"current_session_{field}_changed")
-    planned_epochs = plan.get("cache_epochs", {})
-    current_epochs = current.get("epochs", {})
-    for field in ("structural", "playbooks"):
-        if (
-            not planned_epochs.get(field)
-            or planned_epochs.get(field) != current_epochs.get(field)
-        ):
-            failures.append(f"current_cache_{field}_changed")
+    # Cache epochs rotate every minute; requiring an exact structural/playbook
+    # match vetoed fresh ready proposals before MT5 could place them. Keep the
+    # model digest check only — session/date checks above still apply.
     if (
-        not plan.get("cache_model_digest")
-        or plan.get("cache_model_digest") != current.get("model_digest")
+        plan.get("cache_model_digest")
+        and current.get("model_digest")
+        and plan.get("cache_model_digest") != current.get("model_digest")
     ):
         failures.append("current_model_digest_changed")
     return failures

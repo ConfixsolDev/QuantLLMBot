@@ -69,6 +69,13 @@ DAILY_PAPER_CAP = 100
 MIN_ENTRY_CONFIDENCE = 51
 QWEN_PLAN_GATING = os.environ.get("QWEN_PLAN_GATING", "0") == "1"
 QWEN_DECISION_LOCK = threading.Lock()
+# Broker entry bracket is fixed; structure S/R is for the model zone + management.
+FIXED_STOP_DISTANCE = 3.0
+FIXED_TARGET_DISTANCE = 5.0
+MIN_STOP_DISTANCE = FIXED_STOP_DISTANCE
+MIN_TARGET_DISTANCE = FIXED_TARGET_DISTANCE
+MAX_STRUCTURE_DISTANCE = 40.0
+STRUCTURE_TIMEFRAMES = ("H4", "H1", "M15", "M30", "D1")
 
 
 def latest_paper_execution():
@@ -556,29 +563,216 @@ def cache_fallback_geometry(
         return None
 
     (entry_low_id, entry_low), (entry_high_id, entry_high) = entry_points
-    lower = sorted(
-        (row for row in level_rows if row[1] < entry_low),
-        key=lambda row: row[1],
-        reverse=True,
+    structure_tf = infer_structure_timeframe(
+        entry_low_id, entry_high_id, "", ""
     )
-    upper = sorted(
-        (row for row in level_rows if row[1] > entry_high),
-        key=lambda row: row[1],
+    stop_pick, target_pick = pick_structure_stop_target(
+        side,
+        entry_low,
+        entry_high,
+        decision_levels,
+        structure_tf,
+        None,
+        None,
+        {},
     )
-    if not lower or not upper:
+    if stop_pick is None or target_pick is None:
         return None
-    stop_level_id, stop_loss, _ = lower[0] if side == "buy" else upper[0]
-    target_level_id, take_profit, _ = upper[0] if side == "buy" else lower[0]
     return {
         "entry_low_id": entry_low_id,
         "entry_high_id": entry_high_id,
-        "stop_level_id": stop_level_id,
-        "target_level_id": target_level_id,
+        "stop_level_id": stop_pick[0],
+        "target_level_id": target_pick[0],
         "entry_low": entry_low,
         "entry_high": entry_high,
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
+        "stop_loss": stop_pick[1],
+        "take_profit": target_pick[1],
+        "structure_timeframe": structure_tf,
     }
+
+
+def _level_timeframe(level_id: str) -> str | None:
+    text = str(level_id or "")
+    for timeframe in ("M1", "M5", "M15", "M30", "H1", "H4", "D1"):
+        if text.startswith(f"{timeframe}_") or text.startswith(f"{timeframe}-"):
+            return timeframe
+    return None
+
+
+def infer_structure_timeframe(
+    entry_low_id: str,
+    entry_high_id: str,
+    stop_level_id: str,
+    target_level_id: str,
+) -> str:
+    """Choose SL/TP ladder from the trade's structure TF (H4 → H1 → M15)."""
+    votes: list[str] = []
+    for level_id in (stop_level_id, target_level_id, entry_low_id, entry_high_id):
+        timeframe = _level_timeframe(level_id)
+        if timeframe in STRUCTURE_TIMEFRAMES:
+            votes.append(timeframe)
+    for timeframe in ("H4", "H1", "M15", "M30", "D1"):
+        if timeframe in votes:
+            return timeframe
+    return "H1"
+
+
+def _collect_structure_levels(
+    decision_levels: dict, structure_tf: str
+) -> list[tuple[str, float, str]]:
+    """Levels for the structure TF, then wider parents if the ladder is thin."""
+    order = list(STRUCTURE_TIMEFRAMES)
+    try:
+        start = order.index(structure_tf)
+    except ValueError:
+        start = order.index("H1")
+    # Prefer own TF first, then higher parents (H1→H4→D1), then lower M15/M30.
+    preferred = order[start:] + list(reversed(order[:start]))
+    collected: list[tuple[str, float, str]] = []
+    seen: set[str] = set()
+    for timeframe in preferred:
+        for row in decision_levels.get(timeframe, []) or []:
+            level_id = str(row.get("id") or "")
+            if not level_id or level_id in seen:
+                continue
+            try:
+                price = float(row["price"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            seen.add(level_id)
+            collected.append((level_id, price, timeframe))
+    return collected
+
+
+def pick_structure_stop_target(
+    side: str,
+    entry_low: float,
+    entry_high: float,
+    decision_levels: dict,
+    structure_tf: str,
+    qwen_stop_id: str | None,
+    qwen_target_id: str | None,
+    level_map: dict,
+) -> tuple[tuple[str, float] | None, tuple[str, float] | None]:
+    """Next support/resistance beyond the entry zone with Gold-scale room."""
+    levels = _collect_structure_levels(decision_levels, structure_tf)
+    below = sorted(
+        ((level_id, price) for level_id, price, _ in levels if price < entry_low - 1e-9),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    above = sorted(
+        ((level_id, price) for level_id, price, _ in levels if price > entry_high + 1e-9),
+        key=lambda item: item[1],
+    )
+
+    def accept_stop(level_id: str | None, price: float | None) -> tuple[str, float] | None:
+        if not level_id or price is None:
+            return None
+        if side == "buy":
+            distance = entry_low - price
+            if distance < MIN_STOP_DISTANCE or distance > MAX_STRUCTURE_DISTANCE:
+                return None
+        else:
+            distance = price - entry_high
+            if distance < MIN_STOP_DISTANCE or distance > MAX_STRUCTURE_DISTANCE:
+                return None
+        return level_id, float(price)
+
+    def accept_target(level_id: str | None, price: float | None) -> tuple[str, float] | None:
+        if not level_id or price is None:
+            return None
+        if side == "buy":
+            distance = price - entry_high
+            if distance < MIN_TARGET_DISTANCE or distance > MAX_STRUCTURE_DISTANCE:
+                return None
+        else:
+            distance = entry_low - price
+            if distance < MIN_TARGET_DISTANCE or distance > MAX_STRUCTURE_DISTANCE:
+                return None
+        return level_id, float(price)
+
+    stop_pick = accept_stop(
+        qwen_stop_id, level_map.get(qwen_stop_id) if qwen_stop_id else None
+    )
+    target_pick = accept_target(
+        qwen_target_id, level_map.get(qwen_target_id) if qwen_target_id else None
+    )
+
+    if stop_pick is None:
+        candidates = below if side == "buy" else above
+        for level_id, price in candidates:
+            stop_pick = accept_stop(level_id, price)
+            if stop_pick is not None:
+                break
+
+    if target_pick is None:
+        candidates = above if side == "buy" else below
+        # Prefer the nearest level that clears MIN_TARGET_DISTANCE (often $5–$20).
+        for level_id, price in candidates:
+            target_pick = accept_target(level_id, price)
+            if target_pick is not None:
+                break
+
+    # Last resort: nearest level on the correct side (even beyond MAX), padded
+    # to Gold-scale mins — keeps a clear Qwen ready from becoming wait.
+    if stop_pick is None:
+        candidates = below if side == "buy" else above
+        if candidates:
+            level_id, price = candidates[0]
+            if side == "buy":
+                price = min(price, entry_low - MIN_STOP_DISTANCE)
+            else:
+                price = max(price, entry_high + MIN_STOP_DISTANCE)
+            stop_pick = (level_id, float(price))
+        else:
+            synth = (
+                entry_low - MIN_STOP_DISTANCE
+                if side == "buy"
+                else entry_high + MIN_STOP_DISTANCE
+            )
+            stop_pick = (f"SYNTH_STOP_{structure_tf}", round(synth, 3))
+
+    if target_pick is None:
+        candidates = above if side == "buy" else below
+        if candidates:
+            # Prefer farthest-within-MAX, else nearest padded to min room.
+            usable = []
+            for level_id, price in candidates:
+                distance = (
+                    price - entry_high if side == "buy" else entry_low - price
+                )
+                if distance <= MAX_STRUCTURE_DISTANCE:
+                    usable.append((level_id, price, distance))
+            if usable:
+                # Nearest that already has min room, else nearest padded.
+                with_room = [row for row in usable if row[2] >= MIN_TARGET_DISTANCE]
+                if with_room:
+                    level_id, price, _ = with_room[0]
+                    target_pick = (level_id, float(price))
+                else:
+                    level_id, price, _ = usable[0]
+                    if side == "buy":
+                        price = max(price, entry_high + MIN_TARGET_DISTANCE)
+                    else:
+                        price = min(price, entry_low - MIN_TARGET_DISTANCE)
+                    target_pick = (level_id, float(price))
+            else:
+                level_id, price = candidates[0]
+                if side == "buy":
+                    price = max(price, entry_high + MIN_TARGET_DISTANCE)
+                else:
+                    price = min(price, entry_low - MIN_TARGET_DISTANCE)
+                target_pick = (level_id, float(price))
+        else:
+            synth = (
+                entry_high + MIN_TARGET_DISTANCE
+                if side == "buy"
+                else entry_low - MIN_TARGET_DISTANCE
+            )
+            target_pick = (f"SYNTH_TARGET_{structure_tf}", round(synth, 3))
+
+    return stop_pick, target_pick
 
 
 def load_active_planner_context() -> dict:
@@ -741,7 +935,12 @@ def normalize_execution_plan(
     bias: str | None = None,
     confidence=None,
 ) -> dict:
-    """Accept clear intent while keeping geometry inside the validated cache."""
+    """Ready gate = confidence + named S/R entry zone; broker SL/TP = $3/$5.
+
+    Qwen names support/resistance zones and side. Runtime places a fixed $3
+    stop and $5 target from the zone. Next structure S/R prices are kept only
+    as management references for trade_management to improve after fill.
+    """
     def wait(reason):
         return {"status": "wait", "reason": reason}
 
@@ -757,70 +956,108 @@ def normalize_execution_plan(
             f"the {MIN_ENTRY_CONFIDENCE} entry minimum."
         )
     normalized_bias = str(bias or "").strip().lower()
-    if normalized_bias not in ("buy", "sell"):
-        return wait("Qwen must provide a clear buy or sell bias.")
     declared_side = str(value.get("side") or "").strip().lower()
+    # Ready plan side is authoritative if bias was left conditional.
+    if normalized_bias not in ("buy", "sell"):
+        if declared_side in ("buy", "sell"):
+            normalized_bias = declared_side
+        else:
+            return wait("Qwen must provide a clear buy or sell bias.")
     if declared_side and declared_side != normalized_bias:
         return wait("Qwen plan side contradicts its declared bias.")
     side = declared_side or normalized_bias
+    decision_levels = snapshot.get("decision_levels", {})
     level_map = {
         str(level["id"]): float(level["price"])
-        for levels in snapshot.get("decision_levels", {}).values()
+        for levels in decision_levels.values()
         for level in levels
     }
-    geometry_source = "qwen_named_levels"
-    try:
-        entry_low_id = str(
-            value.get("entry_low_id") or value.get("entry_id")
+    quote = float(
+        entry_cache.get("minute", {}).get("quote", {}).get(
+            "ask" if side == "buy" else "bid",
+            snapshot.get("price", 0.0),
         )
-        if entry_low_id not in level_map:
-            raise KeyError(entry_low_id)
-        entry_high_value = value.get("entry_high_id")
-        entry_high_id = str(entry_high_value) if entry_high_value else entry_low_id
-        stop_level_id = str(value.get("stop_level_id") or "")
-        target_level_id = str(value.get("target_level_id") or "")
-        if entry_high_id not in level_map or entry_high_id == entry_low_id:
-            raise KeyError(entry_high_id)
-        if stop_level_id not in level_map or target_level_id not in level_map:
-            raise KeyError("stop_or_target")
+        or 0.0
+    )
+
+    entry_low_id = str(value.get("entry_low_id") or value.get("entry_id") or "")
+    entry_high_id = str(value.get("entry_high_id") or entry_low_id or "")
+    qwen_stop_id = str(value.get("stop_level_id") or "")
+    qwen_target_id = str(value.get("target_level_id") or "")
+    geometry_source = "qwen_sr_zone_fixed_3_5"
+
+    if entry_low_id in level_map and entry_high_id in level_map:
         entry_points = sorted(
-            ((entry_low_id, level_map[entry_low_id]),
-             (entry_high_id, level_map[entry_high_id])),
+            (
+                (entry_low_id, level_map[entry_low_id]),
+                (entry_high_id, level_map[entry_high_id]),
+            ),
             key=lambda item: item[1],
         )
         entry_low_id, entry_low = entry_points[0]
         entry_high_id, entry_high = entry_points[1]
-        stop_loss = level_map[stop_level_id]
-        take_profit = level_map[target_level_id]
-        volume_each = 0.5
-    except (KeyError, TypeError, ValueError):
-        fallback = cache_fallback_geometry(
-            side,
-            snapshot.get("decision_levels", {}),
-            float(
-                entry_cache.get("minute", {}).get("quote", {}).get(
-                    "ask" if side == "buy" else "bid",
-                    snapshot.get("price", 0.0),
-                )
-            ),
-        )
+        if entry_low_id == entry_high_id or abs(entry_low - entry_high) < 1e-9:
+            band = 0.4
+            entry_low = round(entry_low - band, 3)
+            entry_high = round(entry_high + band, 3)
+    else:
+        fallback = cache_fallback_geometry(side, decision_levels, quote)
         if fallback is None:
-            return wait("Validated cache cannot map complete entry geometry.")
-        geometry_source = "cache_nearest_levels_fallback"
+            return wait("Validated cache cannot map a Qwen entry zone.")
+        geometry_source = "cache_sr_zone_fixed_3_5"
         entry_low_id = fallback["entry_low_id"]
         entry_high_id = fallback["entry_high_id"]
-        stop_level_id = fallback["stop_level_id"]
-        target_level_id = fallback["target_level_id"]
         entry_low = fallback["entry_low"]
         entry_high = fallback["entry_high"]
-        stop_loss = fallback["stop_loss"]
-        take_profit = fallback["take_profit"]
-        volume_each = 0.5
+        if not qwen_stop_id:
+            qwen_stop_id = fallback["stop_level_id"]
+        if not qwen_target_id:
+            qwen_target_id = fallback["target_level_id"]
 
-    if side == "buy" and not (stop_loss < entry_low <= entry_high < take_profit):
-        return wait("Mapped buy geometry has no valid stop or target room.")
-    if side == "sell" and not (take_profit < entry_low <= entry_high < stop_loss):
-        return wait("Mapped sell geometry has no valid stop or target room.")
+    structure_tf = infer_structure_timeframe(
+        entry_low_id, entry_high_id, qwen_stop_id, qwen_target_id
+    )
+    # Management references only — never used to reject or replace the entry.
+    stop_pick, target_pick = pick_structure_stop_target(
+        side,
+        entry_low,
+        entry_high,
+        decision_levels,
+        structure_tf,
+        qwen_stop_id or None,
+        qwen_target_id or None,
+        level_map,
+    )
+    if stop_pick is None:
+        stop_pick = (
+            qwen_stop_id or f"MGMT_STOP_{structure_tf}",
+            round(
+                entry_low - FIXED_STOP_DISTANCE
+                if side == "buy"
+                else entry_high + FIXED_STOP_DISTANCE,
+                3,
+            ),
+        )
+    if target_pick is None:
+        target_pick = (
+            qwen_target_id or f"MGMT_TARGET_{structure_tf}",
+            round(
+                entry_high + FIXED_TARGET_DISTANCE
+                if side == "buy"
+                else entry_low - FIXED_TARGET_DISTANCE,
+                3,
+            ),
+        )
+    stop_level_id, structural_stop = stop_pick
+    target_level_id, structural_target = target_pick
+
+    if side == "buy":
+        stop_loss = round(entry_low - FIXED_STOP_DISTANCE, 3)
+        take_profit = round(entry_high + FIXED_TARGET_DISTANCE, 3)
+    else:
+        stop_loss = round(entry_high + FIXED_STOP_DISTANCE, 3)
+        take_profit = round(entry_low - FIXED_TARGET_DISTANCE, 3)
+
     return {
         "status": "ready",
         "side": side,
@@ -832,9 +1069,14 @@ def normalize_execution_plan(
         "entry_high": entry_high,
         "stop_loss": stop_loss,
         "take_profit": take_profit,
-        "stop_price_distance": adaptive_stop_distance(snapshot),
+        "structure_timeframe": structure_tf,
+        "stop_distance": FIXED_STOP_DISTANCE,
+        "target_distance": FIXED_TARGET_DISTANCE,
+        "structural_stop_loss": float(structural_stop),
+        "structural_take_profit": float(structural_target),
+        "stop_price_distance": FIXED_STOP_DISTANCE,
         "buckets": 1,
-        "volume_each": volume_each,
+        "volume_each": 0.5,
         "decision_confidence": confidence_score,
         "cache_epochs": dict(entry_cache["epochs"]),
         "cache_model_digest": entry_cache.get("model_digest"),
@@ -991,9 +1233,10 @@ def generate_dashboard_deal_sheet() -> dict:
         review["execution_plan"].get("status") == "ready"
         and review.get("invalidation") is None
     ):
+        plan = review["execution_plan"]
         review["invalidation"] = {
-            "level_id": review["execution_plan"]["stop_level_id"],
-            "price": review["execution_plan"]["stop_loss"],
+            "level_id": plan["stop_level_id"],
+            "price": plan.get("structural_stop_loss", plan["stop_loss"]),
         }
 
     # No-model wait churn: identical cache/session blocks used to rewrite a
