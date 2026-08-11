@@ -150,6 +150,73 @@ def test_executor_falls_back_on_poor_rr_when_skip_disabled(mt5_fake, monkeypatch
     assert tp == pytest.approx(4332.822 - pe.INITIAL_TAKE_PROFIT_DISTANCE)
 
 
+def test_observation_window_records_what_it_would_have_refused(mt5_fake, monkeypatch):
+    """The observation window is only worth running if it leaves evidence.
+
+    With the gate off we take the trade anyway, so the ONLY record that the
+    setup was disliked is this event. Without it, "should we enforce geometry"
+    is unanswerable after two days of trading -- there is nothing to join the
+    refusal to the P&L. Keyed on proposal_id, which is what the close record
+    carries.
+    """
+    import paper_executor as pe
+
+    captured = []
+    monkeypatch.setattr(pe, "SKIP_ON_GEOMETRY_REJECTION", frozenset())
+    monkeypatch.setattr(pe, "append_event", captured.append)
+
+    args = Namespace(
+        side="sell", management_reference_sl=4344.279, management_reference_tp=4324.0,
+        structure_timeframe="M30", stop_level_id="H1", target_level_id="M30",
+        proposal_id="paper-20260811T032032-31d4eaf3",
+    )
+    pe.broker_bracket_from_plan(args, 4332.822, 3)
+
+    observations = [e for e in captured if e.get("event") == "geometry_observation"]
+    assert len(observations) == 1, "a would-be refusal must leave exactly one record"
+    record = observations[0]
+    assert record["proposal_id"] == "paper-20260811T032032-31d4eaf3"
+    assert record["reason_code"] == "geometry:reward_risk_too_low"
+    assert record["would_refuse"] is True
+    assert record["taken_on"] == "fixed_3_5"
+
+
+def test_observation_recording_never_blocks_a_trade(mt5_fake, monkeypatch):
+    """An observation is bookkeeping. If it throws, the trade still goes on."""
+    import paper_executor as pe
+
+    def explode(_event):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pe, "SKIP_ON_GEOMETRY_REJECTION", frozenset())
+    monkeypatch.setattr(pe, "append_event", explode)
+
+    args = Namespace(
+        side="sell", management_reference_sl=4344.279, management_reference_tp=4324.0,
+        structure_timeframe="M30", stop_level_id="H1", target_level_id="M30",
+        proposal_id="p-1",
+    )
+    _, _, source = pe.broker_bracket_from_plan(args, 4332.822, 3)
+    assert source.startswith("fixed_3_5_after_")
+
+
+def test_accepted_entries_are_not_recorded_as_observations(mt5_fake, monkeypatch):
+    """Only refusals go in the log; otherwise the comparison group is polluted."""
+    import paper_executor as pe
+
+    captured = []
+    monkeypatch.setattr(pe, "append_event", captured.append)
+
+    args = Namespace(
+        side="sell", management_reference_sl=4344.279, management_reference_tp=4315.0,
+        structure_timeframe="M30", stop_level_id="H1_PREVIOUS_HIGH",
+        target_level_id="M30_PREVIOUS_LOW", proposal_id="p-2",
+    )
+    _, _, source = pe.broker_bracket_from_plan(args, 4332.822, 3)
+    assert source == "structural_same_frame"
+    assert not [e for e in captured if e.get("event") == "geometry_observation"]
+
+
 def test_executor_falls_back_when_structure_is_missing(mt5_fake):
     """Missing information degrades to legacy; it never leaves a fill unprotected."""
     import paper_executor as pe

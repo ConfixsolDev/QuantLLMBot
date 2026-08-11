@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
 
+import process_logging
 import management_policy
 import trade_geometry
 from market_context_cache import latest_readiness
@@ -92,12 +93,9 @@ EXECUTION_MONITOR_BY_ID: dict[str, dict] = {}
 # new day's file.
 PAPER_EXECUTION_TAIL_STATE = {"path": None, "offset": 0}
 
-_LOG_HANDLER = logging.handlers.TimedRotatingFileHandler(
-    filename=LOG_DIR / "trade-management.log", when="midnight", encoding="utf-8"
+_LOG_HANDLER = process_logging.configure(
+    LOG_DIR / "trade-management.log", owner="trade_management"
 )
-_LOG_HANDLER.suffix = "%Y-%m-%d"
-_LOG_HANDLER.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-logging.basicConfig(level=logging.INFO, handlers=[_LOG_HANDLER])
 
 
 def _model_status_label(model: str = MODEL) -> str:
@@ -446,6 +444,129 @@ def close_qwen_owned_positions(positions) -> list:
             }
         )
     return results
+
+
+def management_decision_context(
+    *,
+    facts: dict,
+    entry: dict,
+    parsed_review: dict,
+    guard_review: dict | None,
+    applications: list,
+    close_results: list,
+    stale_for_execution: bool,
+    decision_still_applicable: bool,
+    response_age_seconds: float,
+    live_price: float | None,
+) -> dict:
+    """The state the manager was looking at when it decided, in one flat row.
+
+    2026-08-11 -- why this is here
+    -----------------------------
+    Trade management is where the exit decision is going to be made -- not by a
+    static SL and TP, because the idea behind a trade changes while the trade is
+    running. For the manager to get better at that, every decision it makes has
+    to be scoreable afterwards, and that means recording what it SAW, not only
+    what it chose.
+
+    Before this, a close decision stored the action and the proposal id. You
+    could see that it closed; you could not ask the question that matters --
+    "was closing right?" -- because the position's progress toward target, how
+    much open profit it gave back, how far into its risk it was, and which rule
+    fired were all absent. Answering it meant re-deriving state from candles
+    after the fact, which nobody does.
+
+    Each field is here because it discriminates a good exit from a bad one:
+
+      r_multiple          -- closing at -0.9R is a different act from -0.1R
+      target_progress     -- closing at 80% of target is not the same mistake
+                             as closing at 5%
+      giveback_price      -- distinguishes "protected a gain" from "panicked"
+      peak_favorable      -- the trade's best moment; the benchmark any exit
+                             is judged against
+      decided_by          -- separates the deterministic guard's exits from the
+                             model's, so their records never get pooled
+      executed            -- a decision that did not reach the broker must not
+                             be scored as though it did
+    """
+    position = facts.get("position") or {}
+    path = facts.get("trade_path") or {}
+    levels = facts.get("level_references") or {}
+    planned_target = levels.get("planned_target") or {}
+    planned_invalidation = levels.get("planned_invalidation") or {}
+
+    side = position.get("side")
+    entry_price = position.get("entry")
+    current = live_price if live_price is not None else position.get("current")
+
+    def _float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    entry_price = _float(entry_price)
+    current = _float(current)
+    stop = _float(planned_invalidation.get("price"))
+    target = _float(planned_target.get("price"))
+
+    direction = 1.0 if side == "buy" else -1.0
+    risk = abs(entry_price - stop) if entry_price is not None and stop else None
+    span = (
+        direction * (target - entry_price)
+        if entry_price is not None and target is not None
+        else None
+    )
+    travelled = (
+        direction * (current - entry_price)
+        if entry_price is not None and current is not None
+        else None
+    )
+
+    r_multiple = (
+        round(travelled / risk, 3) if travelled is not None and risk else None
+    )
+    target_progress = (
+        round(max(0.0, min(1.0, travelled / span)), 3)
+        if travelled is not None and span and span > 0
+        else None
+    )
+
+    action = parsed_review.get("action")
+    return {
+        "management_contract": facts.get("contract"),
+        "decided_by": "deterministic_guard" if guard_review else "model",
+        "action": action,
+        "confidence": parsed_review.get("confidence"),
+        "validation_failures": parsed_review.get("validation_failures") or [],
+        # Did this decision actually reach the broker? A close that was stale
+        # by the time it returned changed nothing and must not be scored.
+        "executed": bool(close_results) if action == "close" else bool(applications),
+        "stale_for_execution": bool(stale_for_execution),
+        "decision_still_applicable": bool(decision_still_applicable),
+        "response_age_seconds": round(float(response_age_seconds), 3),
+        # --- what the trade was doing at the moment of the decision ---
+        "side": side,
+        "entry_price": entry_price,
+        "price_at_decision": current,
+        "r_multiple": r_multiple,
+        "target_progress": target_progress,
+        "favorable_price_move": position.get("favorable_price_move"),
+        "peak_favorable_price_move": path.get("peak_favorable_price_move"),
+        "giveback_price": path.get("current_giveback_price"),
+        "peak_gross_pnl": path.get("peak_gross_pnl"),
+        "gross_pnl_at_decision": position.get("gross_pnl"),
+        "broker_stop_at_decision": position.get("broker_stop"),
+        # --- the plan it is being measured against ---
+        "planned_target_level_id": planned_target.get("level_id"),
+        "planned_target_price": target,
+        "planned_invalidation_level_id": planned_invalidation.get("level_id"),
+        "planned_invalidation_price": stop,
+        "initial_risk_price": round(risk, 3) if risk else None,
+        "furthest_reached_level_ref": path.get("furthest_reached_level_ref"),
+        "entry_reason": (facts.get("entry_thesis") or {}).get("reason"),
+        "entry_proposal_id": entry.get("proposal_id"),
+    }
 
 
 def active_entry_context(position) -> dict | None:
@@ -948,6 +1069,20 @@ def review_positions() -> None:
             "entry_proposal_id": entry.get("proposal_id"),
             "guard_applied": bool(guard_review),
             "latest_completed_m1": latest_management_candle,
+            # Everything needed to score this decision later, captured at the
+            # moment it was made. See management_decision_context().
+            **management_decision_context(
+                facts=facts,
+                entry=entry,
+                parsed_review=parsed_review,
+                guard_review=guard_review,
+                applications=applications,
+                close_results=close_results,
+                stale_for_execution=stale_for_execution,
+                decision_still_applicable=decision_still_applicable,
+                response_age_seconds=response_age_seconds,
+                live_price=live_price,
+            ),
         },
     )
     record = {

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 
+import process_logging
 import paper_executor
 from market_context_cache import latest_entry_context
 
@@ -29,12 +30,7 @@ RUNNER_LOCK_FILE = APP_DIR / "paper-runner.lock"
 BROKER_TRUTH_REFRESH_SECONDS = 2.0
 _BROKER_COUNT_CACHE = {"checked": 0.0, "count": 0}
 
-_LOG_HANDLER = logging.handlers.TimedRotatingFileHandler(
-    filename=LOG_FILE, when="midnight", encoding="utf-8"
-)
-_LOG_HANDLER.suffix = "%Y-%m-%d"
-_LOG_HANDLER.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-logging.basicConfig(level=logging.INFO, handlers=[_LOG_HANDLER])
+_LOG_HANDLER = process_logging.configure(LOG_FILE, owner="paper_runner")
 
 
 def _dated_log_path(base_name: str) -> Path:

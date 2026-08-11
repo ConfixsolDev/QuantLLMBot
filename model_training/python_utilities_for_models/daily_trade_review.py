@@ -193,6 +193,12 @@ def build_trade_narratives(proposals: list, execution_index: dict, reviews: list
             "exit_price": closed.get("exit_price"),
             "net_pnl": closed.get("net_pnl"),
             "gross_pnl": closed.get("gross_pnl"),
+            # False when the closing deal never reached MT5 history before the
+            # outcome was computed, so net_pnl is the entry commission alone
+            # rather than the real result. Absent on rows written before
+            # 2026-08-11; those are assumed complete because there is no way
+            # to tell after the fact.
+            "pnl_is_complete": closed.get("pnl_is_complete", True),
             "peak_pnl": closed.get("peak_pnl"),
             "max_drawdown": closed.get("maximum_drawdown"),
             "holding_seconds": closed.get("position_holding_seconds", closed.get("holding_seconds")),
@@ -217,7 +223,12 @@ def compute_day_summary(proposals: list, execution_index: dict, trades: list) ->
         1 for bucket in execution_index.values()
         if bucket["closed"] and bucket["closed"].get("reason") == "signal_expired"
     )
-    net_pnl = sum(t["net_pnl"] or 0.0 for t in trades)
+    # Trades whose closing deal never settled carry a net_pnl of roughly
+    # -3.50: the entry commission and nothing else. Summing those understates
+    # the day and, worse, reads as a real near-zero result. Count them apart.
+    scorable = [t for t in trades if t.get("pnl_is_complete", True)]
+    unsettled = [t for t in trades if not t.get("pnl_is_complete", True)]
+    net_pnl = sum(t["net_pnl"] or 0.0 for t in scorable)
     buy_ready = sum(1 for p in ready if p.get("qwen", {}).get("execution_plan", {}).get("side") == "buy")
     sell_ready = sum(1 for p in ready if p.get("qwen", {}).get("execution_plan", {}).get("side") == "sell")
     qwen_closed = sum(1 for t in trades if t["close_reason"] == "qwen_confirmed_close")
@@ -231,6 +242,8 @@ def compute_day_summary(proposals: list, execution_index: dict, trades: list) ->
         "expired_unfilled": expired,
         "skipped_runtime_validation": skipped,
         "net_pnl": round(net_pnl, 2),
+        "scorable_trades": len(scorable),
+        "unsettled_pnl_trades": len(unsettled),
         "buy_ready": buy_ready,
         "sell_ready": sell_ready,
         "closed_by_qwen_management": qwen_closed,
@@ -247,7 +260,9 @@ SUMMARY_LABELS = [
     ("filled", "Proposals filled"),
     ("expired_unfilled", "Proposals expired unfilled"),
     ("skipped_runtime_validation", "Proposals skipped (runtime validation)"),
-    ("net_pnl", "Net P&L (filled trades)"),
+    ("net_pnl", "Net P&L (trades with settled P&L)"),
+    ("scorable_trades", "Trades with settled P&L"),
+    ("unsettled_pnl_trades", "Trades excluded — closing deal never settled"),
     ("buy_ready", "Ready proposals — buy"),
     ("sell_ready", "Ready proposals — sell"),
     ("closed_by_qwen_management", "Trades closed by confirmed Qwen management"),

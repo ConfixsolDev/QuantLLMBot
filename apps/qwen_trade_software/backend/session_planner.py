@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import plan_branches
+import process_logging
 from market_context_cache import (
     DEFAULT_DB,
     latest_entry_context,
@@ -67,12 +68,12 @@ DEFAULT_PLANNER_STATE = {
 PLAN_STATUS_VALUES = ("on_track", "drifting", "invalidated")
 LAYER_IDEA_STATUS = ("active", "revised", "invalidated")
 
-_LOG_HANDLER = logging.handlers.TimedRotatingFileHandler(
-    filename=LOG_DIR / "session-planner.log", when="midnight", encoding="utf-8"
+# Claims the root logger when session_planner IS the process. When it is merely
+# imported (reviewer does this), the importing entrypoint reconfigures after
+# this line and wins -- which is correct: the lines belong to that process's log.
+_LOG_HANDLER = process_logging.configure(
+    LOG_DIR / "session-planner.log", owner="session_planner"
 )
-_LOG_HANDLER.suffix = "%Y-%m-%d"
-_LOG_HANDLER.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-logging.basicConfig(level=logging.INFO, handlers=[_LOG_HANDLER])
 
 
 def utc_now() -> datetime:

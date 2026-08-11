@@ -29,6 +29,7 @@ from decision_liveness import (
     DecisionLivenessMonitor,
     format_alarm,
 )
+import process_logging
 from market_context_cache import (
     latest_entry_context,
     load_prompt_section,
@@ -460,12 +461,12 @@ def append_paper_proposal(
     return proposal
 
 
-_LOG_HANDLER = logging.handlers.TimedRotatingFileHandler(
-    filename=LOG_DIR / "reviewer.log", when="midnight", encoding="utf-8"
-)
-_LOG_HANDLER.suffix = "%Y-%m-%d"
-_LOG_HANDLER.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-logging.basicConfig(level=logging.INFO, handlers=[_LOG_HANDLER])
+# Claims the root logger for THIS process. Must use process_logging.configure
+# (force=True), not bare basicConfig: reviewer imports session_planner above,
+# whose module-level setup would otherwise have already claimed the root logger
+# and silently swallowed this call, sending every reviewer line to
+# session-planner.log. See process_logging.py.
+_LOG_HANDLER = process_logging.configure(LOG_DIR / "reviewer.log", owner="reviewer")
 
 
 def adaptive_stop_distance(snapshot: dict) -> float:

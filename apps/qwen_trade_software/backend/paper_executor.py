@@ -56,6 +56,42 @@ SKIP_ON_GEOMETRY_REJECTION = (
 )
 
 
+GEOMETRY_OBSERVATION_LOG = "geometry-observations"
+
+
+def record_geometry_observation(args, bracket, order_price: float) -> None:
+    """Record an entry geometry would have refused, for later scoring.
+
+    Written during the observation window (QWEN_SKIP_ON_GEOMETRY=0) so that the
+    decision to enforce or relax the gate can be made on realised P&L. Keyed by
+    proposal_id so it joins to the close in paper-runner.log.
+
+    Deliberately non-fatal: an observation that fails to write must never stop a
+    trade.
+    """
+    try:
+        append_event(
+            {
+                "event": "geometry_observation",
+                "proposal_id": getattr(args, "proposal_id", None),
+                "created_at_utc": utc_now(),
+                "would_refuse": True,
+                "reason_code": bracket.reason_code,
+                "detail": bracket.detail,
+                "side": getattr(args, "side", None),
+                "order_price": round(float(order_price), 3),
+                "structural_stop": getattr(args, "management_reference_sl", None),
+                "structural_target": getattr(args, "management_reference_tp", None),
+                "frame": getattr(args, "structure_timeframe", None),
+                "would_be_stop_distance": bracket.stop_distance or None,
+                "would_be_reward_risk": bracket.reward_risk or None,
+                "taken_on": "fixed_3_5",
+            }
+        )
+    except Exception:
+        logging.exception("geometry:observation_record_failed")
+
+
 class GeometryRejection(RuntimeError):
     """Raised when structure says this entry is not worth taking."""
 
@@ -343,14 +379,89 @@ def owned_positions(symbol: str, execution_id: str):
     )
 
 
+# A position vanishes from positions_get the instant the broker accepts the
+# close, but the closing DEAL lands in history a moment later. Read history in
+# that gap and you see only the entry deal.
+EXIT_SETTLE_TIMEOUT_SECONDS = 5.0
+EXIT_SETTLE_POLL_SECONDS = 0.25
+
+
+def manager_closed_position(position_ids: set[int]) -> dict | None:
+    """The manager's own close decision for this position, if it made one.
+
+    Attribution must not depend on the broker preserving our order comment.
+    The manager writes every close decision to qwen-decisions-*.jsonl with the
+    position id; that record is ours, it cannot be stripped in transit, and it
+    carries the reasoning. Comments are the fast path, this is the truth.
+    """
+    for path in _dated_log_files("qwen-decisions"):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("mt5_position_id") not in position_ids:
+                continue
+            parsed = record.get("parsed") or {}
+            if str(parsed.get("action", "")).lower() in ("close", "exit"):
+                return record
+    return None
+
+
 def realized_execution_outcome(fills: list[dict], since: datetime) -> dict:
-    """Read authoritative MT5 deal P&L after the managed position disappears."""
+    """Read authoritative MT5 deal P&L after the managed position disappears.
+
+    2026-08-11 -- why this waits, and why it consults the manager
+    ------------------------------------------------------------
+    Seven closes were recorded as `external_position_close` with gross_pnl
+    exactly 0.00 and costs exactly -3.50. That pattern is not a trade that
+    earned nothing: it is the ENTRY deal's commission and nothing else. The
+    position had left positions_get but its closing deal had not yet reached
+    history, so this function summed a single deal and reported the result as
+    final. The recorded P&L for those trades was wrong -- not merely
+    mislabelled -- and the manager could learn nothing from them.
+
+    Two fixes:
+
+      1. Wait for the exit deal to settle instead of reading the gap.
+      2. Attribute the close from the manager's own decision record when the
+         broker did not preserve our comment. A close the manager performed is
+         the manager's close; calling it external hides the manager's own work
+         from the record it is supposed to learn from.
+
+    If the exit deal never appears, say so with a distinct reason rather than
+    reporting a confident zero. A trade with unknown P&L must be visible as
+    unknown, because a false zero silently drags every average toward nothing.
+    """
     position_ids = {int(fill["order"]) for fill in fills}
-    deals = mt5.history_deals_get(since, datetime.now(timezone.utc)) or ()
-    matched = [deal for deal in deals if int(deal.position_id) in position_ids]
-    exits = [deal for deal in matched if deal.entry != mt5.DEAL_ENTRY_IN]
+
+    deadline = time.monotonic() + EXIT_SETTLE_TIMEOUT_SECONDS
+    while True:
+        deals = mt5.history_deals_get(since, datetime.now(timezone.utc)) or ()
+        matched = [deal for deal in deals if int(deal.position_id) in position_ids]
+        exits = [deal for deal in matched if deal.entry != mt5.DEAL_ENTRY_IN]
+        if exits or time.monotonic() >= deadline:
+            break
+        time.sleep(EXIT_SETTLE_POLL_SECONDS)
+
     comments = [str(deal.comment) for deal in exits]
-    if any("QWEN_MGR_CLOSE" in comment for comment in comments):
+    manager_decision = None
+    if not exits:
+        # Nothing settled inside the window. Report the gap honestly.
+        reason = "exit_deals_unsettled"
+        logging.error(
+            "exit deals never settled for positions %s within %.1fs; "
+            "P&L for this trade is INCOMPLETE and must not be treated as zero",
+            sorted(position_ids),
+            EXIT_SETTLE_TIMEOUT_SECONDS,
+        )
+    elif any("QWEN_MGR_CLOSE" in comment for comment in comments):
         reason = "qwen_confirmed_close"
     elif any(comment.startswith("[sl") for comment in comments):
         reason = "managed_or_safety_sl"
@@ -359,7 +470,16 @@ def realized_execution_outcome(fills: list[dict], since: datetime) -> dict:
     elif any(comment.startswith("[so") for comment in comments):
         reason = "broker_stopout"
     else:
-        reason = "external_position_close"
+        manager_decision = manager_closed_position(position_ids)
+        if manager_decision is not None:
+            reason = "qwen_confirmed_close"
+            logging.info(
+                "close attributed to trade management from its decision record "
+                "(broker did not preserve the order comment); positions %s",
+                sorted(position_ids),
+            )
+        else:
+            reason = "external_position_close"
     exit_volume = sum(float(deal.volume) for deal in exits)
     exit_price = (
         sum(float(deal.price) * float(deal.volume) for deal in exits) / exit_volume
@@ -378,6 +498,40 @@ def realized_execution_outcome(fills: list[dict], since: datetime) -> dict:
         "costs": costs,
         "net_pnl": gross + costs,
         "close_comments": comments,
+        # False means the numbers above are missing the exit deal. Anything
+        # that averages, totals, or trains on P&L must skip these rows rather
+        # than read them as a flat zero.
+        "pnl_is_complete": bool(exits),
+        "exit_deal_count": len(exits),
+        # How we know who closed it: "broker_comment", "manager_decision_log",
+        # or None when nobody claimed it.
+        "attribution_source": (
+            "manager_decision_log"
+            if manager_decision is not None
+            else ("broker_comment" if comments else None)
+        ),
+        "manager_close_decision": _manager_close_summary(manager_decision),
+    }
+
+
+def _manager_close_summary(record: dict | None) -> dict | None:
+    """The manager's reasoning for the close, kept with the outcome.
+
+    Stored alongside P&L so the decision and its result live in one row. A
+    close reason that is only in the decision log has to be joined by hand
+    before anyone can ask "did closing early actually help".
+    """
+    if not record:
+        return None
+    parsed = record.get("parsed") or {}
+    return {
+        "decision_id": record.get("decision_id"),
+        "created_at_utc": record.get("created_at_utc"),
+        "action": parsed.get("action"),
+        "confidence": parsed.get("confidence"),
+        "reason": parsed.get("reason") or parsed.get("rationale"),
+        "criterion": parsed.get("criterion") or parsed.get("exit_criterion"),
+        "model": record.get("model"),
     }
 
 
@@ -448,6 +602,13 @@ def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[flo
         # QWEN_SKIP_ON_GEOMETRY=1 after we have enough live evidence.
         if bracket.reason_code in SKIP_ON_GEOMETRY_REJECTION:
             raise GeometryRejection(bracket.reason_code, bracket.detail)
+        # Observation window. Geometry disliked this entry but is not enforcing,
+        # so record WHAT it would have refused -- keyed by proposal_id -- and
+        # take the trade anyway. Refusing a trade tells you nothing about
+        # whether refusing it was right; letting it run and keeping the
+        # counterfactual is what makes the decision measurable in a day or two.
+        # Report: tools/geometry_observation_report.py
+        record_geometry_observation(args, bracket, order_price)
         logging.info(
             "structural bracket unavailable (%s: %s); using fixed %s/%s (level geometry does not block entry)",
             bracket.reason_code,
@@ -890,6 +1051,14 @@ def _run(args) -> dict:
                         ) if first_fill_monotonic is not None else None,
                         "close_results": close_results,
                         "close_comments": outcome["close_comments"],
+                        # Attribution and completeness travel WITH the outcome.
+                        # Without these the manager's own closes were being
+                        # filed as "external" and a missing exit deal was
+                        # indistinguishable from a genuine zero-P&L trade.
+                        "pnl_is_complete": outcome["pnl_is_complete"],
+                        "exit_deal_count": outcome["exit_deal_count"],
+                        "attribution_source": outcome["attribution_source"],
+                        "manager_close_decision": outcome["manager_close_decision"],
                     }
                     append_event(result)
                     return result

@@ -105,12 +105,24 @@ def collect_trades() -> list[dict]:
             outcomes[match.group(1)] = (match.group(2), float(match.group(3)))
 
     fills: dict[str, float] = {}
+    # Trades whose closing deal never settled before the outcome was computed
+    # carry a net_pnl of about -3.50 -- the entry commission alone, not the
+    # real result. Teaching the model that a trade "earned -3.50" when it
+    # actually earned something else is worse than not teaching it at all, so
+    # these are excluded outright rather than approximated.
+    unsettled: set[str] = set()
     for path in sorted(LOGS.glob("paper-executions-*.jsonl")) + sorted(TICKS.glob("*/paper-executions.jsonl")):
         for row in load_jsonl(path):
             if row.get("event") == "mt5_fill":
                 price = (row.get("fill") or {}).get("price")
                 if price:
                     fills[row.get("proposal_id")] = float(price)
+            elif row.get("event") == "mt5_execution_closed":
+                if row.get("pnl_is_complete") is False and row.get("proposal_id"):
+                    unsettled.add(row["proposal_id"])
+    if unsettled:
+        print(f"  excluding {len(unsettled)} trade(s) with unsettled P&L from training")
+    outcomes = {pid: v for pid, v in outcomes.items() if pid not in unsettled}
 
     proposals: dict[str, dict] = {}
     for path in sorted(LOGS.glob("paper-proposals-*.jsonl")) + sorted(TICKS.glob("*/paper-proposals.jsonl")):
