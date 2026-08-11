@@ -42,5 +42,5 @@ Write-Host ""
 Write-Host "Done. Still required outside this script:" -ForegroundColor Cyan
 Write-Host "  - Ollama with qwen-trading-v003:latest registered"
 Write-Host "  - MetaTrader 5 terminal installed and logged in"
-Write-Host "  - IIS + GoldFlowDesk website at C:\inetpub\GoldFlowDesk (for full runtime)"
+Write-Host "  - IIS + GoldFlow Plan View at C:\inetpub\GoldFlowPlanView (install-planview-iis.ps1)"
 Write-Host "Start the app with: powershell -ExecutionPolicy Bypass -File `"$Backend\start-reviewer.ps1`""

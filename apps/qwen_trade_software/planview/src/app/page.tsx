@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchCandles, fetchPlan, fetchSnapshot } from "@/lib/api";
 import type { HourlyUpdate, PlannerState, TradeIdea } from "@/lib/types";
-import { DayPlanPanel } from "@/components/DayPlanPanel";
+import { DayBranchPanel } from "@/components/DayBranchPanel";
 import { HeaderClock } from "@/components/HeaderClock";
 import { HourValidationCard } from "@/components/HourValidationCard";
+import { CheatSheetPanel } from "@/components/CheatSheetPanel";
 import { PlanChart } from "@/components/PlanChart";
 import { SessionTimeline } from "@/components/SessionTimeline";
 import { TradeIdeaStackPanel } from "@/components/TradeIdeaStackPanel";
@@ -21,6 +22,7 @@ export default function PlanViewPage() {
     useState<(typeof TIMEFRAMES)[number]>("H4");
   const [selectedHourlyId, setSelectedHourlyId] = useState<string | null>(null);
   const [tradeIdea, setTradeIdea] = useState<TradeIdea | null>(null);
+  const [cheatOpen, setCheatOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadPlan = useCallback(async () => {
@@ -152,6 +154,7 @@ export default function PlanViewPage() {
         selectedHourlyId={selectedUpdate?.hourly_id ?? null}
         onSelectHour={setSelectedHourlyId}
         timeframe={timeframe}
+        onOpenCheat={() => setCheatOpen(true)}
         runtime={
           plan?.runtime_status ?? {
             model: plan?.model,
@@ -164,16 +167,26 @@ export default function PlanViewPage() {
         }
       />
 
+      <CheatSheetPanel
+        open={cheatOpen}
+        onClose={() => setCheatOpen(false)}
+        livePrice={plan?.live_price}
+        dayPlan={plan?.day_plan ?? null}
+        sessionPlan={plan?.session_plan ?? null}
+        tradeIdea={tradeIdea}
+      />
+
       <div className="grid gap-4 lg:grid-cols-2">
         <TradeIdeaStackPanel stack={tradeIdeaStack} />
         <HourValidationCard update={selectedUpdate} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <DayPlanPanel
-          dayPlan={plan?.day_plan ?? null}
+        <DayBranchPanel
+          branches={plan?.day_branches}
           livePrice={plan?.live_price}
           liveSanity={plan?.day_plan_live_sanity}
+          referencePrice={plan?.day_plan?.reference_price ?? null}
         />
         {plan?.session_plan && (
           <div className="card">

@@ -27,8 +27,27 @@ import MetaTrader5 as mt5
 from market_context_cache import DEFAULT_STORE_ROOT, model_generation_lock
 
 
-MODEL = "qwen-trading-v003:latest"
+# Model version. See model_training/CURRICULUM_AND_DATA_PREP.md 3.0.
+#
+# v004 is the model trained on curriculum v9 (712 rows) -- balanced buy/sell
+# confidence, M30 coverage, frame-coherence skips, live-outcome grounding and
+# the trade-management pack. It replaces v003, which was buy-blind (scored buy
+# non-zero only 14% of the time against 82% for sell).
+#
+# Switching model invalidates the qualification certificate, which is keyed on
+# model_digest. The always-on cache child runs --no-qwen and cannot mint a new
+# one, so the cache will block on 'qwen_validation_not_run' until a
+# qualification pass is run:
+#
+#     ollama list | grep qwen-trading-v004      # confirm the tag first
+#     python market_context_cache.py --once     # WITHOUT --no-qwen
+#
+# QWEN_MODEL overrides without a code edit; market_context_cache.py reads the
+# same variable and the two MUST match or the digest check fails every cycle.
+DEFAULT_MODEL = "qwen-trading-v004:latest"
+MODEL = os.environ.get("QWEN_MODEL", DEFAULT_MODEL)
 OLLAMA_GENERATE = "http://127.0.0.1:11434/api/generate"
+OLLAMA_PS = "http://127.0.0.1:11434/api/ps"
 QWEN_MAGIC = 26072401
 QWEN_COMMENT_PREFIX = "QWEN_"
 # XAUUSD typically quiets Friday ~21:00 UTC through Sunday ~22:00 UTC. When the
@@ -55,7 +74,7 @@ DEFAULT_TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 # dashboard state that used to be one in-process dict is now two files --
 # each process owns writing its own file and only reads the other's.
 # DashboardHandler (still hosted in reviewer.py) merges both into the one
-# /snapshot shape the existing GoldFlowDesk frontend already expects.
+# /snapshot shape the GoldFlow Plan View frontend already expects.
 ENTRY_STATE_FILE = APP_DIR / "entry-dashboard-state.json"
 MANAGEMENT_STATE_FILE = APP_DIR / "management-dashboard-state.json"
 PLANNER_STATE_FILE = APP_DIR / "planner-state.json"
@@ -242,6 +261,55 @@ def unload_model() -> None:
     """Drop the trading model from Ollama memory (keep_alive=0)."""
     _ollama_generate_raw("", keep_alive=0, timeout=60, num_predict=1, num_ctx=512)
     logging.info("Qwen model unloaded from Ollama: %s", MODEL)
+
+
+def unload_stale_models(keep: str | None = None) -> list[str]:
+    """Evict any resident qwen-trading-* model that is not the active one.
+
+    2026-08-10 INCIDENT. warm_model() pins with keep_alive=-1, which Ollama
+    reports as expires_at in the year 2318 -- i.e. never. unload_model() only
+    ever unloads MODEL, so when MODEL was switched v003 -> v004 nothing evicted
+    v003. Both sat resident at ~11.2 GB each, Ollama ran out of VRAM, and the
+    warmup call started returning HTTP 500. Qualification could not complete and
+    the whole trading chain stayed down.
+
+    Switching model version is exactly when this bites, because that is the only
+    time two trading models are ever wanted at once -- and they never are.
+
+    Called on startup so a version switch cannot silently double VRAM.
+    """
+    keep = keep or MODEL
+    evicted: list[str] = []
+    try:
+        with urllib.request.urlopen(OLLAMA_PS, timeout=10) as response:
+            running = json.loads(response.read().decode("utf-8")).get("models", [])
+    except Exception as error:
+        logging.warning("could not query Ollama for resident models: %s", error)
+        return evicted
+
+    for row in running:
+        name = str(row.get("name") or row.get("model") or "")
+        if not name or name == keep:
+            continue
+        if "qwen-trading" not in name:
+            continue  # never touch models this system did not load
+        try:
+            request = urllib.request.Request(
+                OLLAMA_GENERATE,
+                data=json.dumps({
+                    "model": name, "prompt": "", "stream": False, "keep_alive": 0,
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=60):
+                pass
+            evicted.append(name)
+            logging.info(
+                "evicted stale resident model %s (active model is %s)", name, keep
+            )
+        except Exception as error:
+            logging.warning("failed to evict stale model %s: %s", name, error)
+    return evicted
 
 
 def _utc_now() -> datetime:

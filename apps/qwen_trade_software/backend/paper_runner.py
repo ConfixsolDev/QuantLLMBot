@@ -167,6 +167,12 @@ def arguments_for(proposal: dict) -> Namespace:
         maximum_tick_age_ms=3000,
         poll_ms=250,
         stop_price_distance=float(plan.get("stop_price_distance") or 3.0),
+        # Stage 3 inputs. The executor uses these to place the stop beyond the
+        # named invalidation instead of at a flat $3 from the fill; see
+        # paper_executor.broker_bracket_from_plan for the measured rationale.
+        structure_timeframe=plan.get("structure_timeframe"),
+        stop_level_id=plan.get("stop_level_id"),
+        target_level_id=plan.get("target_level_id"),
         best_price_observation_seconds=BEST_PRICE_OBSERVATION_SECONDS,
         best_price_retrace=BEST_PRICE_RETRACE,
         signal_timeframe=proposal.get("timeframe", "M1"),

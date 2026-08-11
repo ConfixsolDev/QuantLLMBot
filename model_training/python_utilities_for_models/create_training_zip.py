@@ -28,6 +28,11 @@ FILES = [
     "model_training/knowledge/stage_02_structured_data.jsonl",
     "model_training/knowledge/stage_03_detector_definitions.jsonl",
     "model_training/knowledge/stage_04_decision_contract.jsonl",
+    # 2026-08-10: live-inference contract alignment. Teaches the exact JSON the
+    # runtime asks for (bias / acknowledged_epochs / execution_plan), which
+    # stage_04 never contained -- see build_stage05_live_contract.py for the
+    # production failures that motivated it.
+    "model_training/knowledge/stage_05_live_contract.jsonl",
     "model_training/python_utilities_for_models/export_lora_to_ollama_colab.py",
 ]
 

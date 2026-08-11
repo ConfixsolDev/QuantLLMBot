@@ -63,8 +63,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-model", default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--adapter-dir", required=True)
-    parser.add_argument("--work-dir", default="/content/drive/MyDrive/QuantLLMBot/ollama_export/qwen_trading_v002")
-    parser.add_argument("--outfile-prefix", default="qwen-trading-v002")
+    # 2026-08-10: bumped v002 -> v004. The default had been stale for two model
+    # generations while the runtime ran v003, so an export with default flags
+    # produced a file named after a model nobody was using.
+    #
+    # v4 is the model trained on curriculum v9 (712 aligned rows). See
+    # CURRICULUM_AND_DATA_PREP.md 3.0 for the version definition. v004 also names the geometry/reason
+    # conventions in CURRICULUM 1.1/1.2 -- same number, different scope.
+    parser.add_argument("--work-dir", default="/content/drive/MyDrive/QuantLLMBot/ollama_export/qwen_trading_v004")
+    parser.add_argument("--outfile-prefix", default="qwen-trading-v004")
     parser.add_argument("--quant", default="Q4_K_M")
     parser.add_argument("--skip-merge", action="store_true")
     parser.add_argument("--skip-llama-build", action="store_true")

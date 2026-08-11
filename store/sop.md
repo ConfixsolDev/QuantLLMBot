@@ -1,4 +1,4 @@
-<!-- version: 3.7 | owner: human | delivery: always -->
+<!-- version: 3.9 | owner: human | delivery: always -->
 <!-- changelog: 2.0 reasoning-first canonical schema; field names reconciled
      with transport validator; basic_decision made a contract subset; analyst
      veto removed; learning canonicalization added; examples added.
@@ -20,7 +20,11 @@
      3.6 entry focuses on S/R zones + confidence; runtime places fixed $3/$5;
      trade_management improves SL/TP via structure levels.
      3.7 entry must take first valid closed M1/M5 at S/R; forbid perpetual
-     confirmation waits when side and confidence already clear. -->
+     confirmation waits when side and confidence already clear.
+     3.8 do not fade HTF acceptance: no M1 sells above a broken resistance in
+     a bullish auction (inverse for buys).
+     3.9 entry trap list: fade acceptance, buy into resistance, sell into
+     support, middle-of-range, unfinished HTF close, session/news blocks. -->
 # Decision SOP
 
 Use only supplied closed facts. Build a neutral market-structure read first,
@@ -252,8 +256,32 @@ decision_commitment. Open only when level, response, invalidation, and target
 room are clear from closed facts. Wait when a valid plan needs a future test.
 Skip when evidence, session permission, geometry, or risk is not acceptable.
 
+<!--
+MAINTAINER NOTE (outside every prompt body on purpose).
+
+2026-08-10 incident. v1.9 replaced the five-line "never fade acceptance"
+paragraph with a nine-item prohibition list. From 06:21:50 UTC the model
+returned a zeroed confidence on every decision while still emitting a
+directional read, and trading stopped for 2h20m with no error logged.
+Measured per contract version over that day:
+
+    v1.3  n=236  mean confidence 69.2
+    v1.7  n=49   mean confidence 74.4
+    v1.8  n=2    mean confidence 81.0
+    v1.9  n=109  mean confidence  0.0   <- regression
+
+v1.10 is therefore a straight restore of the v1.8 body. The trap content is
+sound analysis but must not live here as prohibitions; it now lives in
+prompt:qwen_dual_side_entry, where traps are REPORTED AS DATA and
+entry_policy.py decides what they cost. Keep instructions in this section
+positive: say what to do, not what to avoid.
+
+Note also that load_prompt_section() strips HTML comments before the text is
+sent to the model, so this note is not shipped as an instruction.
+-->
+
 <!-- prompt:qwen_cached_entry -->
-<!-- version: 1.7 | decisive S/R + confidence entry; fixed $3/$5 at runtime -->
+<!-- version: 1.10 | restore of v1.8 body; traps moved to the v2.0 dual-side contract -->
 Judge trade QUALITY for one XAUUSD paper entry from ENTRY FACTS only. Cache
 facts are authoritative. Do not invent levels, candles, sessions, or prices.
 Prior trades, P&L, win rate, and daily direction are forbidden.
@@ -269,13 +297,30 @@ for a second test, an H1/M30/D1 close, or a "stronger" signal after the first
 valid response. Do not stay bias=conditional when your own read already
 favors buy or sell.
 
+Confidence is a quality score, judged on the setup itself. Score it on its own
+merits every time, and report that score whether the outcome is ready or wait.
+
+HTF auction outranks a local wick. Trade with acceptance, not against it.
+
+If H4/H1 is an unfinished bullish auction (higher highs, acceptance above prior
+resistance), prefer a pullback buy at support, or a true H1/H4 rejection after
+failed acceptance. Do not sell an M1 rejection at that broken high.
+
+If H4/H1 is an unfinished bearish auction (lower lows, acceptance below prior
+support), prefer a pullback sell at resistance, or a true H1/H4 reclaim after
+failed acceptance. Do not buy an M1 bounce at that broken low.
+
+Both cases carry equal weight. Neither direction is the default.
+
 Quality checklist (both sides before deciding):
-1. Location — H4/H1 auction vs nearest support/resistance zones.
+1. Location — H4/H1 auction vs nearest support/resistance zones; unfinished
+   HTF path first.
 2. Response — one closed M1/M5 at a mapped level or playbook condition; forming
    candles are context only, never entry proof.
 3. Participation — M1/M5 volume ratios support the response, not alone.
 4. Zones — name the entry as a support/resistance zone (entry_low_id /
-   entry_high_id). Also name the next structural stop_level_id and
+   entry_high_id) that price is still interacting with, not a level already
+   accepted through. Also name the next structural stop_level_id and
    target_level_id as management references only (M15/H1/H4 S/R). Do not
    invent dollar distances; do not refuse ready because stop/target room looks
    tight — runtime owns the $3/$5 bracket.
@@ -290,18 +335,64 @@ entry_high_id, stop_level_id, target_level_id, volume_each 0.5, reason.
 Wait needs only status and one concrete blocking reason.
 
 Ready when confidence 51-100, bias is buy or sell matching plan side, a named
-S/R entry zone exists, and at least one closed M1/M5 response supports that
-side. Then status must be ready — not wait.
-Wait only for confidence 0-50, true two-sided conflict, missing any closed
-response at the zone, or session conflict. Never wait only for a better price
-or another higher-timeframe close. Use only supplied level IDs from
-execution_levels.
+S/R entry zone exists, no trap above applies, HTF auction does not
+contradict that side, and at least one closed M1/M5 response supports that
+side. Then status must be ready.
+Wait for confidence 0-50, fading an accepted break, true two-sided conflict,
+missing any closed response at the zone, or session conflict. Never wait only
+for a better price. Use only supplied level IDs from execution_levels.
+A wait still reports the confidence the setup actually earned.
+
+<!-- prompt:qwen_dual_side_entry -->
+<!-- version: 2.0 | dual-side observation contract; model judges, code decides -->
+<!-- Used by entry_policy.py when QWEN_POLICY_V2=1. The model returns
+     OBSERVATIONS ONLY. It never emits ready/wait, never emits a single opaque
+     confidence, and always prices BOTH directions. Permission, confidence
+     composition, side selection and symmetry control live in entry_policy.py
+     where they are versioned, testable and diffable. -->
+Observe one XAUUSD entry situation from ENTRY FACTS only. Cache facts are
+authoritative. Do not invent levels, candles, sessions, or prices. Prior
+trades, P&L, win rate, and daily direction are forbidden.
+
+You do NOT decide whether to trade. You do not return ready, wait, or an
+overall confidence. You report what you see for BOTH directions and the
+runtime decides. Never omit a side. If a side looks poor, score it low and
+say why — do not leave it out.
+
+For each of long and short, report:
+- zone_id: the S/R zone that side would enter at, from execution_levels.
+- invalidation_id: the structural level of the SAME timeframe family that,
+  if closed through, proves that side wrong.
+- trigger_tf: the timeframe of the closed candle that would trigger it. An M1
+  wick never triggers an M15/H1/H4 zone; only a close on that level's own
+  timeframe breaks it.
+- response_observed: true only if a CLOSED M1/M5 response already exists at
+  that zone on this visit. Forming candles are context, never proof.
+- traps_triggered: any of fade_acceptance, buy_into_resistance,
+  sell_into_support, middle_of_balance, stale_zone, wrong_tf_break,
+  unfinished_htf_close, session_blocked, plan_conflict. Empty list if none.
+- scores, each 0-10, judged independently and honestly:
+    location      — quality of the zone in the current auction
+    response      — strength of the closed response at that zone
+    participation — whether M1/M5 volume supports the response
+    htf_alignment — agreement with the unfinished H4/H1 auction
+    plan_fit      — fit with planner active_scenario
+
+Score every component on its own merits. A trap does not force a score to
+zero; report the trap and let the runtime apply it. Scores of 0 across the
+board mean you genuinely see nothing there, not that you are declining.
+
+Also report read: htf_auction, htf_timeframe, location, acceptance.
+Copy acknowledged_epochs exactly. Cite 1-6 evidence_ids from
+citeable_evidence_ids only. Use only level IDs supplied in execution_levels.
+Return JSON only.
 
 <!-- prompt:qwen_trade_management -->
-<!-- version: 1.3 | improve fixed $3/$5 entry using structure S/R -->
+<!-- version: 2.0 | four named exit conditions from topic 10; close authority with a test -->
 Manage exactly one already-open XAUUSD paper position. Entry selection is
 finished; do not propose another entry, add volume, average, reverse, or create
-a basket. The broker opened with a temporary fixed $3 stop / $5 target.
+a basket. Runtime placed the opening bracket on structure where possible and
+re-brackets both stop and target to structure shortly after fill.
 Improve that bracket using named support/resistance: extend TP after a broken
 level with volume/momentum, tighten SL after confirmed continuation, or close
 on confirmed rejection / invalidation. Judge thesis validity from the supplied
@@ -309,11 +400,33 @@ immutable entry plan, current named levels, completed M1/M5 candles, trade-path
 peak and giveback, reached favorable levels, volume/momentum, and prior
 management decisions.
 
+You may end the trade whenever the idea is genuinely dead — you do not have to
+wait for the stop. Name which of the four conditions ended it:
+
+1. Invalidation — the named invalidation failed on a closed candle of its own
+   timeframe. Use confirmation_type thesis_invalidation_confirmed.
+2. Flip — you would now enter the OPPOSITE side with confidence, at a named
+   level, with its own closed response. Ask it directly: "would I take the
+   other side here?" If yes, the market is no longer the one this idea was
+   built for. Use always_in_flip_confirmed.
+3. Arithmetic — remaining distance to target no longer justifies remaining
+   distance to stop. Use reward_risk_inverted.
+4. Time — the frame's budget elapsed and price has made no structural progress.
+   A thesis can be correct and dormant, so this applies only when progress is
+   genuinely absent. Use time_stop_expired.
+
+If none of the four is met, the answer is hold, even when the position is
+underwater and uncomfortable. Being down is what the trade costs; it is not
+evidence the trade is wrong. Judge the position as if it were someone else's
+and you had no money in it — the read should be identical either way. A close
+you cannot attribute to one of the four conditions is not permitted.
+
 Return JSON only with: action hold|protect|close; thesis_state
 valid|weakening|invalidated|target_response; decision_level_ref;
 next_target_ref; confirmation_type none|target_rejection_confirmed|
 thesis_invalidation_confirmed|momentum_reversal_confirmed|
-continuation_acceptance_confirmed;
+continuation_acceptance_confirmed|always_in_flip_confirmed|
+reward_risk_inverted|time_stop_expired;
 confirmation_evidence_ids; close_confirmed; and summary. Use only supplied
 level references and completed-candle evidence ids.
 
@@ -328,12 +441,18 @@ invalidation is accepted through. Both require completed M1 and M5 evidence at
 exactly one supplied decision level. A confirmed target rejection, thesis
 invalidation, or adverse momentum reversal cannot be described as hold. If
 adverse confirmation is incomplete, action is hold with confirmation_type none.
-Protect may tighten stop toward a supplied confirmed level after M1/M5
-continuation acceptance and it never widens the broker stop beyond the
-immutable invalidation. Peak profit and giveback describe the trade path but
-never create a fixed-dollar exit. Unrealized P&L, elapsed seconds, one tick, or
-one wick is not confirmation. Deterministic validation may enforce the same
-closed M1/M5 confirmation when a model response contradicts it.
+Protect may move the stop to a supplied named level in either direction —
+tightening after M1/M5 continuation acceptance, or out to the true structural
+invalidation when the opening bracket sits inside it. A stop resting inside the
+level that would prove the idea wrong gets taken by ordinary noise before the
+idea is tested; runtime bounds how far it may move. Prefer protect over close
+when structure has formed behind price: the worst outcome becomes a scratch and
+the target stays live.
+
+Peak profit and giveback describe the trade path but never create a
+fixed-dollar exit. Unrealized P&L, elapsed seconds, one tick, or one wick is not
+confirmation. Deterministic validation may enforce the same closed M1/M5
+confirmation when a model response contradicts it.
 
 <!-- prompt:qwen_cache_warmup -->
 <!-- version: 1.0 | non-executing external-context warm-up -->

@@ -174,11 +174,48 @@ export interface RuntimeStatus {
   planner_alive?: boolean;
 }
 
+/**
+ * A day plan is a CONTAINER of two branches, not a directional bet.
+ * It has no status of its own — each branch resolves independently, and only a
+ * CLOSE through a branch's own invalidation can kill it.
+ *
+ * 2026-08-11: the old screen showed H4/H1/M15 all INVALIDATED because a
+ * session-forecast miss cascaded onto every layer, while price ran through both
+ * of the bullish idea's targets and never touched its invalidation.
+ */
+export type BranchState =
+  | "armed"        // waiting for its trigger
+  | "likely"       // evidence accumulating
+  | "confirmed"    // trigger fired on a closed candle — callable
+  | "spent"        // targets reached
+  | "invalidated"; // price CLOSED through its own level
+
+export interface PlanBranch {
+  side: "buy" | "sell";
+  trigger_price: number | null;
+  trigger_text: string;
+  targets: number[];
+  invalidation: number | null;
+  evidence: string[];
+  state: BranchState;
+  reason: string;
+  confidence: number;
+}
+
+export interface DayBranches {
+  bullish: PlanBranch;
+  bearish: PlanBranch;
+  headline: string;
+  callable_side: "buy" | "sell" | null;
+  version: string;
+}
+
 export interface PlannerState {
   updated_at_utc: string;
   symbol: string;
   clock: Clock;
   day_plan: DayPlan | null;
+  day_branches?: DayBranches | null;
   session_plan: SessionPlan | null;
   hourly_updates: HourlyUpdate[];
   session_verdicts: SessionVerdict[];

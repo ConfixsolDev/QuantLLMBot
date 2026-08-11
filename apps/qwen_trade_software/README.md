@@ -28,13 +28,9 @@ GoldFlow/Qwen demo-trading application.
 - `backend/paper_executor.py` enforces the MT5 demo-account lock, opens exactly
   one 0.50-lot position, and maintains the broker safety stop. It never adds,
   averages, or closes merely because of elapsed time or small gross profit.
-- `website/` contains the IIS production bundle served by GoldFlow Desk.
-  Build it from source: `desk/npm run build` (writes here).
-- `desk/` is the editable Vite + React source for GoldFlow Desk.
-  Dev: `npm run dev` on port 5173 (proxies API to :48632).
-- `planview/` is the in-repo Next.js Plan View (session hierarchy + chart).
-  Dev: `npm run dev` on port 3000. Deploy: `backend/install-planview-iis.ps1`
-  (IIS port 8088).
+- `planview/` is the sole local UI (Next.js GoldFlow Plan View: session
+  hierarchy + chart). Dev: `npm run dev` on port 3000. Deploy:
+  `backend/install-planview-iis.ps1` (IIS ports 8088 and 80).
 
 ### Dashboard API (reviewer.py :48632)
 
@@ -88,7 +84,7 @@ Live trading uses `qwen-trading-v003:latest` in Ollama (`ollama create qwen-trad
 ## Deployed locations
 
 - Backend: `C:\Users\HP\AppData\Local\QwenTradeReviewer`
-- Website: `C:\inetpub\GoldFlowDesk`
+- Website: `C:\inetpub\GoldFlowPlanView` (http://127.0.0.1:8088/ and :80)
 
 The Windows login entry invokes `backend/start-reviewer.ps1`, which launches
 the unified `QwenTradeSoftware` runtime. The deployed files should be refreshed

@@ -116,11 +116,19 @@ class TrainingConfig:
 
 @dataclass
 class PipelineConfig:
-    # Preprocessing — 379 train / 10 skill holdout (H4 fib consume + M1 EMA 3/14/31)
+    # Preprocessing — train / skill holdout split, by ROW INDEX into the aligned
+    # stage_02 + stage_04 files.
+    #
+    # 2026-08-10: bumped 379/389 -> 498/508 after three packs were appended
+    # (M30 anchors, frame-incoherence skips, live-outcome replays). These bounds
+    # are absolute indices, not proportions, so leaving them at 389 would have
+    # silently dropped every appended row from BOTH training and holdout -- the
+    # new material sits at the end of the file. Re-check these after any
+    # append_*.py run; audit_training_dataset.py prints the current totals.
     training_lines_start: int = 0
-    training_lines_end: int = 379
-    test_lines_start: int = 379
-    test_lines_end: int = 389
+    training_lines_end: int = 702
+    test_lines_start: int = 702
+    test_lines_end: int = 712
 
     # Evaluation metrics
     eval_metrics: list = None

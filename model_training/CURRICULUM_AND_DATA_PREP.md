@@ -185,12 +185,134 @@ Path: `model_training/knowledge/`
 | 02 | `stage_02_structured_data.jsonl` | Setup / decision / invalidation |
 | 03 | `stage_03_detector_definitions.jsonl` | Detector logic for the setup |
 | 04 | `stage_04_decision_contract.jsonl` | Action, levels, SL/TP, auction, skips, mgmt |
+| 05 | `stage_05_live_contract.jsonl` | **Live inference output contract** (see 3.1) |
 
-**Current size (v7):** ~389 aligned examples (379 train / 10 holdout at end).  
-**Config:** `scripts/config.py` → `training_lines_end=379`, `test_lines_end=389`.
+### 3.0 Version definition — READ BEFORE BUILDING OR TRAINING
+
+Two version numbers exist and they are **not** the same thing. Keep them straight
+or the exported model will not match the data that produced it.
+
+| What | Current | Where it is set |
+|------|---------|-----------------|
+| **Model / LoRA version** | **v4** (`qwen-trading-v004`) | `export_lora_to_ollama_colab.py` `--outfile-prefix`; `QWEN_MODEL` env, default in `review_shared.py` + `market_context_cache.py` |
+| **Curriculum / dataset version** | **v9** | this file, §3 size line below |
+
+**v4 is the model trained on curriculum v9** (712 aligned rows, packs in §3.1
+and §3.2). Anything built from an earlier dataset is not v4, whatever it is
+named.
+
+Model version history:
+
+| Model | Trained on | Notes |
+|-------|-----------|-------|
+| v002 | early curriculum | export script default was still stuck here until 2026-08-10 |
+| v003 | ~389 rows | live through 2026-08-10; buy-blind — scored buy non-zero only **14%** of the time against **82%** for sell |
+| **v004** | **712 rows, curriculum v9** | balanced buy/sell confidence, M30 coverage, frame-coherence skips, live-outcome grounding, trade-management pack. Holdout eval: **direction agreement 100%**, action 90% |
+
+> **Note on the number 4.** `v004` names *two different things* in this repo:
+> the **model build** (above) and the **geometry/reason conventions** in §1.1
+> and §1.2, which are curriculum rules. Same number, different scope. When
+> writing about either, say "the v004 *model*" or "the v004 *geometry*".
+
+**Deployment is a separate step from training.** Exporting `qwen-trading-v004`
+to Ollama does not switch the live system over. Until you switch it, the bot
+keeps running v003.
+
+```bash
+# 1. confirm the model actually exists in Ollama first
+ollama list | grep qwen-trading-v004
+
+# 2. point the runtime at it (both processes read the same variable)
+set QWEN_MODEL=qwen-trading-v004:latest      # Windows
+export QWEN_MODEL=qwen-trading-v004:latest   # bash
+
+# 3. restart the stack
+```
+
+`review_shared.MODEL` and `market_context_cache.MODEL` both read `QWEN_MODEL`
+and **must stay in lockstep** — the qualification certificate is keyed on
+`model_digest`, so a mismatch invalidates the cache on every cycle and blocks
+entry with `qwen_validation_not_run`.
+
+Switching model **invalidates the qualification certificate by design** (new
+digest). The always-on cache child runs `--no-qwen` and cannot mint a new one,
+so run a qualification pass after switching:
+
+```bash
+python market_context_cache.py --once     # without --no-qwen
+```
+
+Default stays v003 in code so an exported-but-unverified model cannot silently
+break live trading. Flip `DEFAULT_MODEL` in `review_shared.py` only after v004
+has run a clean session.
+
+**Current size (curriculum v9):** 712 aligned stage_02/04 examples
+(702 train / 10 holdout at end) + 321 stage_05 rows.  
+**Config:** `scripts/config.py` → `training_lines_end=702`, `test_lines_end=712`.
+
+> **Bounds are absolute row indices, not proportions.** After any `append_*.py`
+> run you MUST bump both values or the appended rows — which land at the end of
+> the file — are silently dropped from training *and* holdout.
+> `audit_training_dataset.py` prints the current totals.
+
+> **stage_02 and stage_04 are paired POSITIONALLY** by `scripts/01_preprocess.py`
+> (`zip`, not a join on `example_id`). Append the same IDs in the same order to
+> both files, and re-run the alignment check in the audit.
 
 Append packs (idempotent scripts, same holdout IDs):  
 `model_training/python_utilities_for_models/append_*.py` — extend existing or add one new pack script **in that folder only**.
+Packs append to the tail, so the canonical 10 holdout IDs are moved back to the
+end afterwards; the audit prints them.
+
+### 3.1 v004 packs (2026-08-10) — added to close measured live failures
+
+Each pack exists because of a specific production loss, not to grow the dataset.
+
+| Pack | Script | Fixes |
+|------|--------|-------|
+| Live contract | `build_stage05_live_contract.py` | stage_04 teaches `direction/action`; the runtime asks for `bias / acknowledged_epochs / execution_plan`. Occurrences of `execution_plan` and `conditional` in stage_04: **0**. The model mapped trained `direction: "none"` onto `bias: "conditional"` in 65–71% of live decisions, so almost nothing reached ready, and it had never practised copying five epoch hashes verbatim — which blew the response token cap. |
+| Frame coherence + M30 | `append_frame_coherence_m30.py` | M30 was the only profitable live anchor (**+385.45, 67%**) with **1** training example, while H1/H4 (**−433, ~15%**) had 271. Also teaches that an M1 zone defended by an H4/D1 invalidation is a skip: gap ≥5 cost **−1070 over 14 trades at 7% win**. Built from real cache candles and real level snapshots. |
+| Live outcomes | `append_live_outcome_examples.py` | Grounds the curriculum in realised P&L. Across 27 closed trades the stop's distance *inside* the structural invalidation separated outcomes: winners averaged **1.71 inside**, losers **3.76**. Also teaches patience — hold-to-target averaged **+247.38**, discretionary closes **−20.22**. |
+| Trade management | `append_trade_management_pack.py` | **6 of 508 rows** taught any in-trade decision, while management was the largest single loss source. Teaches the four named close conditions from topic 10 plus the prohibition, grounded in real level snapshots. |
+
+### 3.2 Topic 10 — trade management (2026-08-10)
+
+`knowledge/topics/10_trade_management.md`, distilled from `brooks_trends`,
+`brooks_reversals`, `brooks_ranges`, `grimes_art_science`, `carter_mastering`,
+`douglas_zone`, `dalton_mind_over_markets` with page citations.
+
+Management **may close whenever the idea is genuinely dead** — that is doctrine
+(`grimes p.172`: *"it is often advisable to scratch the trade"*). What it may not
+do is close because the position is uncomfortable. Douglas gives the mechanism
+(`p.99`): a holder who fears losing *"will gather information against the trade"*,
+manufacturing the justification it already wants. That is the likeliest reading
+of our −20.22 average discretionary close.
+
+So every close must name one of four checkable conditions:
+
+| | Condition | Source | Live enum |
+|---|---|---|---|
+| **R1** | Named invalidation failed on a closed candle of its own timeframe | `grimes pp.60, 172` | `thesis_invalidation_confirmed` |
+| **R2** | Always-in flip — the opposite entry would now be taken with confidence | `brooks_reversals p.11` | `always_in_flip_confirmed` |
+| **R3** | Remaining reward no longer clears remaining risk | `brooks_trends p.326` | `reward_risk_inverted` |
+| **R4** | Frame budget elapsed with no structural progress | `carter pp.180, 201` | `time_stop_expired` |
+| **R5** | *Prohibition:* a close supported only by open P&L | measured, `douglas p.99` | — |
+
+**The hold:close ratio is itself a lesson.** A curriculum where close outnumbers
+hold teaches the model to close. `audit_training_dataset.py` gates on
+`hold >= close` and on all four conditions being present.
+
+Live contract: `store/sop.md → prompt:qwen_trade_management` **v2.0**.
+Runtime enforcement: `management_policy.classify_close_request()`.
+
+**Readiness gates:** `audit_training_dataset.py` now ends with a RETRAIN
+READINESS block (side balance, confidence symmetry, no zero-confidence
+directional rows, M30 coverage, frame-incoherence coverage, outcome grounding,
+patience lessons, geometry). Do not train while any gate reads FAIL.
+
+**Known limitation:** `stage_03_detector_definitions.jsonl` was not extended by
+these packs (389 rows vs 508). `01_preprocess.py` does not consume stage_03, so
+training is unaffected — but the file is no longer 1:1 with stage_02/04.
 
 Topic digests (doctrine source, not raw PDFs):  
 `model_training/knowledge/topics/01_market.md` … `09_reversal_trading.md`.

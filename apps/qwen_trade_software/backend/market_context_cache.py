@@ -16,6 +16,7 @@ import logging
 import logging.handlers
 import msvcrt
 import os
+import re
 import sqlite3
 import tempfile
 import time
@@ -30,7 +31,10 @@ import MetaTrader5 as mt5
 
 SCHEMA_VERSION = 1
 QUALIFICATION_VERSION = 2
-MODEL = "qwen-trading-v003:latest"
+# Kept in lockstep with review_shared.MODEL -- both processes must talk to the
+# same model or the qualification certificate (keyed on model_digest) is
+# invalidated on every cycle. See CURRICULUM_AND_DATA_PREP.md 3.0.
+MODEL = os.environ.get("QWEN_MODEL", "qwen-trading-v004:latest")
 OLLAMA_GENERATE = "http://127.0.0.1:11434/api/generate"
 OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
 OLLAMA_PS = "http://127.0.0.1:11434/api/ps"
@@ -202,7 +206,24 @@ def context_cycle_lock(timeout: float | None = None):
         yield
 
 
-def load_prompt_section(name: str, store_root: Path = DEFAULT_STORE_ROOT) -> str:
+def load_prompt_section(
+    name: str,
+    store_root: Path = DEFAULT_STORE_ROOT,
+    *,
+    keep_comments: bool = False,
+) -> str:
+    """Return one prompt section from sop.md.
+
+    HTML comments are stripped by default, because everything this function
+    returns is sent verbatim to the model as instructions. Version markers and
+    maintainer notes are for humans reading sop.md -- shipping them to the model
+    is at best token noise and at worst active priming: a note explaining that a
+    past contract "returned confidence 0" is itself an instruction to return
+    confidence 0.
+
+    Pass ``keep_comments=True`` when you need the markers for tooling, e.g.
+    reviewer.entry_contract_version().
+    """
     sop = (store_root / "sop.md").read_text(encoding="utf-8")
     marker = f"<!-- prompt:{name} -->"
     start = sop.find(marker)
@@ -211,6 +232,9 @@ def load_prompt_section(name: str, store_root: Path = DEFAULT_STORE_ROOT) -> str
     body_start = sop.find("\n", start) + 1
     next_marker = sop.find("<!-- prompt:", body_start)
     body = sop[body_start : next_marker if next_marker >= 0 else len(sop)]
+    if not keep_comments:
+        body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+        body = re.sub(r"\n{3,}", "\n\n", body)
     return body.strip()
 
 
@@ -976,6 +1000,39 @@ class MarketContextCache:
             )
 
 
+# Playbook-condition vocabulary.
+#
+# 2026-08-10 INCIDENT: qualification failed and took the whole trading chain
+# down with it. v004 wrote `sell: "invalidated below H1_PREVIOUS_HIGH"` -- a
+# correct structural condition -- but "invalidat" was absent from the accepted
+# tokens, so it scored not_closed_response. A retry 22s later happened to phrase
+# the same idea as "rejection below" and passed.
+#
+# That is the real defect: the gate was a coin flip on synonym choice. A
+# non-deterministic gate that halts trading on a wording preference is worse
+# than no gate, because it fails in a way nobody can attribute.
+#
+# These lists are the intent, spelled out: a condition must reference a
+# *response at the level*, and a counter-side condition must describe a
+# reversal rather than a continuation. Extend them when a model uses a
+# legitimate synonym -- do not tighten them to force one phrasing.
+RESPONSE_TOKENS = (
+    "close", "closed",
+    "accept", "acceptance",
+    "retest",
+    "reject", "rejection",
+    "reclaim",
+    "fail", "failure",
+    "invalidat",          # invalidated / invalidation -- v004's usual phrasing
+    "sweep", "swept",
+    "break", "broke",
+    "hold", "held",
+    "respect",
+)
+BUY_REVERSAL_TOKENS = ("back above", "reject", "reclaim", "invalidat", "fail", "sweep")
+SELL_REVERSAL_TOKENS = ("back below", "reject", "fail", "invalidat", "sweep")
+
+
 def session_at(moment: datetime) -> dict:
     hour = moment.hour
     if 0 <= hour < 7:
@@ -987,7 +1044,17 @@ def session_at(moment: datetime) -> dict:
     elif 13 <= hour < 16:
         name, end, permitted = "overlap", 16, True
     elif 16 <= hour < 21:
-        name, end, permitted = "new_york", 21, False
+        # 2026-08-10: NY enabled for testing. Was permitted=False, which meant
+        # the 16:00-21:00 UTC window produced proposals but never entries --
+        # every one waited with reason "off_session".
+        #
+        # This is a TEST setting. NY has different character to London: thinner
+        # late-session liquidity and a higher share of the day's reversals, so
+        # treat its results as a separate configuration rather than assuming
+        # London behaviour carries over. configuration_ledger.py already keys on
+        # session, so NY expectancy will accumulate on its own line and can be
+        # demoted independently if it underperforms.
+        name, end, permitted = "new_york", 21, True
     else:
         name, end, permitted = "off_session", 24, False
     end_time = moment.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=end)
@@ -1638,17 +1705,14 @@ class ContextValidator:
                 lowered = condition.lower()
                 if level_id.lower() not in lowered:
                     failures.append(f"playbook:{playbook_id}:{side}:level_not_named")
-                if not any(
-                    token in lowered
-                    for token in ("close", "accept", "retest", "reject", "reclaim", "fail")
-                ):
+                if not any(token in lowered for token in RESPONSE_TOKENS):
                     failures.append(f"playbook:{playbook_id}:{side}:not_closed_response")
                 if side == "buy" and "below" in lowered and not any(
-                    token in lowered for token in ("back above", "reject", "reclaim")
+                    token in lowered for token in BUY_REVERSAL_TOKENS
                 ):
                     failures.append(f"playbook:{playbook_id}:buy:wrong_side")
                 if side == "sell" and "above" in lowered and not any(
-                    token in lowered for token in ("back below", "reject", "fail")
+                    token in lowered for token in SELL_REVERSAL_TOKENS
                 ):
                     failures.append(f"playbook:{playbook_id}:sell:wrong_side")
         top_cited = set(response.get("evidence_ids") or [])
@@ -1851,11 +1915,34 @@ class QwenContextShadow:
         self.symbol = source.symbol
         self.builder = ContextProjectionBuilder(cache, self.symbol)
         self.validator = ContextValidator(cache, self.symbol)
+        # keep_comments=True is REQUIRED here, not cosmetic.
+        #
+        # 2026-08-10 incident: load_prompt_section() was changed to strip HTML
+        # comments before text reaches the model (correct -- maintainer notes
+        # were being shipped as instructions). But this hash is the identity of
+        # the qualification certificate stored in cache_objects. Stripping
+        # comments changed the hash from aa0f5f0c... to 3d1bb9d3..., so
+        # _qualification_is_valid() stopped matching a certificate that was
+        # still current, passing and bound to the right model digest.
+        #
+        # The always-on cache child runs with --no-qwen (see
+        # software_runtime.py), so it can never re-run the challenge to mint a
+        # replacement. The result was a permanent 'qwen_validation_not_run'
+        # block: cache never reached ready, and entry decisions waited forever
+        # on cache_readiness_not_ready.
+        #
+        # Hashing the RAW section text keeps this identity stable across
+        # loader changes and preserves continuity with every certificate
+        # already on disk. Changing what is hashed here silently invalidates
+        # every stored qualification -- do not do it without also arranging a
+        # re-qualification run.
         self.qualification_contract_hash = content_hash(
             {
                 "qualification_version": QUALIFICATION_VERSION,
                 "prompts": {
-                    name: load_prompt_section(name, self.store_root)
+                    name: load_prompt_section(
+                        name, self.store_root, keep_comments=True
+                    )
                     for name in (
                         "qwen_history_chunk",
                         "qwen_cache_warmup",
@@ -2736,9 +2823,13 @@ class QwenContextShadow:
                 session_failures = []
                 session_metrics = {"reused": True}
             else:
+                # 8192 (not 16384): on this GPU, v004 + constrained JSON schema
+                # at 16k ctx kills the Ollama runner mid-generate
+                # ("connection forcibly closed" / HTTP 500). Session prompts
+                # are ~7-8k tokens; 8k ctx is enough and stays resident.
                 session_result = self.ollama.generate(
                     session_prompt,
-                    num_ctx=16384,
+                    num_ctx=8192,
                     num_predict=600,
                     timeout=None,
                     format_schema=session_schema,

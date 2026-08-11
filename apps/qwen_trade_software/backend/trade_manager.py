@@ -15,6 +15,27 @@ ALLOWED_CONFIRMATIONS = {
     "thesis_invalidation_confirmed",
     "momentum_reversal_confirmed",
     "continuation_acceptance_confirmed",
+    # 2026-08-10, topic 10 (trade management, distilled from the corpus).
+    # Management may end a trade whenever the idea is genuinely dead, but it
+    # must name WHICH condition ended it. These are the three additional named
+    # conditions beyond invalidation:
+    #
+    #   always_in_flip_confirmed -- Brooks' always-in test (brooks_reversals
+    #       p.11): the opposite entry would now be taken with confidence, at a
+    #       named level, with its own closed response. The idea is not merely
+    #       struggling; the market is no longer the one it was built for.
+    #   reward_risk_inverted -- Brooks' trader's equation (brooks_trends p.326):
+    #       remaining reward no longer clears remaining risk. The arithmetic has
+    #       turned even though nothing is structurally "wrong".
+    #   time_stop_expired -- Carter's clock (carter_mastering pp.180, 201): the
+    #       frame's budget elapsed with no structural progress. Falsified by
+    #       silence rather than by price.
+    #
+    # A close supported only by unrealised P&L has no entry here on purpose --
+    # see topic 10 R5 and douglas_zone p.99 on manufactured evidence.
+    "always_in_flip_confirmed",
+    "reward_risk_inverted",
+    "time_stop_expired",
 }
 
 

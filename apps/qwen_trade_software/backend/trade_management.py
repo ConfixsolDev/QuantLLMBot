@@ -31,6 +31,8 @@ from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
 
+import management_policy
+import trade_geometry
 from market_context_cache import latest_readiness
 from review_shared import (
     DEFAULT_MANAGEMENT_STATE,
@@ -627,6 +629,163 @@ def apply_confirmed_protection(position, decision: dict, facts: dict) -> list:
     ]
 
 
+# Tickets already re-bracketed this process lifetime, so the correction runs
+# once per position rather than every cycle.
+_REBRACKETED_TICKETS: set[int] = set()
+
+
+def structural_levels_for(position, levels_by_symbol: dict) -> tuple[float | None, float | None, str | None, str | None]:
+    """Nearest named invalidation behind the position and target in front of it.
+
+    Read from the same chart-levels map the dashboard uses, so no model call and
+    no cache round-trip is required -- this has to complete inside 30s.
+    """
+    # chart_levels() returns {level_id: price}. Only PREVIOUS_HIGH / PREVIOUS_LOW
+    # are structural invalidations; *_CURRENT_OPEN is the live bar's open and
+    # moves under the position, so it is excluded.
+    rows = (levels_by_symbol or {}).get(position.symbol) or {}
+    entry = float(position.price_open)
+    is_buy = position.type == mt5.POSITION_TYPE_BUY
+    behind: list[tuple[float, str, float]] = []
+    ahead: list[tuple[float, str, float]] = []
+    for name, value in (rows.items() if isinstance(rows, dict) else []):
+        if "PREVIOUS_HIGH" not in name and "PREVIOUS_LOW" not in name:
+            continue
+        try:
+            price = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not price:
+            continue
+        if is_buy:
+            (behind if price < entry else ahead).append((abs(entry - price), name, price))
+        else:
+            (behind if price > entry else ahead).append((abs(price - entry), name, price))
+    behind.sort()
+    ahead.sort()
+    stop = behind[0] if behind else None
+    target = ahead[0] if ahead else None
+    return (
+        stop[2] if stop else None,
+        target[2] if target else None,
+        stop[1] if stop else None,
+        target[1] if target else None,
+    )
+
+
+def rebracket_if_needed(position, levels_by_symbol: dict) -> None:
+    """Rewrite SL and TP to structure once, within 30s of fill."""
+    if position.ticket in _REBRACKETED_TICKETS:
+        return
+
+    opened_at = float(position.time)
+    now = time.time()
+    tick = mt5.symbol_info_tick(position.symbol)
+    price = float(getattr(tick, "bid", 0) or position.price_current or position.price_open)
+
+    stop_px, target_px, stop_id, target_id = structural_levels_for(
+        position, levels_by_symbol
+    )
+    # Place the stop BEYOND the level, not on it -- the same buffer entry
+    # geometry applies. A stop resting exactly on the invalidation is taken out
+    # by the first touch, before the level has actually failed.
+    if stop_px is not None:
+        buffer_amount = trade_geometry.structure_buffer(abs(stop_px - float(position.price_open)))
+        is_buy = position.type == mt5.POSITION_TYPE_BUY
+        stop_px = stop_px - buffer_amount if is_buy else stop_px + buffer_amount
+
+    # 2026-08-10 INCIDENT -- this correction may only ADD room, never remove it.
+    #
+    # Observed live within minutes of wiring Stage 3:
+    #   19:02:42  entry bracket stop 4316.369, beyond H1_PREVIOUS_LOW, 8.84 away
+    #   19:03:03  re-bracket TIGHTENED it to 4324.578 on M5_PREVIOUS_HIGH
+    #             and pulled the target in from 4337.985 to 4325.541
+    #   19:03:04  stopped out, -49.50
+    #
+    # structural_levels_for() returns the NEAREST level either side. Once the
+    # executor places a correct structural bracket, the nearest level is always
+    # tighter than the invalidation the trade was actually built on -- so the
+    # correction systematically destroys the geometry it exists to protect.
+    #
+    # The purpose of this re-bracket is to rescue a bracket sitting INSIDE the
+    # invalidation. A bracket already at or beyond structure needs no rescue.
+    current_sl = float(position.sl or 0.0)
+    current_tp = float(position.tp or 0.0)
+    is_buy = position.type == mt5.POSITION_TYPE_BUY
+    if stop_px is not None and current_sl:
+        # Room = distance from entry to stop. Keep whichever is larger.
+        if abs(float(position.price_open) - stop_px) <= abs(float(position.price_open) - current_sl):
+            stop_px = None  # existing stop already has at least as much room
+    if target_px is not None and current_tp:
+        # Never pull the target closer than the one the entry was built on.
+        if is_buy and target_px <= current_tp:
+            target_px = None
+        if not is_buy and target_px >= current_tp:
+            target_px = None
+    tracked = management_policy.Position(
+        side="buy" if position.type == mt5.POSITION_TYPE_BUY else "sell",
+        entry_price=float(position.price_open),
+        stop_loss=float(position.sl or 0.0),
+        take_profit=float(position.tp or 0.0),
+        volume=float(position.volume),
+        opened_at=opened_at,
+        frame=None,
+    )
+    rebracket = management_policy.initial_rebracket(
+        tracked,
+        price=price,
+        structural_stop=stop_px,
+        structural_target=target_px,
+        now=now,
+        stop_level_id=stop_id,
+        target_level_id=target_id,
+    )
+    if not rebracket.applied:
+        if management_policy.rebracket_overdue(tracked, now):
+            logging.error(
+                "ALARM %s :: ticket %s still on its entry bracket %.0fs after fill (%s)",
+                management_policy.AdjustReason.REBRACKET_OVERDUE,
+                position.ticket,
+                now - opened_at,
+                rebracket.detail,
+            )
+        return
+
+    new_sl = rebracket.stop.new_value if rebracket.stop else float(position.sl or 0.0)
+    new_tp = rebracket.target.new_value if rebracket.target else float(position.tp or 0.0)
+    result = mt5.order_send(
+        {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "position": position.ticket,
+            "symbol": position.symbol,
+            "sl": new_sl,
+            "tp": new_tp,
+        }
+    )
+    retcode = getattr(result, "retcode", None)
+    for adjustment in (rebracket.stop, rebracket.target):
+        if adjustment:
+            logging.info(management_policy.format_adjustment(adjustment))
+    logging.info(
+        "rebracket applied ticket=%s %.1fs after fill sl=%.3f tp=%.3f retcode=%s%s",
+        position.ticket,
+        now - opened_at,
+        new_sl,
+        new_tp,
+        retcode,
+        " CLIPPED-TO-RISK-CEILING" if rebracket.clipped else "",
+    )
+    if retcode == getattr(mt5, "TRADE_RETCODE_DONE", 10009):
+        _REBRACKETED_TICKETS.add(position.ticket)
+    else:
+        logging.error(
+            "rebracket:order_send_failed ticket=%s retcode=%s comment=%s",
+            position.ticket,
+            retcode,
+            getattr(result, "comment", mt5.last_error()),
+        )
+
+
 def review_positions() -> None:
     cycle_started = time.monotonic()
     positions = mt5.positions_get()
@@ -670,6 +829,18 @@ def review_positions() -> None:
         raise RuntimeError(
             f"Single-position manager refuses {len(positions)} simultaneous Qwen positions."
         )
+
+    # Mandatory post-fill re-bracket, BEFORE any model call.
+    #
+    # Operator requirement: within 30s of fill both stop and target move to
+    # structure regardless of their current values. This must be deterministic --
+    # management cycles every 30s and inference takes 16-31s, so anything gated
+    # on a model response cannot meet the deadline. The two fastest stop-outs on
+    # 2026-08-10 died in 22s and 50s, before any review completed.
+    try:
+        rebracket_if_needed(positions[0], levels_by_symbol)
+    except Exception:
+        logging.exception("rebracket:failed")
     position = positions[0]
     entry = active_entry_context(position)
     if not entry or entry["plan"].get("status") != "ready":

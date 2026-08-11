@@ -37,6 +37,7 @@ interface PlanChartProps {
   onSelectHour: (hourlyId: string) => void;
   timeframe: string;
   runtime?: RuntimeStatus | null;
+  onOpenCheat?: () => void;
 }
 
 function statusColor(status?: string | null): string {
@@ -54,6 +55,7 @@ export function PlanChart({
   onSelectHour,
   timeframe,
   runtime,
+  onOpenCheat,
 }: PlanChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -323,48 +325,17 @@ export function PlanChart({
         ))}
       </div>
 
-      <div className="flex flex-col gap-3 lg:flex-row">
-        <div ref={containerRef} className="min-w-0 flex-1" />
-        <aside className="w-full shrink-0 space-y-2 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs lg:w-52">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            Connections
-          </h3>
-          <div
-            className={`rounded border px-2 py-2 ${
-              runtime?.model_resident
-                ? "border-emerald-800 text-emerald-300"
-                : "border-rose-900 text-rose-300"
-            }`}
+      <div className="relative min-w-0 w-full">
+        {onOpenCheat ? (
+          <button
+            type="button"
+            onClick={onOpenCheat}
+            className="absolute right-3 top-3 z-20 rounded-full bg-amber-400 px-3 py-1.5 text-xs font-bold text-slate-950 shadow-lg hover:bg-amber-300"
           >
-            <p className="font-semibold">Model</p>
-            <p className="mt-0.5 break-all text-slate-300">
-              {(runtime?.model || "qwen-trading").replace(":latest", "")}
-            </p>
-            <p className="mt-1">{runtime?.model_resident ? `Resident · ${device}` : "Not loaded"}</p>
-          </div>
-          <div
-            className={`rounded border px-2 py-2 ${
-              runtime?.mt5_connected
-                ? "border-emerald-800 text-emerald-300"
-                : "border-rose-900 text-rose-300"
-            }`}
-          >
-            <p className="font-semibold">MT5</p>
-            <p className="mt-1">
-              {runtime?.mt5_connected ? "Connected" : "Disconnected"}
-            </p>
-          </div>
-          <div
-            className={`rounded border px-2 py-2 ${
-              runtime?.planner_alive
-                ? "border-emerald-800 text-emerald-300"
-                : "border-amber-800 text-amber-200"
-            }`}
-          >
-            <p className="font-semibold">Planner</p>
-            <p className="mt-1">{runtime?.planner_alive ? "Online" : "Offline"}</p>
-          </div>
-        </aside>
+            Cheat sheet
+          </button>
+        ) : null}
+        <div ref={containerRef} className="min-w-0 w-full" />
       </div>
       <p className="text-xs text-slate-500">
         H4 = day thesis (inv + targets). H1 = refine levels. M15 = pullback zone + SL/TP.

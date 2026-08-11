@@ -29,7 +29,8 @@ class QwenTradeSoftware:
 
     OLLAMA_HEALTH = "http://127.0.0.1:11434/api/tags"
     DASHBOARD_HEALTH = "http://127.0.0.1:48632/snapshot"
-    WEBSITE_HEALTH = "http://127.0.0.1:8080/"
+    # GoldFlow Plan View (sole UI). Prefer :8088; :80 is also bound after deploy.
+    WEBSITE_HEALTH = "http://127.0.0.1:8088/"
 
     def __init__(self) -> None:
         self.LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -96,7 +97,7 @@ class QwenTradeSoftware:
             logging.info("Started Ollama Windows app")
 
     def _ensure_website(self) -> None:
-        for url in (self.WEBSITE_HEALTH, "http://127.0.0.1/"):
+        for url in (self.WEBSITE_HEALTH, "http://127.0.0.1/", "http://127.0.0.1:8080/"):
             if self._http_ok(url):
                 self.WEBSITE_HEALTH = url
                 return
@@ -106,8 +107,9 @@ class QwenTradeSoftware:
             creationflags=self._hidden_flags(),
             check=False,
         )
-        if not self._wait_for(self.WEBSITE_HEALTH, 30) and not self._wait_for(
-            "http://127.0.0.1/", 15
+        if (
+            not self._wait_for(self.WEBSITE_HEALTH, 30)
+            and not self._wait_for("http://127.0.0.1/", 15)
         ):
             logging.warning("Website health check failed; continuing without IIS")
 

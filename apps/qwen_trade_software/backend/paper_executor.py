@@ -2,7 +2,9 @@
 
 import argparse
 import json
+import logging
 import msvcrt
+import os
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -10,6 +12,7 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 
+import trade_geometry
 from tick_data_archive import append_tick_record
 
 
@@ -25,9 +28,41 @@ MONITOR_INTERVAL_SECONDS = 1.0
 # still referenced by a stale caller or an old log-replay tool.
 BEST_PRICE_MINIMUM_OBSERVATION_SECONDS = 0.25
 MIN_ENTRY_CONFIDENCE = 51
-# Fixed broker bracket at entry. Structure S/R is for management after fill.
+# Legacy fixed broker bracket. Retained as the fallback path and as the
+# reference the entry guard validates against -- see broker_bracket_from_plan.
 INITIAL_STOP_DISTANCE = 3.0
 INITIAL_TAKE_PROFIT_DISTANCE = 5.0
+# Stage 3: place the stop beyond the structural invalidation and let size absorb
+# the distance. Set QWEN_STRUCTURAL_BRACKET=0 to fall back to the flat $3/$5.
+STRUCTURAL_BRACKET_ENABLED = os.environ.get("QWEN_STRUCTURAL_BRACKET", "1") != "0"
+
+# Geometry verdicts that mean "this is a bad trade", not "I lack information".
+# These refuse the entry rather than degrading to the flat bracket.
+#
+# MEASURED CONSEQUENCE (2026-08-10, 29 closed trades replayed): geometry rejects
+# roughly half of current setups, 14 of 15 for reward:risk. That is the honest
+# reading of the book -- once risk is priced at the real invalidation instead of
+# a flat $3, most of these locations are not worth taking. Skipping them moved
+# realised P&L from -549.20 to -384.95.
+#
+# Note that is a filter result, not a projection: the surviving trades were
+# executed under the OLD bracket, so their outcomes would differ under this one.
+SKIP_ON_GEOMETRY_REJECTION = frozenset({
+    trade_geometry.GeometryReason.REWARD_RISK_TOO_LOW,
+    trade_geometry.GeometryReason.STOP_TOO_WIDE,
+    trade_geometry.GeometryReason.INVALIDATION_WRONG_SIDE,
+    trade_geometry.GeometryReason.TARGET_WRONG_SIDE,
+    trade_geometry.GeometryReason.SIZE_BELOW_MINIMUM,
+})
+
+
+class GeometryRejection(RuntimeError):
+    """Raised when structure says this entry is not worth taking."""
+
+    def __init__(self, reason_code: str, detail: str) -> None:
+        super().__init__(f"{reason_code}: {detail}")
+        self.reason_code = reason_code
+        self.detail = detail
 INITIAL_SAFETY_DISTANCE = INITIAL_TAKE_PROFIT_DISTANCE
 
 
@@ -144,26 +179,28 @@ def entry_location(
     high: float,
     stop_loss: float | None = None,
 ) -> str:
-    """Classify live quote vs the approved entry band.
+    """Classify live quote vs the approved S/R entry band.
 
     - inside_zone: within [low, high]
-    - favorable_outside: better fill than the zone (buy below low, sell above high)
-    - past_stop: already through structural invalidation — never enter
-    - unfavorable_outside: worse / chasing side of the zone — keep waiting
+    - favorable_outside: still on the approach side of the zone (buy above high
+      waiting to tag support; sell below low waiting to tag resistance)
+    - past_stop: already through invalidation — never enter
+    - unfavorable_outside: accepted through the zone (buy below support, sell
+      above resistance) — do not fade acceptance
     """
     if side == "buy":
         if stop_loss is not None and price <= float(stop_loss):
             return "past_stop"
-        if price > high:
-            return "unfavorable_outside"
         if price < low:
+            return "unfavorable_outside"
+        if price > high:
             return "favorable_outside"
         return "inside_zone"
     if stop_loss is not None and price >= float(stop_loss):
         return "past_stop"
-    if price < low:
-        return "unfavorable_outside"
     if price > high:
+        return "unfavorable_outside"
+    if price < low:
         return "favorable_outside"
     return "inside_zone"
 
@@ -356,9 +393,87 @@ def initial_safety_bracket(side: str, order_price: float, digits: int) -> tuple[
 
 
 def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[float, float, str]:
-    """Always place the fixed $3/$5 broker bracket; S/R is for management only."""
+    """Place the entry bracket. Structural when possible, fixed $3/$5 otherwise.
+
+    2026-08-10 -- why this changed
+    -----------------------------
+    The bracket used to be a flat $3 stop / $5 target from the fill regardless of
+    structure. Measured across the last seven closed trades, the only column that
+    separated winners from losers was how far the live stop sat INSIDE the
+    structural invalidation:
+
+        +246.50  stop BEYOND structure (-2.99)   -> ran to target
+        +249.15  0.26 inside                      -> ran to target
+        -153.50  4.13 inside                      -> stopped out
+        -153.50  8.46 inside, thesis never tested -> stopped in 81s
+
+    Across all 27 closed trades winners averaged 1.71 inside and losers 3.76. A
+    stop inside the invalidation converts "my idea was wrong" into "noise removed
+    me" -- the trade is closed before the thesis can resolve.
+
+    trade_geometry places the stop BEYOND the named invalidation and lets
+    position size absorb the extra distance, so a wider stop is a smaller
+    position rather than a larger loss.
+
+    Fallback is deliberate: if the plan carries no usable structural levels, or
+    geometry rejects the setup, we return the exact legacy bracket rather than
+    leaving a position unprotected. Worst case is today's behaviour.
+
+    Set QWEN_STRUCTURAL_BRACKET=0 to force the legacy path.
+    """
     safety_sl, safety_tp = initial_safety_bracket(args.side, order_price, digits)
-    return safety_sl, safety_tp, "fixed_3_5"
+    if not STRUCTURAL_BRACKET_ENABLED:
+        return safety_sl, safety_tp, "fixed_3_5"
+
+    invalidation = getattr(args, "management_reference_sl", None)
+    target = getattr(args, "management_reference_tp", None)
+    if invalidation is None or target is None:
+        return safety_sl, safety_tp, "fixed_3_5_no_structure"
+
+    bracket = trade_geometry.build_bracket(
+        side=args.side,
+        entry_price=order_price,
+        invalidation_price=float(invalidation),
+        target_price=float(target),
+        frame=getattr(args, "structure_timeframe", None),
+        invalidation_id=getattr(args, "stop_level_id", None),
+        target_id=getattr(args, "target_level_id", None),
+        risk_budget=float(getattr(args, "risk_budget", trade_geometry.DEFAULT_RISK_BUDGET)),
+        allow_fallback=False,
+    )
+    if not bracket.ok:
+        # Distinguish "cannot compute" from "computed, and this is a bad trade".
+        #
+        # Falling back to the flat $3 after a reward:risk rejection would
+        # reinstate exactly the problem this change exists to fix: a tight stop
+        # manufactures attractive-looking reward:risk by pretending the risk is
+        # small, when the level that actually invalidates the idea is far away.
+        # The trade then gets taken with no room and dies to noise.
+        #
+        # So: missing structure -> legacy bracket (never leave a fill
+        # unprotected). Active rejection -> refuse the entry.
+        if bracket.reason_code in SKIP_ON_GEOMETRY_REJECTION:
+            raise GeometryRejection(bracket.reason_code, bracket.detail)
+        logging.info(
+            "structural bracket unavailable (%s: %s); using fixed %s/%s",
+            bracket.reason_code,
+            bracket.detail,
+            INITIAL_STOP_DISTANCE,
+            INITIAL_TAKE_PROFIT_DISTANCE,
+        )
+        return safety_sl, safety_tp, f"fixed_3_5_after_{bracket.reason_code}"
+
+    logging.info(
+        "structural bracket: stop %.3f (beyond %s) target %.3f, distance %.2f, "
+        "size %.2f lots, risk %.2f",
+        bracket.stop_loss, bracket.invalidation_id, bracket.take_profit,
+        bracket.stop_distance, bracket.volume, bracket.expected_risk,
+    )
+    return (
+        round(bracket.stop_loss, digits),
+        round(bracket.take_profit, digits),
+        bracket.geometry_source,
+    )
 
 
 def submit_single_position(args, execution_id: str, tick):
@@ -366,6 +481,9 @@ def submit_single_position(args, execution_id: str, tick):
     order_price = float(tick.ask if is_buy else tick.bid)
     symbol_info = mt5.symbol_info(args.symbol)
     digits = int(symbol_info.digits) if symbol_info else 3
+    # GeometryRejection propagates to _run, which owns the skip record. This
+    # function's contract is a 4-tuple; returning anything else here breaks the
+    # caller's unpacking.
     safety_sl, safety_tp, bracket_source = broker_bracket_from_plan(
         args, order_price, digits
     )
@@ -591,9 +709,29 @@ def _run(args) -> dict:
             )
             if not fills and tracker_state.get("enter"):
                 phase = "single_entry"
-                order_result, safety_sl, safety_tp, bracket_source = (
-                    submit_single_position(args, execution_id, tick)
-                )
+                try:
+                    order_result, safety_sl, safety_tp, bracket_source = (
+                        submit_single_position(args, execution_id, tick)
+                    )
+                except GeometryRejection as rejection:
+                    # Structure says this entry is not worth taking. A refused
+                    # entry is a decision, not a fault: record a clean skip and
+                    # end the run without opening a position.
+                    logging.info(
+                        "entry refused by structural geometry: %s (%s)",
+                        rejection.reason_code,
+                        rejection.detail,
+                    )
+                    skipped = {
+                        "event": "mt5_execution_skipped",
+                        "execution_id": execution_id,
+                        "proposal_id": args.proposal_id,
+                        "created_at_utc": utc_now(),
+                        "reason": rejection.reason_code,
+                        "detail": rejection.detail,
+                    }
+                    append_event(skipped)
+                    return skipped
                 actual_fill = float(order_result.price or entry_quote)
                 best_observed = float(tracker_state["best_price"])
                 fill = {
@@ -799,17 +937,17 @@ def self_test() -> None:
     assert inside_entry_zone(101, 100, 102)
     assert not inside_entry_zone(103, 100, 102)
     assert entry_location("buy", 101, 100, 102, 97) == "inside_zone"
-    assert entry_location("buy", 99, 100, 102, 97) == "favorable_outside"
-    assert entry_location("buy", 103, 100, 102, 97) == "unfavorable_outside"
+    assert entry_location("buy", 103, 100, 102, 97) == "favorable_outside"
+    assert entry_location("buy", 99, 100, 102, 97) == "unfavorable_outside"
     assert entry_location("buy", 97, 100, 102, 97) == "past_stop"
     assert entry_location("sell", 101, 100, 102, 105) == "inside_zone"
-    assert entry_location("sell", 103, 100, 102, 105) == "favorable_outside"
-    assert entry_location("sell", 99, 100, 102, 105) == "unfavorable_outside"
+    assert entry_location("sell", 99, 100, 102, 105) == "favorable_outside"
+    assert entry_location("sell", 103, 100, 102, 105) == "unfavorable_outside"
     assert entry_location("sell", 105, 100, 102, 105) == "past_stop"
-    assert entry_price_allowed("buy", 99, 100, 102, 97)
-    assert entry_price_allowed("sell", 103, 100, 102, 105)
-    assert not entry_price_allowed("buy", 103, 100, 102, 97)
-    assert not entry_price_allowed("sell", 99, 100, 102, 105)
+    assert entry_price_allowed("buy", 103, 100, 102, 97)
+    assert entry_price_allowed("sell", 99, 100, 102, 105)
+    assert not entry_price_allowed("buy", 99, 100, 102, 97)
+    assert not entry_price_allowed("sell", 103, 100, 102, 105)
     assert not entry_price_allowed("buy", 97, 100, 102, 97)
     assert average_fill_price([{"price": 101, "volume": 0.5}]) == 101
     assert favorable_price_move(104, 101, "buy") == 3
@@ -838,7 +976,7 @@ def self_test() -> None:
     assert first["best_price"] == 101.0
     assert first["observations"] == 1
     buy_better = BestPriceRangeTracker("buy", 2.0, 0.1).observe(
-        99.0,
+        103.0,
         0.0,
         inside_range=True,
         signal_seconds_left=10,
@@ -847,7 +985,7 @@ def self_test() -> None:
     )
     assert buy_better["enter"] and buy_better["reason"] == "favorable_outside_zone_entry"
     outside = BestPriceRangeTracker("buy", 2.0, 0.1).observe(
-        103.0,
+        99.0,
         0.0,
         inside_range=False,
         signal_seconds_left=10,
@@ -866,7 +1004,7 @@ def self_test() -> None:
     )
     assert immediate["enter"] and immediate["best_price"] == 100.0
     sell_better = BestPriceRangeTracker("sell", 1.0, 0.1).observe(
-        103.0,
+        99.0,
         0.0,
         inside_range=True,
         signal_seconds_left=10,

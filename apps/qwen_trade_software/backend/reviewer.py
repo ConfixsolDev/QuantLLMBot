@@ -21,6 +21,12 @@ from datetime import date, datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import entry_policy
+from decision_liveness import (
+    DecisionEvent,
+    DecisionLivenessMonitor,
+    format_alarm,
+)
 from market_context_cache import (
     latest_entry_context,
     load_prompt_section,
@@ -45,9 +51,11 @@ from review_shared import (
     save_review_tickets,
     gold_market_open,
     sync_model_residency,
+    unload_stale_models,
     write_json_atomic,
 )
 from session_planner import (
+    build_branch_view,
     DEFAULT_PLANNER_STATE,
     live_mid_from_facts,
     live_sanity_snapshot,
@@ -69,6 +77,15 @@ DAILY_PAPER_CAP = 100
 MIN_ENTRY_CONFIDENCE = 51
 QWEN_PLAN_GATING = os.environ.get("QWEN_PLAN_GATING", "0") == "1"
 QWEN_DECISION_LOCK = threading.Lock()
+# Rolling health view of the decision stream. Holds the invariants that were
+# missing on 2026-08-10, when the system produced no ready proposal for 2h20m
+# with the market open, the cache ready and Qwen answering normally -- and
+# nothing alarmed.
+LIVENESS = DecisionLivenessMonitor()
+# Set QWEN_POLICY_V2=1 to route entry decisions through entry_policy.py, where
+# the model returns dual-side observations and the code owns the verdict.
+# Defaults off so this branch is a no-op for the running stack until enabled.
+QWEN_POLICY_V2 = os.environ.get("QWEN_POLICY_V2", "0") == "1"
 # Broker entry bracket is fixed; structure S/R is for the model zone + management.
 FIXED_STOP_DISTANCE = 3.0
 FIXED_TARGET_DISTANCE = 5.0
@@ -443,6 +460,26 @@ def compact_entry_facts(
     }
 
 
+def entry_contract_version() -> str:
+    """Version stamp of the live entry contract, e.g. "1.10".
+
+    Recorded on every decision so a distribution shift can be attributed to the
+    exact contract that caused it. On 2026-08-10 the v1.8 -> v1.9 edit halted
+    trading for 2h20m and nothing tied the two facts together.
+    """
+    try:
+        contract = load_prompt_section(
+            "qwen_cached_entry", STORE_ROOT, keep_comments=True
+        )
+    except Exception:
+        return "unknown"
+    for line in contract.splitlines():
+        marker = "<!-- version:"
+        if line.strip().startswith(marker):
+            return line.split(marker, 1)[1].split("|", 1)[0].strip()
+    return "unversioned"
+
+
 def build_entry_prompt(facts: dict) -> str:
     """Compact entry prompt: short trade-quality contract + compressed facts."""
     contract = load_prompt_section("qwen_cached_entry", STORE_ROOT)
@@ -508,6 +545,111 @@ def entry_decision_schema(entry_cache: dict, decision_levels: dict, facts: dict 
             "bias", "confidence", "summary", "acknowledged_epochs",
             "evidence_ids", "execution_plan",
         ],
+        "additionalProperties": False,
+    }
+
+
+def dual_side_observation_schema(
+    entry_cache: dict, decision_levels: dict, facts: dict | None = None
+) -> dict:
+    """Schema for prompt:qwen_dual_side_entry (contract v2.0).
+
+    The model returns observations only -- no status, no overall confidence, no
+    side selection. Both ``long`` and ``short`` are ``required``, which is what
+    makes the 2026-08-10 one-sided drift (44 sell / 1 buy) a schema violation
+    rather than a silent omission. Confidence is composed in entry_policy.py
+    from the component scores below, so a "confidence 0 alongside a bullish
+    read" contradiction cannot be expressed at all.
+
+    Note there is deliberately no ``conditional`` value anywhere: on 2026-08-10
+    the model returned ``bias: "conditional"`` in 71% of decisions despite the
+    contract forbidding it in prose. Prose does not constrain output; enums do.
+    """
+    if facts and facts.get("execution_levels"):
+        level_ids = sorted({row["id"] for row in facts["execution_levels"]})
+    else:
+        level_ids = sorted(
+            row["id"] for rows in decision_levels.values() for row in rows
+        )
+    if not level_ids:
+        level_ids = ["__no_level__"]
+    evidence_enum = list(facts.get("citeable_evidence_ids") or []) if facts else []
+    if not evidence_enum:
+        evidence_enum = list(entry_cache.get("known_evidence_ids") or [])
+    if not evidence_enum:
+        evidence_enum = ["__no_evidence__"]
+    epochs = entry_cache["epochs"]
+
+    score_block = {
+        "type": "object",
+        "properties": {
+            component: {"type": "integer", "minimum": 0, "maximum": 10}
+            for component in entry_policy.SCORE_COMPONENTS
+        },
+        "required": list(entry_policy.SCORE_COMPONENTS),
+        "additionalProperties": False,
+    }
+    side_block = {
+        "type": "object",
+        "properties": {
+            "zone_id": {"type": "string", "enum": level_ids},
+            "invalidation_id": {"type": "string", "enum": level_ids},
+            "trigger_tf": {
+                "type": "string",
+                "enum": list(entry_policy.TIMEFRAME_ORDER),
+            },
+            "response_observed": {"type": "boolean"},
+            "traps_triggered": {
+                "type": "array",
+                "items": {"type": "string", "enum": sorted(entry_policy.KNOWN_TRAPS)},
+                "maxItems": len(entry_policy.KNOWN_TRAPS),
+            },
+            "scores": score_block,
+        },
+        "required": [
+            "zone_id", "invalidation_id", "trigger_tf",
+            "response_observed", "traps_triggered", "scores",
+        ],
+        "additionalProperties": False,
+    }
+
+    return {
+        "type": "object",
+        "properties": {
+            "read": {
+                "type": "object",
+                "properties": {
+                    "htf_auction": {"type": "string", "maxLength": 40},
+                    "htf_timeframe": {
+                        "type": "string",
+                        "enum": list(entry_policy.TIMEFRAME_ORDER),
+                    },
+                    "location": {"type": "string", "maxLength": 60},
+                    "acceptance": {"type": "string", "maxLength": 40},
+                },
+                "required": ["htf_auction", "htf_timeframe", "location", "acceptance"],
+                "additionalProperties": False,
+            },
+            "long": side_block,
+            "short": side_block,
+            "acknowledged_epochs": {
+                "type": "object",
+                "properties": {
+                    key: {"type": "string", "const": value}
+                    for key, value in epochs.items()
+                },
+                "required": sorted(epochs),
+                "additionalProperties": False,
+            },
+            "evidence_ids": {
+                "type": "array",
+                "items": {"type": "string", "enum": evidence_enum},
+                "minItems": 1,
+                "maxItems": 6,
+            },
+        },
+        # Both sides required: the model cannot omit the direction it dislikes.
+        "required": ["read", "long", "short", "acknowledged_epochs", "evidence_ids"],
         "additionalProperties": False,
     }
 
@@ -892,6 +1034,16 @@ def build_plan_snapshot() -> dict:
         logging.exception("Plan snapshot live price lookup failed")
         live_price = None
     planner["live_price"] = live_price
+    # Re-evaluate the two day-plan branches against the LIVE price rather than
+    # serving whatever was current when the planner last saved. The screen's
+    # headline ("BUY confirmed" / "no entry yet") is only useful if it reflects
+    # where price is now.
+    try:
+        if live_price:
+            planner.setdefault("live", {})["mid"] = live_price
+        planner["day_branches"] = build_branch_view(planner)
+    except Exception:
+        logging.exception("plan:branch_view_failed")
     planner["day_plan_live_sanity"] = live_sanity_snapshot(
         planner.get("day_plan"), live_price
     )
@@ -1058,6 +1210,53 @@ def normalize_execution_plan(
         stop_loss = round(entry_high + FIXED_STOP_DISTANCE, 3)
         take_profit = round(entry_low - FIXED_TARGET_DISTANCE, 3)
 
+    # Sibling traps to the 2026-08-10 sell-into-buy failure (see sop
+    # qwen_cached_entry hard traps). Runtime enforces the ones that are
+    # unambiguous from quote + named levels.
+    acceptance_pad = 1.0
+    if quote > 0:
+        if side == "sell" and quote > entry_high + acceptance_pad:
+            return wait(
+                "Live price already accepted above the sell resistance zone; "
+                "do not fade the bullish auction."
+            )
+        if side == "buy" and quote < entry_low - acceptance_pad:
+            return wait(
+                "Live price already accepted below the buy support zone; "
+                "do not fade the bearish auction."
+            )
+
+    # Buy zone entirely above live price = buying into resistance.
+    # Sell zone entirely below live price = selling into support.
+    if quote > 0:
+        if side == "buy" and entry_low > quote + 0.5:
+            return wait(
+                "Do not buy into resistance above live price; "
+                "wait for pullback support or break-and-retest."
+            )
+        if side == "sell" and entry_high < quote - 0.5:
+            return wait(
+                "Do not sell into support below live price; "
+                "wait for bounce to resistance or failed support hold."
+            )
+
+    planner_scenario = str(
+        snapshot.get("planner_context", {}).get("session_plan_summary", {}).get(
+            "active_scenario", ""
+        )
+        or ""
+    ).strip().lower()
+    if planner_scenario == "bullish" and side == "sell" and quote > entry_high:
+        return wait(
+            "Planner active_scenario is bullish; do not ready a counter-trend "
+            "sell above the mapped resistance."
+        )
+    if planner_scenario == "bearish" and side == "buy" and quote < entry_low:
+        return wait(
+            "Planner active_scenario is bearish; do not ready a counter-trend "
+            "buy below the mapped support."
+        )
+
     return {
         "status": "ready",
         "side": side,
@@ -1188,7 +1387,24 @@ def generate_dashboard_deal_sheet() -> dict:
         result = ollama_generate(
             prompt,
             timeout=None,
-            num_predict=320,
+            # 2026-08-10: was 320, which truncated the response mid-string and
+            # surfaced as "dealsheet:generation_failed :: JSONDecodeError:
+            # Unterminated string". The failing char offset matched
+            # response_chars exactly (529/530/536/537), i.e. generation stopped
+            # at the token cap rather than producing bad JSON.
+            #
+            # The entry schema requires acknowledged_epochs copied verbatim --
+            # five ~35-char epoch hashes -- plus up to six evidence_ids and four
+            # level IDs. Hash-dense JSON tokenises at ~1.65-1.85 chars/token, so
+            # 320 tokens ran out around 530-600 chars. Prose-heavier responses
+            # tokenise nearer 2.1 chars/token, which is why some 681-char
+            # responses still parsed and the failure looked intermittent.
+            #
+            # 768 leaves roughly 2x headroom over the largest observed valid
+            # response. The context challenge already uses 1024 for the same
+            # reason. This is an upper bound, not a target: well-formed answers
+            # stop early on their own.
+            num_predict=768,
             num_ctx=4096,
             format_schema=entry_decision_schema(
                 entry_cache, decision_levels, facts
@@ -1206,10 +1422,40 @@ def generate_dashboard_deal_sheet() -> dict:
         review = json.loads(raw_response)
         provenance_failures = validate_entry_provenance(review, entry_cache)
         snapshot["qwen_evidence_ids"] = list(review.get("evidence_ids") or [])
+
+        # 2026-08-10 guard: contract v1.9 made the model emit status="ready"
+        # alongside confidence=0 and a directional bias. That contradiction
+        # occurred 72 times in two hours and nothing detected it -- the plan was
+        # silently downgraded to a wait and trading simply stopped. Surface it
+        # loudly with a stable code so a contract regression cannot hide again.
+        contradiction = entry_policy.check_legacy_contradiction(review)
+        if contradiction:
+            logging.error(
+                "%s :: model returned status=ready with confidence=%s (bias=%s); "
+                "suspect entry-contract regression",
+                contradiction,
+                review.get("confidence"),
+                review.get("bias"),
+            )
+            provenance_failures.append(contradiction)
+
         if provenance_failures:
+            # Report the actual cause. Folding every failure into a single
+            # "Cache provenance validation failed." string is how the v1.9
+            # contradiction stayed invisible: the wait reason named the wrong
+            # subsystem, so the logs pointed at the cache while the real fault
+            # was the entry contract.
             review["execution_plan"] = {
                 "status": "wait",
-                "reason": "Cache provenance validation failed.",
+                "reason": (
+                    "Model returned ready with sub-threshold confidence "
+                    "(suspect entry-contract regression)."
+                    if contradiction
+                    else "Cache provenance validation failed."
+                ),
+                "reason_code": (
+                    contradiction if contradiction else "entry:provenance_failed"
+                ),
             }
         else:
             review["execution_plan"] = normalize_execution_plan(
@@ -1239,6 +1485,27 @@ def generate_dashboard_deal_sheet() -> dict:
             "price": plan.get("structural_stop_loss", plan["stop_loss"]),
         }
 
+    # Feed the decision stream to the liveness monitor before any dedup, so a
+    # regression that produces endless identical waits is still visible.
+    try:
+        _plan = review.get("execution_plan") or {}
+        for _alarm in LIVENESS.record(
+            DecisionEvent(
+                at=time.time(),
+                confidence=int(review.get("confidence") or 0),
+                status=str(_plan.get("status") or "wait"),
+                side=_plan.get("side"),
+                trade_permitted=bool(entry_cache.get("status") == "ready"),
+                cache_ready=bool(entry_cache.get("status") == "ready"),
+                has_open_position=False,
+                latency_seconds=review.get("decision_wall_seconds"),
+                contract_version=entry_contract_version(),
+            )
+        ):
+            logging.error(format_alarm(_alarm))
+    except Exception:
+        logging.exception("liveness:record_failed")
+
     # No-model wait churn: identical cache/session blocks used to rewrite a
     # fresh proposal every 30s. Keep UI state fresh; only audit when the wait
     # signature changes or Qwen actually ran.
@@ -1266,7 +1533,7 @@ def generate_dashboard_deal_sheet() -> dict:
             prompt_text=prompt_text,
             raw_response=raw_response,
             parsed=review,
-            model=snapshot.get("model") or "qwen-trading-v003:latest",
+            model=snapshot.get("model") or MODEL,
             duration_ns=decision_duration_ns,
             context={
                 "cache_status": entry_cache.get("status"),
@@ -1455,8 +1722,16 @@ def generate_automatic_deal_sheet() -> None:
         return
     try:
         generate_dashboard_deal_sheet()
-    except Exception:
-        logging.exception("Automatic deal-sheet generation failed")
+    except Exception as exc:
+        # 2026-08-10: this used to log the bare string "Automatic deal-sheet
+        # generation failed" with no exception attached, which cannot be
+        # counted, grouped or alerted on. Carry a stable code plus the actual
+        # error type so failures become measurable.
+        logging.exception(
+            "dealsheet:generation_failed :: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
     finally:
         QWEN_DECISION_LOCK.release()
 
@@ -1613,6 +1888,15 @@ def main() -> None:
         return
 
     logging.info("Qwen entry-decision process starting; interval=%ds", INTERVAL_SECONDS)
+    # Evict any previous qwen-trading-* left pinned in VRAM. warm_model() pins
+    # with keep_alive=-1, so a model switch otherwise leaves BOTH resident and
+    # Ollama starts returning HTTP 500 on every call (2026-08-10 incident).
+    try:
+        evicted = unload_stale_models()
+        if evicted:
+            logging.info("freed VRAM by evicting: %s", ", ".join(evicted))
+    except Exception:
+        logging.exception("model:stale_eviction_failed")
     start_dashboard_server()
     while True:
         started = time.monotonic()
@@ -1626,8 +1910,27 @@ def main() -> None:
                 )
             else:
                 generate_automatic_deal_sheet()
+
+            # Time-based liveness must run every cycle, including cycles that
+            # produce nothing. The 2026-08-10 outage was invisible precisely
+            # because the absence of decisions emitted no signal.
+            management_state = read_json_safe(
+                MANAGEMENT_STATE_FILE, DEFAULT_MANAGEMENT_STATE
+            )
+            for alarm in LIVENESS.check_time_based(
+                time.time(),
+                trade_permitted=bool(market.get("open")),
+                cache_ready=bool(
+                    (management_state.get("context_cache") or {}).get("status") == "ready"
+                ),
+                has_open_position=any(
+                    position.get("qwen_owned")
+                    for position in management_state.get("positions", [])
+                ),
+            ):
+                logging.error(format_alarm(alarm))
         except Exception:
-            logging.exception("Entry-decision cycle failed")
+            logging.exception("entry:cycle_failed")
         elapsed = time.monotonic() - started
         time.sleep(max(1, INTERVAL_SECONDS - elapsed))
 

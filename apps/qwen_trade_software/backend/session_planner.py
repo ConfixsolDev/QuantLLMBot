@@ -15,6 +15,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import plan_branches
 from market_context_cache import (
     DEFAULT_DB,
     latest_entry_context,
@@ -696,12 +697,45 @@ def _side_from_scenario(active: str) -> str:
 
 
 def _fallback_h4_from_day_plan(plan: dict) -> dict:
+    """Derive a provisional H4 idea from whichever branch price has confirmed.
+
+    2026-08-11: this used to choose with
+        use_bull = len(bull_targets) >= len(bear_targets)
+    i.e. it picked the side that happened to list more target numbers. That is
+    an artifact of the model's formatting, not a read of the market, and it is
+    how a two-sided plan silently became one directional bet.
+
+    The day plan keeps BOTH branches (see plan_branches.py). This fallback now
+    only reports which branch price has actually confirmed. When neither has,
+    it returns a neutral placeholder rather than inventing a direction --
+    "no branch confirmed yet" is a legitimate and useful answer.
+    """
     bull = plan.get("bullish_scenario") or {}
     bear = plan.get("bearish_scenario") or {}
-    # Prefer the scenario whose invalidation is farther from mid of targets (proxy).
-    bull_targets = list(bull.get("targets") or [])
-    bear_targets = list(bear.get("targets") or [])
-    use_bull = len(bull_targets) >= len(bear_targets)
+    reference = plan.get("reference_price")
+
+    bull_branch = plan_branches.branch_from_scenario(bull, "buy")
+    bear_branch = plan_branches.branch_from_scenario(bear, "sell")
+    if reference:
+        try:
+            price = float(reference)
+            bull_branch = plan_branches.evaluate_branch(bull_branch, closed_price=price)
+            bear_branch = plan_branches.evaluate_branch(bear_branch, closed_price=price)
+        except (TypeError, ValueError):
+            pass
+
+    # Prefer a confirmed branch; otherwise the one still alive; otherwise bull.
+    if bull_branch.state == plan_branches.CONFIRMED and bear_branch.state != plan_branches.CONFIRMED:
+        use_bull = True
+    elif bear_branch.state == plan_branches.CONFIRMED and bull_branch.state != plan_branches.CONFIRMED:
+        use_bull = False
+    elif bear_branch.state == plan_branches.INVALIDATED:
+        use_bull = True
+    elif bull_branch.state == plan_branches.INVALIDATED:
+        use_bull = False
+    else:
+        use_bull = True
+
     scenario = bull if use_bull else bear
     side = "buy" if use_bull else "sell"
     refs = [str(row.get("label") or "") for row in (plan.get("key_levels") or [])[:6]]
@@ -897,7 +931,30 @@ def revise_trade_idea_stack(
     }
 
 
-def apply_layer_validation(stack: dict | None, layer_validation: dict | None, plan_status: str) -> dict:
+def apply_layer_validation(
+    stack: dict | None,
+    layer_validation: dict | None,
+    plan_status: str,
+    closed_price: float | None = None,
+) -> dict:
+    """Record layer verdicts, but only PRICE may invalidate an idea.
+
+    2026-08-11 INCIDENT. This function used to mirror the model's
+    layer_validation verdict straight onto idea status with no price check. A
+    session-forecast miss -- "expected range compression before London open",
+    observed a bullish hour, confidence delta -30 -- propagated to
+    h4/h1/m15 = invalidated. Meanwhile price ran through BOTH of that idea's
+    targets (4405.80, 4409.20) and never touched its 4397.60 invalidation.
+
+    The idea was correct and was marked dead, which is why the board was solid
+    red and why "the ideas are not likely improving": they were being killed by
+    forecast misses rather than by being wrong.
+
+    "My forecast of session character was wrong" and "my trade idea is wrong"
+    are independent claims. On that day they were opposite. So the model verdict
+    is retained for display and scoring, and an idea is only marked invalidated
+    when ``closed_price`` has closed through that idea's OWN invalidation level.
+    """
     base = dict(stack or {})
     lv = dict(base.get("layer_validation") or {})
     incoming = layer_validation if isinstance(layer_validation, dict) else {}
@@ -907,17 +964,44 @@ def apply_layer_validation(stack: dict | None, layer_validation: dict | None, pl
             lv[key] = value
         elif key not in lv:
             lv[key] = plan_status if plan_status in PLAN_STATUS_VALUES else "pending"
-    # Mirror overall invalidation onto H4 idea status when needed.
-    h4 = dict(base.get("h4") or {})
-    if lv.get("h4") == "invalidated":
-        h4["status"] = "invalidated"
-    for layer_key, idea_key in (("h1", "h1"), ("m15", "m15")):
+
+    def price_invalidates(idea: dict) -> tuple[bool, str]:
+        """True only when a CLOSE went through this idea's own level."""
+        if closed_price is None or not isinstance(idea, dict):
+            return False, ""
+        level = idea.get("invalidation")
+        try:
+            level = float(level)
+        except (TypeError, ValueError):
+            return False, ""
+        if not level:
+            return False, ""
+        side = str(idea.get("side") or "").lower()
+        if side not in ("buy", "sell"):
+            # H1 refine blocks carry no side; inherit from the H4 idea.
+            side = str((base.get("h4") or {}).get("side") or "").lower()
+        if side not in ("buy", "sell"):
+            return False, ""
+        direction = 1.0 if side == "buy" else -1.0
+        if direction * (float(closed_price) - level) < 0:
+            return True, f"closed {float(closed_price):.3f} through invalidation {level:.3f}"
+        return False, ""
+
+    for idea_key in ("h4", "h1", "m15"):
         idea = base.get(idea_key)
-        if isinstance(idea, dict) and lv.get(layer_key) == "invalidated":
-            idea = dict(idea)
+        if not isinstance(idea, dict):
+            continue
+        idea = dict(idea)
+        dead, reason = price_invalidates(idea)
+        if dead:
             idea["status"] = "invalidated"
-            base[idea_key] = idea
-    base["h4"] = h4
+            idea["invalidation_reason"] = reason
+        elif idea.get("status") == "invalidated":
+            # A previous forecast-driven invalidation that price never backed.
+            idea["status"] = "active"
+            idea["invalidation_reason"] = "restored: price never closed through the level"
+        base[idea_key] = idea
+
     base["layer_validation"] = lv
     base["updated_at_utc"] = iso_utc(utc_now())
     return base
@@ -1208,7 +1292,12 @@ def generate_hourly_update(
         "h1": delta["plan_status"],
         "m15": delta["plan_status"],
     }
-    stack = apply_layer_validation(stack_in, layer_validation, delta["plan_status"])
+    # Pass the CLOSED hour price so only price can invalidate an idea. Without
+    # it the model's verdict alone would kill ideas again (2026-08-11).
+    _closed = (hour_ohlc or {}).get("c") if isinstance(hour_ohlc, dict) else None
+    stack = apply_layer_validation(
+        stack_in, layer_validation, delta["plan_status"], closed_price=_closed
+    )
     update = {
         "artifact": "hourly_update",
         "hourly_id": hourly_id(trading_date, hour_start.hour),
@@ -1262,8 +1351,48 @@ def load_planner_state() -> dict:
     return read_json_safe(PLANNER_STATE_FILE, DEFAULT_PLANNER_STATE)
 
 
+def build_branch_view(state: dict) -> dict | None:
+    """Evaluate both day-plan branches against the live close, for the screen.
+
+    The day plan is a container of two branches and has no status of its own.
+    Each branch resolves independently, and only a CLOSE through a branch's own
+    invalidation can kill it. See plan_branches.py for the 2026-08-11 incident
+    that motivated this.
+    """
+    plan = state.get("day_plan")
+    if not isinstance(plan, dict):
+        return None
+    bull = plan_branches.branch_from_scenario(plan.get("bullish_scenario"), "buy")
+    bear = plan_branches.branch_from_scenario(plan.get("bearish_scenario"), "sell")
+
+    # A branch's trigger price is its first target's side of the key level; when
+    # the model gave no explicit number, fall back to the opposite branch's
+    # invalidation, which is the level the trigger is phrased against.
+    if bull.trigger_price is None and bear.invalidation is not None:
+        bull = plan_branches.Branch(**{**bull.as_dict(), "trigger_price": bear.invalidation})
+    if bear.trigger_price is None and bull.invalidation is not None:
+        bear = plan_branches.Branch(**{**bear.as_dict(), "trigger_price": bull.invalidation})
+
+    closed = plan.get("reference_price")
+    live = (state.get("live") or {}).get("mid") if isinstance(state.get("live"), dict) else None
+    price = live if live else closed
+    try:
+        price = float(price)
+    except (TypeError, ValueError):
+        return plan_branches.build_day_view(bull, bear).as_dict()
+
+    bull = plan_branches.evaluate_branch(bull, closed_price=price)
+    bear = plan_branches.evaluate_branch(bear, closed_price=price)
+    return plan_branches.build_day_view(bull, bear).as_dict()
+
+
 def save_planner_state(state: dict) -> None:
     state["updated_at_utc"] = iso_utc(utc_now())
+    try:
+        state["day_branches"] = build_branch_view(state)
+    except Exception:
+        logging.exception("planner:branch_view_failed")
+        state["day_branches"] = None
     write_json_atomic(PLANNER_STATE_FILE, state)
 
 
