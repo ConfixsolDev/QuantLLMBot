@@ -22,6 +22,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import entry_policy
+import plan_ladder
+from execution_funnel import build_funnel
 from decision_liveness import (
     DecisionEvent,
     DecisionLivenessMonitor,
@@ -56,6 +58,7 @@ from review_shared import (
 )
 from session_planner import (
     build_branch_view,
+    refresh_idea_states,
     DEFAULT_PLANNER_STATE,
     live_mid_from_facts,
     live_sanity_snapshot,
@@ -64,6 +67,7 @@ from session_planner import (
     read_chart_candles,
 )
 from tick_data_archive import append_qwen_decision, append_tick_record
+from trade_geometry import TF_MIN_STOP, TF_MIN_TARGET, min_stop_for, min_target_for
 
 
 # 2026-08-06: kept separate from trade_management.py's
@@ -103,6 +107,233 @@ def latest_paper_execution():
             except json.JSONDecodeError:
                 continue
     return None
+
+
+def _execution_outcome_index(days_back: int = 2) -> dict[str, dict]:
+    """Best execution outcome per proposal_id (skip/close preferred over monitors)."""
+    priority = {
+        "mt5_execution_closed": 50,
+        "mt5_execution_skipped": 40,
+        "mt5_fill": 30,
+        "mt5_execution_started": 20,
+        "mt5_execution_monitor": 10,
+    }
+    by_id: dict[str, tuple[int, dict]] = {}
+    for path in _dated_log_files("paper-executions", days_back=days_back):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            proposal_id = event.get("proposal_id")
+            if not proposal_id:
+                continue
+            rank = priority.get(str(event.get("event")), 0)
+            if rank <= 0:
+                continue
+            row = {
+                "event": event.get("event"),
+                "reason": event.get("reason"),
+                "detail": event.get("detail"),
+                "side": event.get("side"),
+                "average_entry": event.get("average_entry"),
+                "net_pnl": event.get("net_pnl"),
+                "created_at_utc": event.get("created_at_utc"),
+            }
+            prior = by_id.get(proposal_id)
+            if prior is None or rank > prior[0] or (
+                rank == prior[0] and rank in (10, 50)
+            ):
+                by_id[proposal_id] = (rank, row)
+    return {key: value[1] for key, value in by_id.items()}
+
+
+def _geometry_metrics(plan: dict) -> dict:
+    """Stop/target distances and R:R from the proposal execution plan."""
+    side = str(plan.get("side") or "").lower()
+    try:
+        entry_low = float(plan.get("entry_low") or 0)
+        entry_high = float(plan.get("entry_high") or 0)
+    except (TypeError, ValueError):
+        entry_low = entry_high = 0.0
+    entry_mid = (
+        (entry_low + entry_high) / 2.0
+        if entry_low and entry_high
+        else entry_low or entry_high or 0.0
+    )
+
+    def _dist(a, b) -> float | None:
+        try:
+            if a is None or b is None:
+                return None
+            return round(abs(float(a) - float(b)), 3)
+        except (TypeError, ValueError):
+            return None
+
+    stop = plan.get("stop_loss")
+    target = plan.get("take_profit")
+    structural_stop = plan.get("structural_stop_loss")
+    structural_target = plan.get("structural_take_profit")
+    stop_distance = plan.get("stop_distance")
+    target_distance = plan.get("target_distance")
+    try:
+        stop_distance = float(stop_distance) if stop_distance is not None else _dist(entry_mid, stop)
+    except (TypeError, ValueError):
+        stop_distance = _dist(entry_mid, stop)
+    try:
+        target_distance = (
+            float(target_distance) if target_distance is not None else _dist(entry_mid, target)
+        )
+    except (TypeError, ValueError):
+        target_distance = _dist(entry_mid, target)
+
+    structural_stop_distance = _dist(entry_mid, structural_stop)
+    structural_target_distance = _dist(entry_mid, structural_target)
+    frame = str(plan.get("structure_timeframe") or "").upper() or None
+    min_stop = min_stop_for(frame) if frame else None
+    min_target = min_target_for(frame) if frame else None
+
+    def _rr(reward, risk):
+        if not reward or not risk or risk <= 0:
+            return None
+        return round(float(reward) / float(risk), 3)
+
+    plan_rr = _rr(target_distance, stop_distance)
+    structural_rr = _rr(structural_target_distance, structural_stop_distance)
+
+    rr_issue = None
+    check_target = structural_target_distance if structural_target_distance is not None else target_distance
+    check_stop = structural_stop_distance if structural_stop_distance is not None else stop_distance
+    if frame and check_target is not None and min_target is not None and check_target + 1e-9 < min_target:
+        rr_issue = (
+            f"target {check_target:.2f} below the {frame} minimum {min_target:.1f}"
+        )
+    elif frame and check_stop is not None and min_stop is not None and check_stop + 1e-9 < min_stop:
+        rr_issue = (
+            f"stop {check_stop:.2f} below the {frame} minimum {min_stop:.1f}"
+        )
+    elif structural_rr is not None and structural_rr + 1e-9 < 1.2:
+        rr_issue = f"structural reward:risk {structural_rr:.2f} below 1.2"
+    elif plan_rr is not None and plan_rr + 1e-9 < 1.2 and structural_rr is None:
+        rr_issue = f"plan reward:risk {plan_rr:.2f} below 1.2"
+
+    return {
+        "side": side or None,
+        "entry_low": entry_low or None,
+        "entry_high": entry_high or None,
+        "entry_mid": round(entry_mid, 3) if entry_mid else None,
+        "stop_loss": stop,
+        "take_profit": target,
+        "stop_distance": stop_distance,
+        "target_distance": target_distance,
+        "plan_reward_risk": plan_rr,
+        "structural_stop_loss": structural_stop,
+        "structural_take_profit": structural_target,
+        "structural_stop_distance": structural_stop_distance,
+        "structural_target_distance": structural_target_distance,
+        "structural_reward_risk": structural_rr,
+        "structure_timeframe": frame,
+        "frame_min_stop": min_stop,
+        "frame_min_target": min_target,
+        "geometry_source": plan.get("geometry_source"),
+        "rr_issue": rr_issue,
+    }
+
+
+def list_trade_ideas(
+    *,
+    min_confidence: float = 50.0,
+    days_back: int = 2,
+    ready_only: bool = False,
+    limit: int = 300,
+) -> dict:
+    """Trade ideas with confidence above the floor, plus R:R / execution outcome.
+
+    Used by Plan View /ideas so operators can see geometry skips
+    (reward_risk_too_low / target below HTF minimum) on high-confidence ideas.
+    """
+    outcomes = _execution_outcome_index(days_back=days_back)
+    ideas: list[dict] = []
+    for path in _dated_log_files("paper-proposals", days_back=days_back):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                proposal = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            qwen = proposal.get("qwen") if isinstance(proposal.get("qwen"), dict) else {}
+            plan = (
+                qwen.get("execution_plan")
+                if isinstance(qwen.get("execution_plan"), dict)
+                else {}
+            )
+            try:
+                confidence = float(qwen.get("confidence") or 0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            if confidence <= float(min_confidence):
+                continue
+            status = str(plan.get("status") or "").lower()
+            if ready_only and status != "ready":
+                continue
+            proposal_id = proposal.get("proposal_id")
+            geometry = _geometry_metrics(plan)
+            outcome = outcomes.get(proposal_id) if proposal_id else None
+            outcome_reason = (outcome or {}).get("reason")
+            outcome_detail = (outcome or {}).get("detail")
+            reason_l = str(outcome_reason or "").lower()
+            blocked_by_rr = bool(outcome_reason) and (
+                "reward_risk" in reason_l or reason_l.startswith("geometry:")
+            )
+            ideas.append(
+                {
+                    "proposal_id": proposal_id,
+                    "created_at_utc": proposal.get("created_at_utc"),
+                    "symbol": proposal.get("symbol"),
+                    "price": (proposal.get("market") or {}).get("price"),
+                    "bias": qwen.get("bias"),
+                    "confidence": confidence,
+                    "summary": qwen.get("summary"),
+                    "status": status or None,
+                    "plan_reason": plan.get("reason"),
+                    "side": plan.get("side") or geometry.get("side"),
+                    "entry_low_id": plan.get("entry_low_id"),
+                    "entry_high_id": plan.get("entry_high_id"),
+                    "stop_level_id": plan.get("stop_level_id"),
+                    "target_level_id": plan.get("target_level_id"),
+                    "geometry": geometry,
+                    "outcome": outcome,
+                    "blocked_by_geometry": blocked_by_rr,
+                    "geometry_block_detail": outcome_detail
+                    or geometry.get("rr_issue"),
+                }
+            )
+    ideas.sort(key=lambda row: row.get("created_at_utc") or "", reverse=True)
+    if limit > 0:
+        ideas = ideas[: int(limit)]
+    blocked = sum(1 for row in ideas if row.get("blocked_by_geometry"))
+    ready = sum(1 for row in ideas if row.get("status") == "ready")
+    return {
+        "min_confidence": float(min_confidence),
+        "days_back": int(days_back),
+        "count": len(ideas),
+        "ready_count": ready,
+        "geometry_blocked_count": blocked,
+        "frame_min_targets": dict(TF_MIN_TARGET),
+        "frame_min_stops": dict(TF_MIN_STOP),
+        "ideas": ideas,
+    }
 
 
 def wait_decision_signature(review: dict, entry_cache: dict) -> str:
@@ -1027,6 +1258,7 @@ def build_plan_snapshot() -> dict:
     planner = read_json_safe(PLANNER_STATE_FILE, DEFAULT_PLANNER_STATE)
     planner["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
     planner["planner_alive"] = _planner_process_alive()
+    facts: dict = {}
     try:
         facts = planner_facts(str(planner.get("symbol") or "XAUUSDr"))
         live_price = live_mid_from_facts(facts)
@@ -1042,8 +1274,25 @@ def build_plan_snapshot() -> dict:
         if live_price:
             planner.setdefault("live", {})["mid"] = live_price
         planner["day_branches"] = build_branch_view(planner)
+        # Keep the trade-idea stack on the same clock as the branch panel.
+        # Without this the stack stays on its last HOURLY evaluation and the
+        # screen contradicts itself -- Day Plan showing TARGET REACHED beside
+        # H4/H1/M15 INVALIDATED (2026-08-11).
+        planner["trade_idea_stack"] = refresh_idea_states(planner, live_price)
     except Exception:
         logging.exception("plan:branch_view_failed")
+    # Why the system is or is not trading. Previously only discoverable by
+    # reading paper-runner.log by hand.
+    try:
+        planner["execution_funnel"] = build_funnel(LOG_DIR).as_dict()
+        # Pass the cache's per-timeframe levels so each frame's two branches are
+        # built from its OWN structure rather than copying the day plan.
+        planner["timeframe_ladder"] = plan_ladder.build_ladder_from_state(
+            planner, live_price, (facts or {}).get("levels")
+        )
+    except Exception:
+        logging.exception("plan:funnel_failed")
+        planner["execution_funnel"] = None
     planner["day_plan_live_sanity"] = live_sanity_snapshot(
         planner.get("day_plan"), live_price
     )
@@ -1211,34 +1460,48 @@ def normalize_execution_plan(
         take_profit = round(entry_low - FIXED_TARGET_DISTANCE, 3)
 
     # Sibling traps to the 2026-08-10 sell-into-buy failure (see sop
-    # qwen_cached_entry hard traps). Runtime enforces the ones that are
-    # unambiguous from quote + named levels.
+    # qwen_cached_entry hard traps). Softened for a two-day observation
+    # window: log the condition but do not block ready->execution. Set
+    # QWEN_LEVEL_ENTRY_GATES=1 to restore hard waits.
+    level_gates_on = os.environ.get("QWEN_LEVEL_ENTRY_GATES", "0") == "1"
     acceptance_pad = 1.0
     if quote > 0:
         if side == "sell" and quote > entry_high + acceptance_pad:
-            return wait(
+            msg = (
                 "Live price already accepted above the sell resistance zone; "
                 "do not fade the bullish auction."
             )
+            if level_gates_on:
+                return wait(msg)
+            logging.info("level gate soft-pass (not blocking): %s", msg)
         if side == "buy" and quote < entry_low - acceptance_pad:
-            return wait(
+            msg = (
                 "Live price already accepted below the buy support zone; "
                 "do not fade the bearish auction."
             )
+            if level_gates_on:
+                return wait(msg)
+            logging.info("level gate soft-pass (not blocking): %s", msg)
 
     # Buy zone entirely above live price = buying into resistance.
     # Sell zone entirely below live price = selling into support.
     if quote > 0:
         if side == "buy" and entry_low > quote + 0.5:
-            return wait(
+            msg = (
                 "Do not buy into resistance above live price; "
                 "wait for pullback support or break-and-retest."
             )
+            if level_gates_on:
+                return wait(msg)
+            logging.info("level gate soft-pass (not blocking): %s", msg)
         if side == "sell" and entry_high < quote - 0.5:
-            return wait(
+            msg = (
                 "Do not sell into support below live price; "
                 "wait for bounce to resistance or failed support hold."
             )
+            if level_gates_on:
+                return wait(msg)
+            logging.info("level gate soft-pass (not blocking): %s", msg)
 
     planner_scenario = str(
         snapshot.get("planner_context", {}).get("session_plan_summary", {}).get(
@@ -1247,15 +1510,21 @@ def normalize_execution_plan(
         or ""
     ).strip().lower()
     if planner_scenario == "bullish" and side == "sell" and quote > entry_high:
-        return wait(
+        msg = (
             "Planner active_scenario is bullish; do not ready a counter-trend "
             "sell above the mapped resistance."
         )
+        if level_gates_on:
+            return wait(msg)
+        logging.info("level gate soft-pass (not blocking): %s", msg)
     if planner_scenario == "bearish" and side == "buy" and quote < entry_low:
-        return wait(
+        msg = (
             "Planner active_scenario is bearish; do not ready a counter-trend "
             "buy below the mapped support."
         )
+        if level_gates_on:
+            return wait(msg)
+        logging.info("level gate soft-pass (not blocking): %s", msg)
 
     return {
         "status": "ready",
@@ -1639,6 +1908,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": "invalid date"}).encode("utf-8"))
                 return
             payload = json.dumps(load_plan_history(trading_date)).encode("utf-8")
+            self._headers()
+            self.wfile.write(payload)
+            return
+        if path == "/trade-ideas":
+            query = parse_qs(parsed.query)
+            try:
+                min_confidence = float(query.get("min_confidence", ["50"])[0])
+            except ValueError:
+                min_confidence = 50.0
+            try:
+                days_back = int(query.get("days", ["2"])[0])
+            except ValueError:
+                days_back = 2
+            try:
+                limit = int(query.get("limit", ["300"])[0])
+            except ValueError:
+                limit = 300
+            ready_only = str(query.get("ready_only", ["0"])[0]).lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            payload = json.dumps(
+                list_trade_ideas(
+                    min_confidence=min_confidence,
+                    days_back=max(0, min(days_back, 14)),
+                    ready_only=ready_only,
+                    limit=max(1, min(limit, 1000)),
+                )
+            ).encode("utf-8")
             self._headers()
             self.wfile.write(payload)
             return

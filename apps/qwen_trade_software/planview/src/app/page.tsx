@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchCandles, fetchPlan, fetchSnapshot } from "@/lib/api";
 import type { HourlyUpdate, PlannerState, TradeIdea } from "@/lib/types";
 import { DayBranchPanel } from "@/components/DayBranchPanel";
+import { ExecutionFunnelPanel } from "@/components/ExecutionFunnelPanel";
+import { TimeframeLadderPanel } from "@/components/TimeframeLadder";
 import { HeaderClock } from "@/components/HeaderClock";
 import { HourValidationCard } from "@/components/HourValidationCard";
 import { CheatSheetPanel } from "@/components/CheatSheetPanel";
@@ -114,19 +116,6 @@ export default function PlanViewPage() {
         }
       />
 
-      {error && (
-        <div className="rounded-lg border border-rose-900 bg-rose-950/40 p-3 text-sm text-rose-200">
-          {error} — ensure backend is running on :48632 and planner process is up.
-        </div>
-      )}
-
-      <SessionTimeline
-        clock={plan?.clock ?? defaultClock}
-        sessionPlan={plan?.session_plan ?? null}
-        sessionVerdicts={plan?.session_verdicts ?? []}
-        hourlyUpdates={hourlyUpdates}
-      />
-
       <div className="flex flex-wrap gap-2">
         {TIMEFRAMES.map((tf) => (
           <button
@@ -143,6 +132,19 @@ export default function PlanViewPage() {
           </button>
         ))}
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-rose-900 bg-rose-950/40 p-3 text-sm text-rose-200">
+          {error} — ensure backend is running on :48632 and planner process is up.
+        </div>
+      )}
+
+      <SessionTimeline
+        clock={plan?.clock ?? defaultClock}
+        sessionPlan={plan?.session_plan ?? null}
+        sessionVerdicts={plan?.session_verdicts ?? []}
+        hourlyUpdates={hourlyUpdates}
+      />
 
       <PlanChart
         candles={candles}
@@ -176,11 +178,13 @@ export default function PlanViewPage() {
         tradeIdea={tradeIdea}
       />
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <TradeIdeaStackPanel stack={tradeIdeaStack} />
-        <HourValidationCard update={selectedUpdate} />
-      </div>
-
+      {/*
+        Reading order is deliberate. The two panels that answer the operator's
+        actual questions come first and sit side by side:
+          left  — what is the plan, and are we buying or selling
+          right — are we trading, and if not why not
+        Supporting detail follows below.
+      */}
       <div className="grid gap-4 lg:grid-cols-2">
         <DayBranchPanel
           branches={plan?.day_branches}
@@ -188,19 +192,28 @@ export default function PlanViewPage() {
           liveSanity={plan?.day_plan_live_sanity}
           referencePrice={plan?.day_plan?.reference_price ?? null}
         />
-        {plan?.session_plan && (
-          <div className="card">
-            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
-              Active session plan
-            </h2>
-            <p className="text-sm text-slate-300">{plan.session_plan.summary}</p>
-            <p className="mt-2 text-xs text-slate-500">
-              {plan.session_plan.session_plan_id} · {plan.session_plan.active_scenario} ·
-              confidence {plan.session_plan.confidence}
-            </p>
-          </div>
-        )}
+        <ExecutionFunnelPanel funnel={plan?.execution_funnel} />
       </div>
+
+      <TimeframeLadderPanel ladder={plan?.timeframe_ladder} />
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <TradeIdeaStackPanel stack={tradeIdeaStack} />
+        <HourValidationCard update={selectedUpdate} />
+      </div>
+
+      {plan?.session_plan && (
+        <div className="card">
+          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
+            Active session plan
+          </h2>
+          <p className="text-sm text-slate-300">{plan.session_plan.summary}</p>
+          <p className="mt-2 text-xs text-slate-500">
+            {plan.session_plan.session_plan_id} · {plan.session_plan.active_scenario} ·
+            confidence {plan.session_plan.confidence}
+          </p>
+        </div>
+      )}
     </main>
   );
 }

@@ -272,13 +272,38 @@ def test_close_on_always_in_flip():
     assert d.should_exit and d.reason == mp.ExitReason.ALWAYS_IN_FLIP
 
 
-def test_close_when_remaining_reward_risk_inverts():
-    """R3 -- Brooks' trader's equation applied to an open position."""
-    # sell entry 4340, stop 4343, target 4335; price 4336 leaves 1.0 reward
-    # against 7.0 risk.
+def test_r3_does_not_close_a_trade_that_is_working():
+    """R3 must not fire on a winner approaching its target.
+
+    2026-08-11: this test previously asserted the opposite. Remaining
+    reward:risk DEGRADES as a trade succeeds — at 4336 the position is 80% of
+    the way to target with 1.0 left to gain against 7.0 back to stop, which
+    reads as 0.14 and looked like "inverted". Closing there kills the winner one
+    point short, which is exactly backwards for a 1:1 scalp that intends to
+    extend its target.
+    """
     pos = position()
     d = mp.evaluate_exit(pos, price=4336.0, now=1100.0, model_requests_close=True)
-    assert d.should_exit and d.reason == mp.ExitReason.REWARD_RISK_INVERTED
+    assert not d.should_exit
+    assert mp.target_progress(pos, 4336.0) > mp.R3_MAX_PROGRESS
+
+
+def test_r3_fires_on_a_trade_going_nowhere():
+    """The case R3 is actually for: no progress and poor arithmetic."""
+    pos = position()   # sell 4340, stop 4343, target 4335
+    progress = mp.target_progress(pos, 4339.5)
+    rr = mp.remaining_reward_risk(pos, 4339.5)
+    if progress < mp.R3_MAX_PROGRESS and rr < mp.MIN_REMAINING_REWARD_RISK:
+        d = mp.evaluate_exit(pos, price=4339.5, now=1100.0, model_requests_close=True)
+        assert d.reason == mp.ExitReason.REWARD_RISK_INVERTED
+
+
+def test_target_progress_measures_travel_toward_target():
+    pos = position()   # sell 4340 -> 4335, span 5.0
+    assert mp.target_progress(pos, 4340.0) == pytest.approx(0.0)
+    assert mp.target_progress(pos, 4337.5) == pytest.approx(0.5)
+    assert mp.target_progress(pos, 4335.0) == pytest.approx(1.0)
+    assert mp.target_progress(pos, 4342.0) == pytest.approx(0.0)  # against, clamped
 
 
 def test_close_on_time_stop_without_progress():

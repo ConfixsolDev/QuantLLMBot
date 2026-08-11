@@ -1386,6 +1386,69 @@ def build_branch_view(state: dict) -> dict | None:
     return plan_branches.build_day_view(bull, bear).as_dict()
 
 
+def refresh_idea_states(state: dict, live_price: float | None) -> dict | None:
+    """Re-evaluate the H4/H1/M15 idea statuses against the live price.
+
+    2026-08-11: apply_layer_validation() only runs on the HOURLY tick, so a
+    stale "invalidated" persisted for up to an hour while the branch panel --
+    which recomputes every snapshot -- already showed TARGET REACHED. The screen
+    contradicted itself: Day Plan said the bullish branch had reached its final
+    target while the Trade Idea Stack, the chart ribbon and the hour card all
+    showed H4/H1/M15 INVALIDATED.
+
+    Same rule as apply_layer_validation: an idea is invalidated only when price
+    has CLOSED through that idea's own invalidation level, and an idea killed by
+    a forecast miss that price never backed is restored.
+    """
+    stack = state.get("trade_idea_stack")
+    if not isinstance(stack, dict) or live_price is None:
+        return stack
+    try:
+        price = float(live_price)
+    except (TypeError, ValueError):
+        return stack
+
+    updated = dict(stack)
+    h4_side = str((updated.get("h4") or {}).get("side") or "").lower()
+    for key in ("h4", "h1", "m15"):
+        idea = updated.get(key)
+        if not isinstance(idea, dict):
+            continue
+        idea = dict(idea)
+        level = idea.get("invalidation")
+        side = str(idea.get("side") or h4_side).lower()
+        try:
+            level = float(level)
+        except (TypeError, ValueError):
+            level = 0.0
+        if not level or side not in ("buy", "sell"):
+            updated[key] = idea
+            continue
+        direction = 1.0 if side == "buy" else -1.0
+        through = direction * (price - level) < 0
+        if through:
+            idea["status"] = "invalidated"
+            idea["invalidation_reason"] = (
+                f"price {price:.3f} is through invalidation {level:.3f}"
+            )
+        elif idea.get("status") == "invalidated":
+            idea["status"] = "active"
+            idea["invalidation_reason"] = (
+                f"restored: price {price:.3f} never closed through {level:.3f}"
+            )
+        updated[key] = idea
+
+    lv = dict(updated.get("layer_validation") or {})
+    for layer_key in ("h4", "h1", "m15"):
+        idea = updated.get(layer_key)
+        if isinstance(idea, dict) and idea.get("status") == "invalidated":
+            lv[layer_key] = "invalidated"
+        elif lv.get(layer_key) == "invalidated":
+            lv[layer_key] = "on_track"
+    updated["layer_validation"] = lv
+    return updated
+
+
 def save_planner_state(state: dict) -> None:
     state["updated_at_utc"] = iso_utc(utc_now())
     try:

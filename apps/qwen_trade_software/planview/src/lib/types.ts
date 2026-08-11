@@ -210,12 +210,60 @@ export interface DayBranches {
   version: string;
 }
 
+/**
+ * Why the system is or is not trading. The plan panels show intent; this shows
+ * what happened when intent tried to become a trade.
+ *
+ * 2026-08-11: 547 proposals produced 9 ready, 9 attempted, 2 filled — and the
+ * only way to see that was reading paper-runner.log by hand.
+ */
+export interface FunnelStage {
+  name: string;
+  count: number;
+  detail: string;
+}
+
+export interface FunnelBlocker {
+  stage: string;
+  code: string;
+  label: string;
+  count: number;
+}
+
+export interface ExecutionFunnel {
+  stages: FunnelStage[];
+  blockers: FunnelBlocker[];
+  headline: string;
+  net_pnl: number | null;
+  closed_trades: number;
+  wins: number;
+  version: string;
+}
+
+export interface TimeframePair {
+  timeframe: string;
+  role: string;
+  bull: PlanBranch;
+  bear: PlanBranch;
+  side: "buy" | "sell" | null;
+  note: string;
+}
+
+export interface TimeframeLadder {
+  pairs: TimeframePair[];
+  headline: string;
+  aligned: boolean;
+  version: string;
+}
+
 export interface PlannerState {
   updated_at_utc: string;
   symbol: string;
   clock: Clock;
   day_plan: DayPlan | null;
   day_branches?: DayBranches | null;
+  execution_funnel?: ExecutionFunnel | null;
+  timeframe_ladder?: TimeframeLadder | null;
   session_plan: SessionPlan | null;
   hourly_updates: HourlyUpdate[];
   session_verdicts: SessionVerdict[];

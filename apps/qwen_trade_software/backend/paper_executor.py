@@ -36,24 +36,24 @@ INITIAL_TAKE_PROFIT_DISTANCE = 5.0
 # the distance. Set QWEN_STRUCTURAL_BRACKET=0 to fall back to the flat $3/$5.
 STRUCTURAL_BRACKET_ENABLED = os.environ.get("QWEN_STRUCTURAL_BRACKET", "1") != "0"
 
-# Geometry verdicts that mean "this is a bad trade", not "I lack information".
-# These refuse the entry rather than degrading to the flat bracket.
+# Geometry verdicts that *can* refuse entry rather than degrading to $3/$5.
 #
-# MEASURED CONSEQUENCE (2026-08-10, 29 closed trades replayed): geometry rejects
-# roughly half of current setups, 14 of 15 for reward:risk. That is the honest
-# reading of the book -- once risk is priced at the real invalidation instead of
-# a flat $3, most of these locations are not worth taking. Skipping them moved
-# realised P&L from -549.20 to -384.95.
-#
-# Note that is a filter result, not a projection: the surviving trades were
-# executed under the OLD bracket, so their outcomes would differ under this one.
-SKIP_ON_GEOMETRY_REJECTION = frozenset({
+# 2026-08-11: default OFF for a two-day observation window. Level-distance /
+# reward:risk rejects were skipping most ready ideas (HTF min TP, R:R < 1.2,
+# wrong-side target). We need live fills to learn what to block; set
+# QWEN_SKIP_ON_GEOMETRY=1 to restore the hard skip list.
+_GEOMETRY_SKIP_CANDIDATES = frozenset({
     trade_geometry.GeometryReason.REWARD_RISK_TOO_LOW,
     trade_geometry.GeometryReason.STOP_TOO_WIDE,
     trade_geometry.GeometryReason.INVALIDATION_WRONG_SIDE,
     trade_geometry.GeometryReason.TARGET_WRONG_SIDE,
     trade_geometry.GeometryReason.SIZE_BELOW_MINIMUM,
 })
+SKIP_ON_GEOMETRY_REJECTION = (
+    _GEOMETRY_SKIP_CANDIDATES
+    if os.environ.get("QWEN_SKIP_ON_GEOMETRY", "0") == "1"
+    else frozenset()
+)
 
 
 class GeometryRejection(RuntimeError):
@@ -442,20 +442,14 @@ def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[flo
         allow_fallback=False,
     )
     if not bracket.ok:
-        # Distinguish "cannot compute" from "computed, and this is a bad trade".
-        #
-        # Falling back to the flat $3 after a reward:risk rejection would
-        # reinstate exactly the problem this change exists to fix: a tight stop
-        # manufactures attractive-looking reward:risk by pretending the risk is
-        # small, when the level that actually invalidates the idea is far away.
-        # The trade then gets taken with no room and dies to noise.
-        #
-        # So: missing structure -> legacy bracket (never leave a fill
-        # unprotected). Active rejection -> refuse the entry.
+        # 2026-08-11 observation window: do not refuse on level/R:R geometry.
+        # Log the structural verdict, then place with the fixed $3/$5 bracket
+        # so ready ideas still execute. Re-enable hard skips with
+        # QWEN_SKIP_ON_GEOMETRY=1 after we have enough live evidence.
         if bracket.reason_code in SKIP_ON_GEOMETRY_REJECTION:
             raise GeometryRejection(bracket.reason_code, bracket.detail)
         logging.info(
-            "structural bracket unavailable (%s: %s); using fixed %s/%s",
+            "structural bracket unavailable (%s: %s); using fixed %s/%s (level geometry does not block entry)",
             bracket.reason_code,
             bracket.detail,
             INITIAL_STOP_DISTANCE,

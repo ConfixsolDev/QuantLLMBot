@@ -18,6 +18,7 @@ import type {
   TradeIdea,
   TradeIdeaStack,
 } from "@/lib/types";
+import { SessionRibbon } from "@/components/SessionRibbon";
 
 const STATUS_COLORS: Record<string, string> = {
   on_track: "#22c55e",
@@ -304,26 +305,19 @@ export function PlanChart({
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2 text-xs">
-        {hourlyUpdates.map((update) => (
-          <button
-            key={update.hourly_id}
-            type="button"
-            onClick={() => onSelectHour(update.hourly_id)}
-            className={`rounded px-2 py-1 ${
-              selectedHourlyId === update.hourly_id
-                ? "ring-1 ring-gold"
-                : "opacity-80 hover:opacity-100"
-            }`}
-            style={{
-              backgroundColor: `${STATUS_COLORS[update.plan_status]}33`,
-              color: STATUS_COLORS[update.plan_status],
-            }}
-          >
-            H{update.clock.utc_hour}
-          </button>
-        ))}
-      </div>
+      {/*
+        Today's session ribbon.
+        Was: every hour ever recorded, labelled H0..H23, coloured by plan
+        status — so it ran across several days, repeated hour numbers, and told
+        you nothing about how the day was going.
+        Now: today only, labelled by session (A=Asia, L=London, O=Overlap,
+        N=New York), coloured bull/bear by that hour's own candle.
+      */}
+      <SessionRibbon
+        hourlyUpdates={hourlyUpdates}
+        selectedHourlyId={selectedHourlyId}
+        onSelectHour={onSelectHour}
+      />
 
       <div className="relative min-w-0 w-full">
         {onOpenCheat ? (

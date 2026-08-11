@@ -117,10 +117,15 @@ def test_executor_places_stop_beyond_the_invalidation(mt5_fake):
     assert sl > 4344.279, "stop must sit beyond the structural invalidation"
 
 
-def test_executor_refuses_entry_when_reward_risk_is_poor(mt5_fake):
-    """Must NOT silently fall back to the flat $3 it just rejected."""
+def test_executor_refuses_entry_when_reward_risk_is_poor(mt5_fake, monkeypatch):
+    """Hard skip only when QWEN_SKIP_ON_GEOMETRY is enabled."""
     import paper_executor as pe
 
+    monkeypatch.setattr(
+        pe,
+        "SKIP_ON_GEOMETRY_REJECTION",
+        pe._GEOMETRY_SKIP_CANDIDATES,
+    )
     args = Namespace(
         side="sell", management_reference_sl=4344.279, management_reference_tp=4324.0,
         structure_timeframe="M30", stop_level_id="H1", target_level_id="M30",
@@ -128,6 +133,21 @@ def test_executor_refuses_entry_when_reward_risk_is_poor(mt5_fake):
     with pytest.raises(pe.GeometryRejection) as excinfo:
         pe.broker_bracket_from_plan(args, 4332.822, 3)
     assert excinfo.value.reason_code == "geometry:reward_risk_too_low"
+
+
+def test_executor_falls_back_on_poor_rr_when_skip_disabled(mt5_fake, monkeypatch):
+    """Observation window: poor R:R uses fixed $3/$5 instead of refusing."""
+    import paper_executor as pe
+
+    monkeypatch.setattr(pe, "SKIP_ON_GEOMETRY_REJECTION", frozenset())
+    args = Namespace(
+        side="sell", management_reference_sl=4344.279, management_reference_tp=4324.0,
+        structure_timeframe="M30", stop_level_id="H1", target_level_id="M30",
+    )
+    sl, tp, source = pe.broker_bracket_from_plan(args, 4332.822, 3)
+    assert source.startswith("fixed_3_5_after_")
+    assert sl == pytest.approx(4332.822 + pe.INITIAL_STOP_DISTANCE)
+    assert tp == pytest.approx(4332.822 - pe.INITIAL_TAKE_PROFIT_DISTANCE)
 
 
 def test_executor_falls_back_when_structure_is_missing(mt5_fake):

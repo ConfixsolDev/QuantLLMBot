@@ -31,6 +31,7 @@ historical proposals.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, asdict, field
 from typing import Mapping, Sequence
 
@@ -103,8 +104,28 @@ def min_target_for(frame: str | None) -> float:
     """Frame's minimum target distance per CURRICULUM_AND_DATA_PREP.md 1.1."""
     return TF_MIN_TARGET.get((frame or "").upper(), DEFAULT_MIN_TARGET)
 
-# A trade must clear this reward:risk after costs or it is not worth taking.
-MIN_REWARD_RISK = 1.20
+# Minimum reward:risk, measured AFTER round-trip cost.
+#
+# 2026-08-11: lowered 1.20 -> 0.90 on operator direction. The rationale is the
+# scalp construction: take the high-probability roughly-1:1 entry, then extend
+# the target during management when the move runs, rather than demanding the
+# whole move be visible up front.
+#
+# The 1.20 floor was refusing the curriculum's own dominant pattern. Of 343 open
+# examples, 231 (67%) sat below it, and the single most common setup -- SL 5.0 /
+# TP 5.0, 197 rows -- is 0.93 after costs. The model was producing exactly what
+# it had been taught and the runtime refused it. Note the floor is applied after
+# ROUND_TRIP_COST, so a raw 1.00 setup measures 0.93; a 1.00 floor would still
+# have refused it. 0.90 is the value that actually admits a 1:1 scalp.
+#
+# WHAT THIS DEPENDS ON: at ~1:1 the trade needs a win rate above 50% to pay, and
+# the measured rate so far is 27-33%. The strategy only works if management
+# extends the target on the runners -- see management_policy.TARGET_POLICY,
+# which permits it. Worth watching per-configuration expectancy in
+# configuration_ledger.py rather than assuming the extension happens.
+#
+# QWEN_MIN_REWARD_RISK overrides without a code edit.
+MIN_REWARD_RISK = float(os.environ.get("QWEN_MIN_REWARD_RISK", "0.90"))
 
 # Typical round-trip cost in price units, used when checking reward:risk.
 ROUND_TRIP_COST = 0.35

@@ -515,6 +515,36 @@ def propose_target(
     )
 
 
+# R3 only applies to a trade that has not progressed.
+#
+# 2026-08-11, and worth stating plainly: R3 as formulated is close to inert, by
+# design rather than by accident. Remaining reward:risk DEGRADES as a trade
+# succeeds (near the target there is little left to win and the stop is far) and
+# IMPROVES as it fails (near the stop there is a lot left to win and little left
+# to lose). Applied naively it therefore closes winners and holds losers --
+# precisely backwards.
+#
+# On a 1:1 scalp with a 0.90 entry floor it fired at 20-40% progress, killing
+# trades that were working. Requiring low progress as well means R3 now only
+# fires on a trade that is both going nowhere AND badly priced, which is rare.
+#
+# That is the honest outcome: R1 (invalidation), R2 (always-in flip) and R4
+# (time stop) do the real work. R3 is kept because Brooks' equation is sound
+# reasoning for a human deciding whether to keep capital committed, but as a
+# mechanical trigger it needs this guard or it inverts.
+R3_MAX_PROGRESS = 0.30
+
+
+def target_progress(position: Position, price: float) -> float:
+    """How far the trade has travelled from entry toward its target, 0.0-1.0."""
+    direction = 1.0 if position.side == "buy" else -1.0
+    span = direction * (position.take_profit - position.entry_price)
+    if span <= 0:
+        return 0.0
+    travelled = direction * (price - position.entry_price)
+    return max(0.0, min(1.0, travelled / span))
+
+
 def remaining_reward_risk(position: Position, price: float) -> float:
     """Reward:risk still on the table from the current mark (R3).
 
@@ -552,10 +582,23 @@ def classify_close_request(
         return (ExitReason.ALWAYS_IN_FLIP,
                 "opposite entry would now be taken with confidence at a named level")
 
+    # R3 -- but only when the trade has NOT made progress.
+    #
+    # 2026-08-11: on a ~1:1 scalp the remaining reward:risk always looks awful
+    # near the target -- 1 point left to gain against 8.5 back to the stop reads
+    # as 0.12 -- so a naive R3 closes winners one point short. That is the exact
+    # opposite of the intended construction, which is to take the 1:1 entry and
+    # EXTEND the target while the move runs.
+    #
+    # Brooks' equation is about an idea that is no longer worth holding, not one
+    # that is nearly paid. So R3 requires poor arithmetic AND little progress:
+    # if price has covered most of the distance to target, hold or extend.
+    progress = target_progress(position, price)
     reward_risk = remaining_reward_risk(position, price)
-    if reward_risk < MIN_REMAINING_REWARD_RISK:
+    if reward_risk < MIN_REMAINING_REWARD_RISK and progress < R3_MAX_PROGRESS:
         return (ExitReason.REWARD_RISK_INVERTED,
-                f"remaining reward:risk {reward_risk:.2f} below {MIN_REMAINING_REWARD_RISK}")
+                f"remaining reward:risk {reward_risk:.2f} below "
+                f"{MIN_REMAINING_REWARD_RISK} with only {progress:.0%} progress")
 
     limit = TIME_STOP_SECONDS.get(position.frame or "", DEFAULT_TIME_STOP_SECONDS)
     held = now - position.opened_at

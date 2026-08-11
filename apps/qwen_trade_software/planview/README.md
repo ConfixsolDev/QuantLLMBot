@@ -39,6 +39,13 @@ Serves the built `out/` folder at http://127.0.0.1:8088/ and http://127.0.0.1/
 - Day plan panel (both scenarios + validator verdict)
 - On-chart Cheat sheet
 
+## Pages
+
+| Path | Purpose |
+|------|---------|
+| `/` | Chart, day branches, funnel, cheat sheet |
+| `/ideas/` | Trade ideas with confidence &gt; 50%, stop/target distances, R:R, geometry skips |
+
 ## API endpoints (reviewer.py)
 
 | Endpoint | Description |
@@ -47,3 +54,4 @@ Serves the built `out/` folder at http://127.0.0.1:8088/ and http://127.0.0.1/
 | `GET /candles?tf=M15&count=200` | OHLC from cache SQLite |
 | `GET /plan/history?date=YYYY-MM-DD` | Replay tick-data JSONL for a day |
 | `GET /snapshot` | Merged entry + management dashboard |
+| `GET /trade-ideas?min_confidence=50` | High-confidence ideas + geometry / R:R outcome |

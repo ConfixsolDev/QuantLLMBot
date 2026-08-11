@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { Clock, RuntimeStatus } from "@/lib/types";
 import { SESSION_LABELS } from "@/lib/types";
@@ -78,7 +79,7 @@ export function HeaderClock({
         <p className="text-sm text-slate-400">
           Session-hierarchy planner · hourly validation
         </p>
-        <div className="mt-2 flex flex-wrap gap-2">
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <StatusPill
             ok={modelOk && device === "GPU" ? true : modelOk && device !== "unloaded" ? true : modelOk}
             label="Model"
@@ -94,6 +95,12 @@ export function HeaderClock({
             label="Planner"
             detail={plannerStatus}
           />
+          <Link
+            href="/ideas/"
+            className="rounded bg-gold px-2.5 py-1 text-xs font-semibold text-ink hover:brightness-110"
+          >
+            Trade ideas &gt;50%
+          </Link>
         </div>
       </div>
       <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm md:grid-cols-4">
