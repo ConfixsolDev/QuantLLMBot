@@ -619,3 +619,28 @@ def test_ranking_puts_best_expectancy_first():
     ledger.record(trade(frame="H4", pnl=-100.0))
     ledger.record(trade(frame="M30", pnl=100.0))
     assert ledger.ranked()[0].key.startswith("M30")
+
+
+def test_rebracket_not_needed_is_not_an_overdue_alarm():
+    """A bracket already at or beyond structure needs no rescue.
+
+    2026-08-11 live: ticket 2137002162 logged ERROR 'still on its entry bracket
+    73s after fill (no structural stop or target supplied)' every cycle until it
+    closed -- while its bracket was correct. The guard that withdraws a level
+    when the live stop already has more room passes None, which is
+    indistinguishable at the policy boundary from 'no structure existed'.
+    Success and failure must not share a log line.
+    """
+    import trade_management as tm
+    import inspect
+
+    source = inspect.getsource(tm.apply_initial_rebracket) if hasattr(
+        tm, "apply_initial_rebracket"
+    ) else inspect.getsource(tm)
+    assert "bracket_already_adequate" in source, (
+        "the withdrawal reason must be tracked, not inferred from None"
+    )
+    # The alarm must be reachable only when the bracket was NOT already fine.
+    assert source.index("if bracket_already_adequate") < source.index(
+        "elif management_policy.rebracket_overdue"
+    ), "the adequate case must short-circuit before the overdue alarm"

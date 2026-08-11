@@ -293,3 +293,115 @@ def test_every_wait_carries_a_reason_code():
     for decision in cases:
         assert decision.status == "wait"
         assert decision.reason_code and decision.reason_code != ep.ReasonCode.OK
+
+
+# --- low confidence is not a contract regression ----------------------------
+
+def test_sub_threshold_confidence_is_not_reported_as_a_regression():
+    """2026-08-11: 394 ERROR lines in one day, 38 of them at confidence 30-48.
+
+    The model is trained for high-conviction entries. Scoring a setup at 46 and
+    declining to trade it is the system working, not the contract breaking.
+    Filing it as 'suspect entry-contract regression' buries the alarm that
+    exists to catch the real thing.
+    """
+    for confidence in (30, 38, 46, 48, 50):
+        review = {"confidence": confidence, "bias": "buy",
+                  "execution_plan": {"status": "ready", "reason": "confirmed"}}
+        code = ep.check_legacy_contradiction(review)
+        assert code == ep.ReasonCode.READY_BELOW_CONFIDENCE_THRESHOLD, confidence
+        assert not ep.is_contract_regression(code, confidence), (
+            f"confidence {confidence} must not be alarmed -- it cannot trade"
+        )
+
+
+def test_zero_confidence_is_still_a_regression():
+    """The v1.9 signature -- ready, a bias, and a score of nothing."""
+    review = {"confidence": 0, "bias": "buy",
+              "execution_plan": {"status": "ready", "reason": "confirmed"}}
+    code = ep.check_legacy_contradiction(review)
+    assert code == ep.ReasonCode.INVARIANT_READY_ZERO_CONFIDENCE
+    # Confidence 0 cannot reach the broker, so it is logged, not alarmed.
+    assert not ep.is_contract_regression(code, 0)
+
+
+def test_both_cases_still_refuse_to_trade():
+    """Severity changed; behaviour did not. Nothing trades below threshold."""
+    for confidence in (0, 46):
+        review = {"confidence": confidence, "bias": "buy",
+                  "execution_plan": {"status": "ready", "reason": "confirmed"}}
+        assert ep.check_legacy_contradiction(review) is not None
+
+
+def test_threshold_confidence_passes_clean():
+    review = {"confidence": ep.MIN_ENTRY_CONFIDENCE, "bias": "buy",
+              "execution_plan": {"status": "ready", "reason": "confirmed"}}
+    assert ep.check_legacy_contradiction(review) is None
+
+
+# --- ready that contradicts its own reason ----------------------------------
+
+def test_ready_with_a_reason_that_says_not_triggered_is_blocked():
+    """2026-08-11, live: confidence 62 (over the 51 gate) on a plan whose own
+    reason read 'Awaiting confirmation'. Confidence and status are separate
+    claims; a high score on something that has not happened is not an entry.
+
+    Replay of the day found 14 such proposals at tradeable confidence."""
+    for reason in (
+        "Awaiting confirmation",
+        "entry_trigger_missing",
+        "entry_signal_missing",
+        "missing_evidence",
+        "entry_condition_not_met",
+        "no closed response at H4_PREVIOUS_LOW",
+    ):
+        review = {"confidence": 62, "bias": "buy",
+                  "execution_plan": {"status": "ready", "reason": reason}}
+        assert ep.check_ready_reason_contradiction(review) == (
+            ep.ReasonCode.READY_CONTRADICTS_OWN_REASON
+        ), reason
+        assert ep.is_contract_regression(
+            ep.ReasonCode.READY_CONTRADICTS_OWN_REASON, 62
+        ), "at tradeable confidence this one can reach the broker -- alarm"
+
+
+def test_a_genuinely_triggered_setup_is_not_blocked():
+    """Refusing a valid trade is a real cost. 'entry_condition_met' contains
+    'met' but not 'not_met' -- the marker list must not fire on it."""
+    for reason in ("entry_condition_met", "entry_rule_match", "entry_trigger",
+                   "no_conflict", "opposite side of printed extreme", ""):
+        review = {"confidence": 62, "bias": "buy",
+                  "execution_plan": {"status": "ready", "reason": reason}}
+        assert ep.check_ready_reason_contradiction(review) is None, reason
+
+
+def test_free_prose_summary_is_not_matched():
+    """Matching the narration blocked 28 entries in one day's replay, 7 of them
+    reason='entry_condition_met'. Only the structured reason is checked."""
+    review = {
+        "confidence": 62, "bias": "buy",
+        "summary": "Buying the retest; we were awaiting this all session.",
+        "execution_plan": {"status": "ready", "reason": "entry_condition_met"},
+    }
+    assert ep.check_ready_reason_contradiction(review) is None
+
+
+def test_wait_status_is_left_alone():
+    review = {"confidence": 20, "bias": "buy",
+              "execution_plan": {"status": "wait", "reason": "missing_evidence"}}
+    assert ep.check_ready_reason_contradiction(review) is None
+
+
+def test_alarm_severity_follows_what_was_at_stake():
+    """Alarm when the guard stopped a trade; log when nothing could have traded.
+
+    399 ERROR lines in one day, 358 of them incapable of causing a trade, is
+    how the 14 that could have gets missed.
+    """
+    code = ep.ReasonCode.READY_CONTRADICTS_OWN_REASON
+    assert ep.is_contract_regression(code, ep.MIN_ENTRY_CONFIDENCE)
+    assert ep.is_contract_regression(code, 95)
+    assert not ep.is_contract_regression(code, ep.MIN_ENTRY_CONFIDENCE - 1)
+    assert not ep.is_contract_regression(code, 0)
+    assert not ep.is_contract_regression(None, 95)
+    assert not ep.is_contract_regression("entry:provenance_failed", 95)

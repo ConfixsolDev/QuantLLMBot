@@ -39,6 +39,8 @@ REASON_LABEL = {
     "geometry:invalidation_wrong_side": "Invalidation on the wrong side of entry",
     "geometry:size_below_minimum": "Position size below the broker minimum",
     "invariant:ready_with_zero_confidence": "Model said ready but scored 0",
+    "entry:ready_below_threshold": "Confidence below the entry threshold",
+    "invariant:ready_contradicts_own_reason": "Ready, but its own reason says no trigger",
     "entry:provenance_failed": "Cache provenance check failed",
 }
 

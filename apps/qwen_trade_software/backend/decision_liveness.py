@@ -116,7 +116,18 @@ class DecisionLivenessMonitor:
         if event.latency_seconds is not None:
             self._latencies.append(float(event.latency_seconds))
 
-        if event.confidence <= 0:
+        # Only count decisions the model was actually asked to make.
+        #
+        # 2026-08-11: this alarm fired CRITICAL ("suspect a contract regression
+        # -- consider rollback") at 12:17 during pre_london, with every event
+        # reading failures=["entry:off_session"]. Outside a tradeable session
+        # the reviewer emits wait proposals at confidence 0 without consulting
+        # the model at all, so the streak was measuring the clock, not the
+        # contract. An alarm that fires every night is one you learn to scroll
+        # past -- and this is the alarm that caught the real v1.9 regression.
+        if not event.trade_permitted:
+            pass
+        elif event.confidence <= 0:
             self._zero_streak += 1
         else:
             self._zero_streak = 0

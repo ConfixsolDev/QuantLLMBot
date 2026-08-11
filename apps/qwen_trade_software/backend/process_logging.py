@@ -26,10 +26,18 @@ is what you want when you are reading one process's story top to bottom.
 from __future__ import annotations
 
 import logging
+import os
 import logging.handlers
 from pathlib import Path
 
 FORMAT = "%(asctime)s %(levelname)s %(message)s"
+
+# Set by the test conftest. Importing an entrypoint runs configure() at module
+# scope with force=True, which reinstalls the real file handler and defeats any
+# handler swap a fixture has already done -- that is how test fixtures wrote
+# "ticket 99 ... 1786431741s after fill" into the live trade-management.log.
+# The block has to live here, at the point the handler is built.
+DISABLE_ENV = "QWEN_DISABLE_FILE_LOGGING"
 
 # Which module currently owns the root logger. Exposed for tests and for
 # diagnosing "why is this line in that file" without guessing at import order.
@@ -44,6 +52,12 @@ def configure(log_path: Path, owner: str, level: int = logging.INFO) -> logging.
     order. Call it from the module that owns the process.
     """
     global OWNER
+
+    if os.environ.get(DISABLE_ENV) == "1":
+        handler: logging.Handler = logging.NullHandler()
+        logging.basicConfig(level=level, handlers=[handler], force=True)
+        OWNER = owner
+        return handler
 
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)

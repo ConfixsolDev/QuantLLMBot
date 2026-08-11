@@ -11,6 +11,7 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 
+import build_manifest
 import process_logging
 import paper_executor
 from market_context_cache import latest_entry_context
@@ -31,6 +32,8 @@ BROKER_TRUTH_REFRESH_SECONDS = 2.0
 _BROKER_COUNT_CACHE = {"checked": 0.0, "count": 0}
 
 _LOG_HANDLER = process_logging.configure(LOG_FILE, owner="paper_runner")
+# Announce the build and alarm if it has drifted from the declared freeze.
+build_manifest.log_identity("paper_runner")
 
 
 def _dated_log_path(base_name: str) -> Path:

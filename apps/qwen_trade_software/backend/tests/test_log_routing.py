@@ -44,7 +44,18 @@ def restore_root_logger():
     root.setLevel(saved[1])
 
 
-def test_configure_overrides_a_handler_installed_by_an_imported_module(tmp_path):
+@pytest.fixture
+def real_file_logging(monkeypatch):
+    """Lift the conftest block for the two tests that must write real files.
+
+    The block exists so the suite cannot write into the live logs. These tests
+    verify the file handler itself, and are pointed at tmp_path, so they are
+    the one place it has to come off.
+    """
+    monkeypatch.delenv(process_logging.DISABLE_ENV, raising=False)
+
+
+def test_configure_overrides_a_handler_installed_by_an_imported_module(tmp_path, real_file_logging):
     """The exact bug: an earlier module claims root, the entrypoint must win."""
     already_claimed = tmp_path / "imported-module.log"
     logging.basicConfig(
@@ -67,7 +78,7 @@ def test_configure_overrides_a_handler_installed_by_an_imported_module(tmp_path)
     assert process_logging.OWNER == "entrypoint"
 
 
-def test_configure_creates_the_log_directory(tmp_path):
+def test_configure_creates_the_log_directory(tmp_path, real_file_logging):
     target = tmp_path / "missing" / "deep" / "out.log"
     process_logging.configure(target, owner="whoever")
     logging.getLogger().info("hello")

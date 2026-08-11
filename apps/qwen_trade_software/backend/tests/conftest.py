@@ -17,11 +17,18 @@ from __future__ import annotations
 
 import os
 import sys
+import logging
 import types
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Set BEFORE any entrypoint is imported. trade_management and friends call
+# process_logging.configure() at module scope with force=True, so a fixture
+# that swaps handlers is too late -- the import reinstalls the real file
+# handler and the test's log lines land in the live log.
+os.environ["QWEN_DISABLE_FILE_LOGGING"] = "1"
 
 
 # --- make the Windows-only modules importable off Windows -------------------
@@ -53,6 +60,39 @@ if "MetaTrader5" not in sys.modules:
                 return lambda *a, **k: None
 
         sys.modules["MetaTrader5"] = _StubMT5("MetaTrader5")
+
+
+@pytest.fixture(autouse=True)
+def never_write_to_the_live_log_files():
+    """Keep test logging out of the real log files.
+
+    2026-08-11: importing trade_management installs a rotating handler on the
+    ROOT logger pointed at logs/trade-management.log. So running the suite
+    wrote lines like
+
+        ERROR ALARM adjust:initial_rebracket_overdue :: ticket 99 still on
+        its entry bracket 1786431741s after fill
+
+    straight into the live log, with fixture ticket numbers and a duration of
+    fifty-six years. Same fault as the synthetic geometry_observation row: a
+    test inventing evidence in a file used to diagnose real trading.
+
+    Root handlers are swapped for a null handler and restored afterwards, so a
+    test that asserts on logging still works via caplog.
+    """
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    for handler in saved_handlers:
+        root.removeHandler(handler)
+    root.addHandler(logging.NullHandler())
+    try:
+        yield
+    finally:
+        for handler in root.handlers[:]:
+            root.removeHandler(handler)
+        for handler in saved_handlers:
+            root.addHandler(handler)
+        root.setLevel(saved_level)
 
 
 @pytest.fixture(autouse=True)

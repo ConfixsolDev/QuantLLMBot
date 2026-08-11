@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 
 import MetaTrader5 as mt5
 
+import build_manifest
 import process_logging
 import management_policy
 import trade_geometry
@@ -96,6 +97,8 @@ PAPER_EXECUTION_TAIL_STATE = {"path": None, "offset": 0}
 _LOG_HANDLER = process_logging.configure(
     LOG_DIR / "trade-management.log", owner="trade_management"
 )
+# Announce the build and alarm if it has drifted from the declared freeze.
+build_manifest.log_identity("trade_management")
 
 
 def _model_status_label(model: str = MODEL) -> str:
@@ -611,8 +614,14 @@ def active_entry_context(position) -> dict | None:
 
 
 def refresh_execution_monitor_cache() -> None:
-    """Incrementally recover each active execution's exact peak/giveback path."""
-    path = _dated_log_path("paper-executions")
+    """Incrementally recover each active execution's exact peak/giveback path.
+
+    Reads paper-path, not paper-executions: the per-tick monitor rows were split
+    out on 2026-08-11 because they were 96.7% of the execution log. This tail is
+    their only consumer, and it now reads a file containing nothing else, so it
+    parses one line per tick instead of skipping thirty.
+    """
+    path = _dated_log_path("paper-path")
     if PAPER_EXECUTION_TAIL_STATE["path"] != path:
         # Local midnight rolled over to a new (initially empty) file. Start
         # a fresh tail on it from offset 0; EXECUTION_MONITOR_BY_ID is left
@@ -833,16 +842,27 @@ def rebracket_if_needed(position, levels_by_symbol: dict) -> None:
     current_sl = float(position.sl or 0.0)
     current_tp = float(position.tp or 0.0)
     is_buy = position.type == mt5.POSITION_TYPE_BUY
+    # Track WHY a level was withdrawn. Withdrawn because the live bracket is
+    # already at least as good is a success; never offered at all is not. Both
+    # reach initial_rebracket() as None, and conflating them made a healthy
+    # trade log ERROR ... still on its entry bracket ... (no structural stop or
+    # target supplied) every 30s until it closed.
+    stop_already_adequate = False
+    target_already_adequate = False
     if stop_px is not None and current_sl:
         # Room = distance from entry to stop. Keep whichever is larger.
         if abs(float(position.price_open) - stop_px) <= abs(float(position.price_open) - current_sl):
             stop_px = None  # existing stop already has at least as much room
+            stop_already_adequate = True
     if target_px is not None and current_tp:
         # Never pull the target closer than the one the entry was built on.
         if is_buy and target_px <= current_tp:
             target_px = None
+            target_already_adequate = True
         if not is_buy and target_px >= current_tp:
             target_px = None
+            target_already_adequate = True
+    bracket_already_adequate = stop_already_adequate or target_already_adequate
     tracked = management_policy.Position(
         side="buy" if position.type == mt5.POSITION_TYPE_BUY else "sell",
         entry_price=float(position.price_open),
@@ -862,7 +882,15 @@ def rebracket_if_needed(position, levels_by_symbol: dict) -> None:
         target_level_id=target_id,
     )
     if not rebracket.applied:
-        if management_policy.rebracket_overdue(tracked, now):
+        if bracket_already_adequate:
+            # The entry bracket is at or beyond structure. There is nothing to
+            # rescue, which is the outcome this whole path wants.
+            logging.info(
+                "rebracket not needed ticket=%s: entry bracket already at or "
+                "beyond structure (sl=%.3f tp=%.3f)",
+                position.ticket, current_sl, current_tp,
+            )
+        elif management_policy.rebracket_overdue(tracked, now):
             logging.error(
                 "ALARM %s :: ticket %s still on its entry bracket %.0fs after fill (%s)",
                 management_policy.AdjustReason.REBRACKET_OVERDUE,
@@ -907,6 +935,63 @@ def rebracket_if_needed(position, levels_by_symbol: dict) -> None:
         )
 
 
+def reconcile_position_state(live_tickets: set[int]) -> None:
+    """Drop every cached belief about a position the broker no longer has.
+
+    2026-08-11 -- why this exists
+    -----------------------------
+    Four dictionaries here are keyed by ticket or execution id and were only
+    ever added to:
+
+        LAST_MANAGED_M1_BY_TICKET   ENTRY_CONTEXT_BY_TICKET
+        _REBRACKETED_TICKETS        EXECUTION_MONITOR_BY_ID
+
+    Nothing removed an entry when its position closed. In a long-running
+    process that is three separate problems. It leaks memory. It keeps an entry
+    thesis for a trade that ended hours ago. And -- the one that can actually
+    cost money -- MT5 reuses ticket numbers, so a stale `_REBRACKETED_TICKETS`
+    entry would make a NEW position look already re-bracketed and silently skip
+    the correction that moves its stop beyond structure.
+
+    That mattered on 2026-08-11: the executor died mid-trade and six positions
+    ended without the executor ever recording a close, so every cache here kept
+    state for trades that were long gone.
+
+    The rule is simple and worth stating plainly: MT5 is the truth. Anything
+    this process believes about an open position is a derived cache, and a
+    cache that disagrees with the broker is wrong by definition. Reconciling
+    every cycle -- not only when the position count reaches zero -- also covers
+    the partial case where one of two positions closes.
+    """
+    stale_tickets = (
+        set(LAST_MANAGED_M1_BY_TICKET) | set(ENTRY_CONTEXT_BY_TICKET)
+        | set(_REBRACKETED_TICKETS)
+    ) - live_tickets
+    if not stale_tickets and (live_tickets or not EXECUTION_MONITOR_BY_ID):
+        return
+
+    for ticket in stale_tickets:
+        LAST_MANAGED_M1_BY_TICKET.pop(ticket, None)
+        ENTRY_CONTEXT_BY_TICKET.pop(ticket, None)
+        _REBRACKETED_TICKETS.discard(ticket)
+
+    dropped_monitors = 0
+    if not live_tickets:
+        # Nothing is open, so nothing in the execution-monitor cache can refer
+        # to a live trade. Keyed by execution id rather than ticket, so this is
+        # the only point at which it can be cleared with certainty.
+        dropped_monitors = len(EXECUTION_MONITOR_BY_ID)
+        EXECUTION_MONITOR_BY_ID.clear()
+
+    if stale_tickets or dropped_monitors:
+        logging.info(
+            "position state reconciled against the broker: dropped %d closed "
+            "ticket(s) %s and %d execution monitor entr(ies); live=%s",
+            len(stale_tickets), sorted(stale_tickets) or "-",
+            dropped_monitors, sorted(live_tickets) or "none",
+        )
+
+
 def review_positions() -> None:
     cycle_started = time.monotonic()
     positions = mt5.positions_get()
@@ -928,6 +1013,10 @@ def review_positions() -> None:
     # Qwen's execution loop sees only positions it owns. Manual and other-EA
     # positions remain dashboard-visible but never enter this management path.
     positions = tuple(position for position in positions if is_qwen_owned(position))
+    # Broker truth first, before any decision is made from cached state. Runs
+    # on every cycle including the empty one, so a position that closed while
+    # this process was not looking cannot leave a belief behind.
+    reconcile_position_state({int(p.ticket) for p in positions})
     if not positions:
         logging.info("No Qwen-owned open positions; Qwen remains loaded")
         return
@@ -1069,6 +1158,7 @@ def review_positions() -> None:
             "entry_proposal_id": entry.get("proposal_id"),
             "guard_applied": bool(guard_review),
             "latest_completed_m1": latest_management_candle,
+            **build_manifest.stamp(),
             # Everything needed to score this decision later, captured at the
             # moment it was made. See management_decision_context().
             **management_decision_context(

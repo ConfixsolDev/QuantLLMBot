@@ -28,6 +28,12 @@ TICK_DATA_ROOT = APP_DIR.parents[2] / "model_training" / "tick_data"
 ARCHIVE_FILES: dict[str, str] = {
     "paper-proposals": "paper-proposals.jsonl",
     "paper-executions": "paper-executions.jsonl",
+    # Per-tick trade path, split out of paper-executions on 2026-08-11.
+    # Registering it here is not optional: append_tick_record writes the
+    # runtime log first and the archive second, so an unregistered base wrote
+    # the tick and then raised KeyError out of append_event -- which killed the
+    # executor mid-trade and left five positions open with no close record.
+    "paper-path": "paper-path.jsonl",
     "reviews": "reviews.jsonl",
     "qwen-decisions": "qwen-decisions.jsonl",
     "qwen-io": "qwen-io.jsonl",
@@ -63,14 +69,37 @@ def archive_log_path(base_name: str, day: date | None = None) -> Path:
 
 
 def append_tick_record(base_name: str, record: dict, *, day: date | None = None) -> None:
-    """Append one tick observation to today's runtime log and permanent archive."""
+    """Append one tick observation to today's runtime log and permanent archive.
+
+    2026-08-11 -- why the archive write cannot raise
+    ------------------------------------------------
+    A new log family ("paper-path") was added without registering it in
+    ARCHIVE_FILES. The runtime write above succeeded; the archive lookup then
+    raised KeyError, and because nothing caught it, the exception travelled up
+    through append_event into the executor's monitor loop and killed the run.
+
+    Five positions were opened and left with no close record, and the runner
+    then blocked every new proposal on a position it believed was still open.
+    A missing dictionary entry took the trading system down.
+
+    Recording a trade is not more important than managing one. The archive is a
+    convenience copy -- the runtime log already has the line -- so a failure
+    here is logged and swallowed. An unregistered base is a bug worth fixing,
+    but not worth a stranded position.
+    """
     line = json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n"
     day = _day(day)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     with runtime_log_path(base_name, day).open("a", encoding="utf-8") as stream:
         stream.write(line)
-    with archive_log_path(base_name, day).open("a", encoding="utf-8") as stream:
-        stream.write(line)
+    try:
+        with archive_log_path(base_name, day).open("a", encoding="utf-8") as stream:
+            stream.write(line)
+    except Exception:
+        logging.exception(
+            "tick archive write failed for base=%r; the runtime log still has "
+            "this record. Trading continues.", base_name,
+        )
 
 
 def append_qwen_decision(

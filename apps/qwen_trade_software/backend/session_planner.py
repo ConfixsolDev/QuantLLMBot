@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import plan_branches
+import build_manifest
 import process_logging
 from market_context_cache import (
     DEFAULT_DB,
@@ -74,6 +75,8 @@ LAYER_IDEA_STATUS = ("active", "revised", "invalidated")
 _LOG_HANDLER = process_logging.configure(
     LOG_DIR / "session-planner.log", owner="session_planner"
 )
+# Announce the build and alarm if it has drifted from the declared freeze.
+build_manifest.log_identity("session_planner")
 
 
 def utc_now() -> datetime:

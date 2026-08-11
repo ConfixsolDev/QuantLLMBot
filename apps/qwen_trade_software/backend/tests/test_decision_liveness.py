@@ -150,3 +150,47 @@ def test_format_alarm_is_greppable():
                      detail="something", observed_at=0.0)
     line = dl.format_alarm(alarm)
     assert line.startswith("ALARM CRITICAL liveness:test")
+
+
+
+def test_off_session_waits_do_not_trigger_the_regression_alarm():
+    """2026-08-11: fired CRITICAL at 12:17 during pre_london.
+
+    Outside a tradeable session the reviewer emits wait proposals at
+    confidence 0 without asking the model, so a streak of them measures the
+    clock, not the contract. This is the alarm that caught the real v1.9
+    regression -- it has to stay believable, or it gets scrolled past.
+    """
+    monitor = dl.DecisionLivenessMonitor()
+    alarms = []
+    for i in range(dl.ZERO_CONFIDENCE_STREAK_ALARM + 3):
+        alarms += monitor.record(
+            event(at=1000.0 + i, confidence=0, trade_permitted=False)
+        )
+    assert dl.AlarmCode.ZERO_CONFIDENCE_STREAK not in codes(alarms)
+
+
+def test_in_session_zero_confidence_still_alarms():
+    """The guard must keep working when the model IS being asked."""
+    monitor = dl.DecisionLivenessMonitor()
+    alarms = []
+    for i in range(dl.ZERO_CONFIDENCE_STREAK_ALARM):
+        alarms += monitor.record(
+            event(at=1000.0 + i, confidence=0, trade_permitted=True)
+        )
+    assert dl.AlarmCode.ZERO_CONFIDENCE_STREAK in codes(alarms)
+
+
+def test_a_permitted_zero_streak_survives_an_off_session_gap():
+    """Off-session events must not silently RESET a real in-session streak
+    either; they are simply not evidence about the contract."""
+    monitor = dl.DecisionLivenessMonitor()
+    alarms = []
+    for i in range(dl.ZERO_CONFIDENCE_STREAK_ALARM - 1):
+        alarms += monitor.record(
+            event(at=1000.0 + i, confidence=0, trade_permitted=True)
+        )
+    assert dl.AlarmCode.ZERO_CONFIDENCE_STREAK not in codes(alarms)
+    alarms += monitor.record(event(at=2000.0, confidence=0, trade_permitted=False))
+    alarms += monitor.record(event(at=2001.0, confidence=0, trade_permitted=True))
+    assert dl.AlarmCode.ZERO_CONFIDENCE_STREAK in codes(alarms)

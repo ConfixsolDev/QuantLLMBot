@@ -29,6 +29,7 @@ from decision_liveness import (
     DecisionLivenessMonitor,
     format_alarm,
 )
+import build_manifest
 import process_logging
 from market_context_cache import (
     latest_entry_context,
@@ -87,10 +88,13 @@ QWEN_DECISION_LOCK = threading.Lock()
 # with the market open, the cache ready and Qwen answering normally -- and
 # nothing alarmed.
 LIVENESS = DecisionLivenessMonitor()
-# Set QWEN_POLICY_V2=1 to route entry decisions through entry_policy.py, where
-# the model returns dual-side observations and the code owns the verdict.
-# Defaults off so this branch is a no-op for the running stack until enabled.
-QWEN_POLICY_V2 = os.environ.get("QWEN_POLICY_V2", "0") == "1"
+# NOTE (2026-08-11): there was a QWEN_POLICY_V2 flag here. It was defined and
+# never read, so setting it to 1 did nothing at all while appearing to promise a
+# behaviour change. entry_policy.py stays -- its guards and MIN_ENTRY_CONFIDENCE
+# are live -- but its dual-side decide() path is not wired, and a study of 71
+# closed trades found its two testable mechanisms either already delivered by the
+# existing funnel or inert on every trade on record. See
+# docs/research/dual_side_policy_study.md before reviving it.
 # Broker entry bracket is fixed; structure S/R is for the model zone + management.
 FIXED_STOP_DISTANCE = 3.0
 FIXED_TARGET_DISTANCE = 5.0
@@ -117,6 +121,9 @@ def _execution_outcome_index(days_back: int = 2) -> dict[str, dict]:
         "mt5_execution_skipped": 40,
         "mt5_fill": 30,
         "mt5_execution_started": 20,
+        # Monitor rows moved to paper-path on 2026-08-11 and no longer appear
+        # in this file. The entry is kept so an older log replayed through this
+        # function still ranks correctly.
         "mt5_execution_monitor": 10,
     }
     by_id: dict[str, tuple[int, dict]] = {}
@@ -392,6 +399,25 @@ def latest_wait_decision_signature() -> str | None:
     return None
 
 
+def new_proposal_id(created_at: datetime | None = None) -> str:
+    """Mint the id that ties one entry decision to everything that follows.
+
+    2026-08-11 -- why this is a separate function
+    ---------------------------------------------
+    The id used to be minted inside append_paper_proposal(), which runs AFTER
+    append_qwen_decision(). So the decision record -- the only place the prompt
+    and the raw model response are stored -- carried proposal_id=None on all
+    3,703 entry decisions ever written. The field existed and was always empty.
+
+    The consequence: not one closed trade could be joined back to the prompt
+    that produced it, so live trading has never been able to feed model
+    training. Minting the id first, before the model is called, makes
+    prompt -> decision -> proposal -> fill -> outcome a single joinable chain.
+    """
+    created_at = created_at or datetime.now(timezone.utc)
+    return f"paper-{created_at:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
+
+
 def append_paper_proposal(
     snapshot: dict,
     review: dict,
@@ -400,6 +426,7 @@ def append_paper_proposal(
     decision_duration_ns: int | None = None,
     prompt_text: str | None = None,
     planner_context: dict | None = None,
+    proposal_id: str | None = None,
 ) -> dict:
     """Append an immutable research record for later chart replay and feedback.
 
@@ -414,7 +441,10 @@ def append_paper_proposal(
     created_at = datetime.now(timezone.utc)
     proposal = {
         "schema_version": 1,
-        "proposal_id": f"paper-{created_at:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}",
+        # Supplied by the caller so the decision record written BEFORE this
+        # point carries the same id. Minting one here is the fallback path.
+        "proposal_id": proposal_id or new_proposal_id(created_at),
+        **build_manifest.stamp(),
         "created_at_utc": created_at.isoformat(),
         "mode": "paper-research",
         "source": "dashboard-deal-sheet",
@@ -467,6 +497,8 @@ def append_paper_proposal(
 # and silently swallowed this call, sending every reviewer line to
 # session-planner.log. See process_logging.py.
 _LOG_HANDLER = process_logging.configure(LOG_DIR / "reviewer.log", owner="reviewer")
+# Announce the build and alarm if it has drifted from the declared freeze.
+build_manifest.log_identity("reviewer")
 
 
 def adaptive_stop_distance(snapshot: dict) -> float:
@@ -690,6 +722,34 @@ def compact_entry_facts(
         "planner": planner,
         "citeable_evidence_ids": citeable,
     }
+
+
+def wait_reason_for(contradiction: str | None, review: dict) -> str:
+    """Plain-language wait reason naming the actual cause.
+
+    Folding every failure into one "Cache provenance validation failed." string
+    is how the v1.9 contradiction stayed invisible for two hours: the wait
+    reason named the wrong subsystem, so the logs pointed at the cache while
+    the fault was the entry contract. Each cause gets its own sentence.
+    """
+    codes = entry_policy.ReasonCode
+    if contradiction == codes.INVARIANT_READY_ZERO_CONFIDENCE:
+        return (
+            "Model returned ready with confidence 0; waiting until it has "
+            "conviction."
+        )
+    if contradiction == codes.READY_CONTRADICTS_OWN_REASON:
+        plan_reason = (review.get("execution_plan") or {}).get("reason") or "unstated"
+        return (
+            f"Model returned ready but its own reason says the setup has not "
+            f"triggered ({plan_reason})."
+        )
+    if contradiction == codes.READY_BELOW_CONFIDENCE_THRESHOLD:
+        return (
+            f"Confidence below the {entry_policy.MIN_ENTRY_CONFIDENCE} entry "
+            "threshold; waiting for a stronger read."
+        )
+    return "Cache provenance validation failed."
 
 
 def entry_contract_version() -> str:
@@ -1699,13 +1759,32 @@ def generate_dashboard_deal_sheet() -> dict:
         # silently downgraded to a wait and trading simply stopped. Surface it
         # loudly with a stable code so a contract regression cannot hide again.
         contradiction = entry_policy.check_legacy_contradiction(review)
+        # Checked even when confidence is fine: the two claims are independent.
+        # A ready plan whose own reason reads "entry_trigger_missing" at
+        # confidence 62 passes every confidence gate there is.
+        if not contradiction:
+            contradiction = entry_policy.check_ready_reason_contradiction(review)
         if contradiction:
-            logging.error(
-                "%s :: model returned status=ready with confidence=%s (bias=%s); "
-                "suspect entry-contract regression",
+            # Alarm only on the codes that mean something reached, or could
+            # reach, the broker wrongly. Sub-threshold confidence is the model
+            # doing its job -- it is trained for high-conviction entries and is
+            # saying it has none. Logged at ERROR that came to 394 lines in one
+            # day, which is how the real regression gets scrolled past.
+            try:
+                _conf = float(review.get("confidence") or 0)
+            except (TypeError, ValueError):
+                _conf = 0.0
+            log = (
+                logging.error
+                if entry_policy.is_contract_regression(contradiction, _conf)
+                else logging.info
+            )
+            log(
+                "%s :: status=ready, confidence=%s, bias=%s, plan_reason=%r",
                 contradiction,
                 review.get("confidence"),
                 review.get("bias"),
+                (review.get("execution_plan") or {}).get("reason"),
             )
             provenance_failures.append(contradiction)
 
@@ -1717,12 +1796,7 @@ def generate_dashboard_deal_sheet() -> dict:
             # was the entry contract.
             review["execution_plan"] = {
                 "status": "wait",
-                "reason": (
-                    "Model returned ready with sub-threshold confidence "
-                    "(suspect entry-contract regression)."
-                    if contradiction
-                    else "Cache provenance validation failed."
-                ),
+                "reason": wait_reason_for(contradiction, review),
                 "reason_code": (
                     contradiction if contradiction else "entry:provenance_failed"
                 ),
@@ -1796,6 +1870,12 @@ def generate_dashboard_deal_sheet() -> dict:
             wait_signature,
         )
     else:
+        # Minted BEFORE the decision is written, and handed to both writes.
+        # This single line is what makes a trade traceable back to the prompt
+        # that produced it; without it, proposal_id was None on every one of
+        # the 3,703 entry decisions on record and no training pair could ever
+        # be built from live trading. See new_proposal_id().
+        proposal_id = new_proposal_id()
         append_qwen_decision(
             decision_type="entry",
             symbol=symbol,
@@ -1805,6 +1885,7 @@ def generate_dashboard_deal_sheet() -> dict:
             parsed=review,
             model=snapshot.get("model") or MODEL,
             duration_ns=decision_duration_ns,
+            proposal_id=proposal_id,
             context={
                 "cache_status": entry_cache.get("status"),
                 "session": entry_cache.get("session"),
@@ -1812,6 +1893,8 @@ def generate_dashboard_deal_sheet() -> dict:
                 "prompt_bytes": len(prompt_text.encode("utf-8")) if prompt_text else 0,
                 "entry_prompt_mode": "compact_trade_quality_v1",
                 "wait_signature": wait_signature or None,
+                "model_called": model_called,
+                **build_manifest.stamp(),
             },
         )
         proposal = append_paper_proposal(
@@ -1822,8 +1905,11 @@ def generate_dashboard_deal_sheet() -> dict:
             decision_duration_ns,
             prompt_text,
             planner_context,
+            proposal_id=proposal_id,
         )
-        proposal_id = proposal["proposal_id"]
+        assert proposal["proposal_id"] == proposal_id, (
+            "decision and proposal must share one id or the chain is broken"
+        )
     entry_state["qwen"] = {
         "bias": review.get("bias", "Conditional"),
         "confidence": normalize_confidence(review.get("confidence"), 0),

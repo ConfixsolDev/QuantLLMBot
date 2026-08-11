@@ -19,6 +19,13 @@ import json
 import logging
 import os
 import time
+# Module scope, not function scope. unload_stale_models() and the /api/ps probe
+# both call urllib.request but only _ollama_generate_raw imported it -- and a
+# local import binds nothing outside its own function. So every startup logged
+# "could not query Ollama for resident models: name 'urllib' is not defined"
+# and returned early, meaning the eviction that stops two trading models
+# sharing VRAM never actually ran. The guard existed and had never once fired.
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 

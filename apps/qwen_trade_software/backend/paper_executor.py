@@ -12,6 +12,7 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 
+import build_manifest
 import trade_geometry
 from tick_data_archive import append_tick_record
 
@@ -133,8 +134,49 @@ def _dated_log_files(base_name: str, days_back: int = 1) -> list[Path]:
     return paths
 
 
+# Per-tick heartbeat rows go to their own family.
+#
+# 2026-08-11: mt5_execution_monitor was 52,986 of 54,809 execution rows (96.7%)
+# and 36.1 MB of 37.4 MB. Every analysis, report and training script paid a 30x
+# parsing cost to reach the 3.3% of rows that record a decision, and the logs
+# had grown to 346 MB with no retention.
+#
+# The tick path is NOT discarded -- trade management needs MFE, MAE, giveback
+# and time-to-peak. It is simply not interleaved with the decisions.
+PATH_EVENTS = frozenset({"mt5_execution_monitor"})
+PATH_LOG = "paper-path"
+EXECUTION_LOG = "paper-executions"
+
+
 def append_event(event: dict) -> None:
-    append_tick_record("paper-executions", event)
+    """Route one execution event to the decision log or the path log.
+
+    2026-08-11 -- why this cannot raise
+    -----------------------------------
+    This is called once per second from the monitor loop that watches a LIVE
+    position. On 2026-08-11 an unregistered log family made it raise KeyError
+    on every tick; the exception left the monitor loop, aborted the run, and
+    five positions were left open with no close record while the runner blocked
+    every new proposal on a position it thought was still there.
+
+    The trade-off is deliberate and one-sided. A failed write costs one row --
+    and the row usually survives anyway, because the runtime log is written
+    before the archive. A raised exception costs an unmanaged position with
+    real money against it. Recording a trade is never more important than
+    managing one.
+
+    Failures are logged with a full traceback, so this hides nothing; it only
+    refuses to let bookkeeping kill trading.
+    """
+    base = PATH_LOG if event.get("event") in PATH_EVENTS else EXECUTION_LOG
+    try:
+        append_tick_record(base, event)
+    except Exception:
+        logging.exception(
+            "execution event write FAILED (base=%s event=%s execution_id=%s). "
+            "Trading continues; this record is lost.",
+            base, event.get("event"), event.get("execution_id"),
+        )
 
 
 def load_proposal(proposal_id: str) -> dict:
@@ -1059,6 +1101,10 @@ def _run(args) -> dict:
                         "exit_deal_count": outcome["exit_deal_count"],
                         "attribution_source": outcome["attribution_source"],
                         "manager_close_decision": outcome["manager_close_decision"],
+                        # Which version of the system produced this result.
+                        # Without it, four days of different behaviour get
+                        # pooled into one dataset and cancel out.
+                        **build_manifest.stamp(),
                     }
                     append_event(result)
                     return result

@@ -154,6 +154,13 @@ class ReasonCode:
     SYMMETRY_THROTTLED = "decision:symmetry_throttled"
     SESSION_BLOCKED = "decision:session_blocked"
     CACHE_NOT_READY = "decision:cache_not_ready"
+    # Expected, not a fault: the model said ready but scored the setup below
+    # the entry threshold. Becomes a wait, and is NOT alarmed -- see
+    # check_legacy_contradiction.
+    READY_BELOW_CONFIDENCE_THRESHOLD = "entry:ready_below_threshold"
+    # Model said ready while its own reason says the setup has not triggered.
+    # Alarmed: unlike low confidence, this one CAN reach the broker.
+    READY_CONTRADICTS_OWN_REASON = "invariant:ready_contradicts_own_reason"
     # invariant breaches (should be impossible; alarm if seen)
     INVARIANT_READY_ZERO_CONFIDENCE = "invariant:ready_with_zero_confidence"
     INVARIANT_SIDE_MISMATCH = "invariant:side_mismatch"
@@ -537,6 +544,108 @@ def check_legacy_contradiction(review: Mapping) -> str | None:
         confidence = int(review.get("confidence") or 0)
     except (TypeError, ValueError):
         confidence = 0
-    if confidence < MIN_ENTRY_CONFIDENCE:
+    # 2026-08-11: separate the regression from ordinary low conviction.
+    #
+    # The v1.9 fault was specific: status=ready AND confidence=0 AND a
+    # directional bias -- the model asserting a trade while scoring it at
+    # nothing. This check was written for that, then widened to the 51
+    # threshold, so it also caught confidence 30/38/46/48. Those are not
+    # contradictions; that is a model trained for high-conviction entries
+    # honestly reporting that it is not convinced.
+    #
+    # Both still become a wait -- nothing trades below the threshold. But
+    # only the first is an alarm. Filed as an ERROR "suspect entry-contract
+    # regression" they came to 394 lines in one day, which is how a real
+    # regression gets scrolled past next time.
+    if confidence <= 0:
         return ReasonCode.INVARIANT_READY_ZERO_CONFIDENCE
+    if confidence < MIN_ENTRY_CONFIDENCE:
+        return ReasonCode.READY_BELOW_CONFIDENCE_THRESHOLD
     return None
+
+
+# Words the model uses in its own reason/summary when the setup has NOT
+# triggered. Matched as substrings against a lowercased reason; deliberately
+# narrow, because a false positive here refuses a valid trade.
+# "entry_condition_met" must NOT match -- note "not_met" is checked, not "met".
+NOT_READY_MARKERS = (
+    "await",
+    "not_met",
+    "not met",
+    "no closed response",
+    "missing",
+    "pending",
+    "unconfirmed",
+    "not yet",
+)
+
+
+def check_ready_reason_contradiction(review: Mapping) -> str | None:
+    """Catch ``status=ready`` whose own reason says the setup has not triggered.
+
+    2026-08-11 -- why this exists
+    -----------------------------
+    The model reliably fills every field except ``status``. It emitted, on a
+    live cycle today:
+
+        {"execution_plan": {"status": "ready", "reason": "Awaiting
+          confirmation"}, "confidence": 62, "summary": "Awaiting confirmation"}
+
+    Confidence 62 clears the 51 threshold, so the existing guard -- which looks
+    only at confidence -- passed it through as a tradeable proposal while the
+    model was plainly saying it was still waiting. 358 near-misses the same day
+    were caught only incidentally, because they happened to carry confidence 0.
+
+    Confidence and status are two different claims. A high score on a setup the
+    model says has not triggered is not a strong entry; it is a strong opinion
+    about something that has not happened yet.
+    """
+    if not isinstance(review, Mapping):
+        return None
+    plan = review.get("execution_plan")
+    if not isinstance(plan, Mapping):
+        return None
+    if str(plan.get("status", "")).strip().lower() != "ready":
+        return None
+
+    # Structured fields only. `summary` is free prose and matching it blocked
+    # 28 entries in one day's replay, 7 of them carrying
+    # reason="entry_condition_met" -- a valid setup refused because its
+    # narration happened to mention waiting. Refusing a good trade is a real
+    # cost, so this stays narrow: the plan's own reason is the claim being
+    # checked for self-contradiction.
+    text = " ".join(
+        str(plan.get(key) or "") for key in ("reason", "reason_code")
+    ).lower()
+
+    if any(marker in text for marker in NOT_READY_MARKERS):
+        return ReasonCode.READY_CONTRADICTS_OWN_REASON
+    return None
+
+
+def is_contract_regression(reason_code: str | None, confidence: float = 0.0) -> bool:
+    """Whether this rejection deserves an alarm, judged by what was at stake.
+
+    Severity follows consequence, not shape. The question that matters is: did
+    this guard stop something that would otherwise have reached the broker?
+
+      confidence >= threshold  ->  a trade was one step away. Alarm.
+      confidence <  threshold  ->  it could not have traded anyway. Log it.
+
+    Judging by shape instead produced 399 ERROR lines in a day, 358 of them
+    incapable of causing a trade. The model's `status` field is simply
+    unreliable -- it emitted status=ready with confidence 0 and
+    reason="entry_condition_met" 136 times. That is worth knowing and worth
+    fixing in training, but it is not an emergency 136 times a day, and at that
+    volume it hides the 14 cases that genuinely were.
+
+    Note the v1.9 incident's real damage -- trading stopping altogether -- is
+    covered separately and better by the liveness monitor's ready_rate_collapse
+    and no_ready_proposal alarms, which watch the rate rather than each event.
+    """
+    if reason_code not in (
+        ReasonCode.INVARIANT_READY_ZERO_CONFIDENCE,
+        ReasonCode.READY_CONTRADICTS_OWN_REASON,
+    ):
+        return False
+    return confidence >= MIN_ENTRY_CONFIDENCE
