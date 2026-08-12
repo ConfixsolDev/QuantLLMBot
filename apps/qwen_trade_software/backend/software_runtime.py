@@ -77,7 +77,12 @@ class QwenTradeSoftware:
         self.lock_handle.write(
             json.dumps({"pid": os.getpid(), "started_at": time.time()})
         )
-        self.lock_handle.flush()
+        try:
+            self.lock_handle.flush()
+        except PermissionError:
+            # Byte-range lock is already held; an empty/partial lock file is
+            # worse for diagnostics than for safety. Do not abort the chain.
+            logging.warning("Could not flush software-runtime.lock; continuing with lock held")
 
     def _launch_desktop_dependencies(self) -> None:
         if not self._process_running("terminal64.exe"):

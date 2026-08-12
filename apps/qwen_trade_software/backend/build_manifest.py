@@ -32,6 +32,7 @@ Cost: computed once at import, roughly a few milliseconds of hashing.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import logging
@@ -48,6 +49,7 @@ MANIFEST_VERSION = "1.0"
 # manages a trade. A change in any of these is a behaviour change, and results
 # from before and after must not be pooled.
 DECISION_MODULES = (
+    # Decide what to trade, how to size it, and when to leave.
     "entry_policy.py",
     "trade_geometry.py",
     "management_policy.py",
@@ -59,6 +61,25 @@ DECISION_MODULES = (
     "session_planner.py",
     "plan_ladder.py",
     "plan_branches.py",
+    # Shape what the model is asked and what it is allowed to answer. A prompt
+    # or cache change alters behaviour just as surely as a threshold does.
+    "market_context_cache.py",
+    "review_shared.py",
+    # Infrastructure the decision path runs THROUGH.
+    #
+    # These were left out of the first version of this list, on the reasoning
+    # that they only move data around. Then on 2026-08-11 a one-line dictionary
+    # omission in tick_data_archive.py raised on every monitor tick, killed the
+    # executor, and cost seven trades their close records -- while build_id sat
+    # unchanged, reporting the broken system and the fixed one as the same
+    # build.
+    #
+    # The test is not "does this module make decisions" but "can a change here
+    # change the outcome". For anything in the live path, it can.
+    "tick_data_archive.py",
+    "process_logging.py",
+    "decision_liveness.py",
+    "execution_funnel.py",
 )
 
 # Tunables read at runtime. These can change behaviour without any source edit
@@ -66,20 +87,69 @@ DECISION_MODULES = (
 # separately and reported in full, because "which threshold was live" is the
 # first question any strategy review asks.
 def _tunables() -> dict:
+    """Read the tunables straight from source. No imports.
+
+    2026-08-11 -- why this does not import
+    --------------------------------------
+    The first version called __import__ on each module and read attributes off
+    it. Five of the modules it inspects import build_manifest themselves, so
+    importing them from inside build_manifest's own module-level compute() hit a
+    circular import: the inner `import build_manifest` returned a half-built
+    module, the attribute lookup raised, and a bare `except` swallowed it.
+
+    The result was a manifest that silently captured 0 of paper_runner's
+    constants and 3 of paper_executor's. Changing LOSS_COOLDOWN_SECONDS would
+    not have moved build_id at all -- the precise failure this module exists to
+    make impossible, sitting inside the module itself.
+
+    Parsing the source has no import side effects, no ordering dependence, and
+    cannot be defeated by a circular reference. Values that are not literals
+    (an env lookup, say) are recorded as their source expression, which still
+    moves the hash when the expression changes; the env var's actual value is
+    captured separately below.
+    """
     values: dict[str, object] = {}
 
     def grab(module_name: str, *names: str) -> None:
         try:
-            module = __import__(module_name)
-        except Exception:
+            tree = ast.parse((APP_DIR / f"{module_name}.py").read_text(encoding="utf-8"))
+        except (OSError, SyntaxError):
+            values[f"{module_name}.<unreadable>"] = True
             return
-        for name in names:
-            if hasattr(module, name):
-                value = getattr(module, name)
-                if isinstance(value, (int, float, str, bool)) or value is None:
-                    values[f"{module_name}.{name}"] = value
-                elif isinstance(value, dict):
-                    values[f"{module_name}.{name}"] = dict(sorted(value.items()))
+        wanted = set(names)
+        seen: set[str] = set()
+        for node in tree.body:                      # module level only
+            # Both forms matter: `X = 1` and the annotated `X: dict = {...}`.
+            # Handling only ast.Assign missed SCORE_WEIGHTS, which is declared
+            # with a type annotation -- caught immediately by the <missing>
+            # marker below, which is what it is for.
+            if isinstance(node, ast.Assign):
+                targets, rhs = node.targets, node.value
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                targets, rhs = [node.target], node.value
+            else:
+                continue
+            for target in targets:
+                if not isinstance(target, ast.Name) or target.id not in wanted:
+                    continue
+                try:
+                    value = ast.literal_eval(rhs)
+                    if isinstance(value, dict):
+                        value = dict(sorted(value.items()))
+                    elif isinstance(value, (set, frozenset)):
+                        value = sorted(map(str, value))
+                except (ValueError, SyntaxError):
+                    # Not a literal -- e.g. os.environ.get(...). Keep the
+                    # expression text so a change to it still moves the hash.
+                    value = f"<expr:{ast.unparse(rhs)}>"
+                values[f"{module_name}.{target.id}"] = value
+                seen.add(target.id)
+        missing = wanted - seen
+        if missing:
+            # Loud rather than silent. A constant that has been renamed or
+            # moved would otherwise vanish from the manifest unnoticed, and
+            # changing it would stop moving the build id.
+            values[f"{module_name}.<missing>"] = sorted(missing)
 
     grab("entry_policy", "MIN_ENTRY_CONFIDENCE", "MAX_INVALIDATION_GAP",
          "POLICY_VERSION", "SCORE_WEIGHTS")
@@ -90,7 +160,7 @@ def _tunables() -> dict:
     grab("paper_executor", "INITIAL_STOP_DISTANCE", "INITIAL_TAKE_PROFIT_DISTANCE",
          "STRUCTURAL_BRACKET_ENABLED")
     grab("paper_runner", "MIN_ENTRY_CONFIDENCE", "DAILY_PAPER_CAP",
-         "LOSS_COOLDOWN_SECONDS")
+         "LOSS_COOLDOWN_SECONDS", "WIN_COOLDOWN_SECONDS")
 
     # Env switches that alter behaviour without touching a file.
     for var in ("QWEN_SKIP_ON_GEOMETRY", "QWEN_MIN_REWARD_RISK", "QWEN_MODEL",

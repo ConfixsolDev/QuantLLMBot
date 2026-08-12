@@ -1,13 +1,25 @@
-# Remove the Qwen trading software Windows logon scheduled task.
+# Remove the Qwen trading software Windows startup entries.
 
 $ErrorActionPreference = "Stop"
-$TaskName = "QuantLLMBot - Qwen Reviewer"
+$TaskNames = @(
+    "QuantLLMBot - Qwen Reviewer",
+    "QuantLLMBot - Qwen Watchdog"
+)
+$StartupShortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "QuantLLMBot Qwen Reviewer.lnk"
 
-$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-if (-not $existing) {
-    Write-Host "Task not found: $TaskName" -ForegroundColor Yellow
-    exit 0
+foreach ($TaskName in $TaskNames) {
+    $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $existing) {
+        Write-Host "Task not found: $TaskName" -ForegroundColor Yellow
+        continue
+    }
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    Write-Host "Removed scheduled task: $TaskName" -ForegroundColor Green
 }
 
-Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-Write-Host "Removed scheduled task: $TaskName" -ForegroundColor Green
+if (Test-Path -LiteralPath $StartupShortcut) {
+    Remove-Item -LiteralPath $StartupShortcut -Force
+    Write-Host "Removed Startup folder shortcut: $StartupShortcut" -ForegroundColor Green
+} else {
+    Write-Host "Startup shortcut not found: $StartupShortcut" -ForegroundColor Yellow
+}

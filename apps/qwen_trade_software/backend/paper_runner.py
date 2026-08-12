@@ -24,7 +24,30 @@ DAILY_PAPER_CAP = 100
 MIN_ENTRY_CONFIDENCE = 51
 MAX_PROPOSAL_AGE_SECONDS = 60
 PROPOSAL_POLL_SECONDS = 0.25
+# Cool down after EVERY completed trade, win or loss.
+#
+# 2026-08-11 -- why a win now cools down too
+# ------------------------------------------
+# Only losses paused the runner. Measured over the trades that opened within
+# half an hour of a previous close:
+#
+#     after a WINNING close   n=23  net  -353.40  avg  -15.37  win 52%
+#     after a LOSING close    n=34  net  -954.85  avg  -28.08  win 26%
+#
+# The post-loss group is worse, which is why that pause exists. But the
+# post-win group also loses money: a 52% win rate at -15.37 a trade means the
+# winners are smaller than the losers. Re-entering straight after taking profit
+# is entering on a level that has just been reached and reacted to, which is
+# rarely the same setup the plan was built on.
+#
+# Honest limit on the evidence: the 120s figure is NOT validated. Only one
+# trade in the sample closed within 120s of a win, so the threshold is chosen
+# for symmetry with the loss cooldown, not measured. Both are single constants
+# so the strategy work that follows the freeze can move them and see the effect
+# -- and because they are in the build manifest, changing one produces a new
+# build_id rather than silently mixing two regimes in one sample.
 LOSS_COOLDOWN_SECONDS = 120
+WIN_COOLDOWN_SECONDS = 120
 BEST_PRICE_OBSERVATION_SECONDS = 2.0
 BEST_PRICE_RETRACE = 0.10
 RUNNER_LOCK_FILE = APP_DIR / "paper-runner.lock"
@@ -238,6 +261,33 @@ def has_open_qwen_position() -> bool:
         mt5.shutdown()
 
 
+def cooldown_for(result: dict) -> tuple[int, str]:
+    """How long to pause after a completed run, and what to call it.
+
+    Only a trade that actually reached the market earns a cooldown. A proposal
+    that expired unfilled, or was skipped, never took a position -- pausing on
+    those would throttle the system for something that never happened.
+
+    The signal that a real trade completed is a settled P&L. `pnl_is_complete`
+    is False when the closing deal never reached MT5 history, in which case
+    net_pnl is the entry commission and its sign means nothing.
+    """
+    if result.get("pnl_is_complete") is False:
+        return 0, ""
+    net = result.get("net_pnl")
+    if net is None:
+        return 0, ""          # signal_expired and friends: no position was held
+    try:
+        net = float(net)
+    except (TypeError, ValueError):
+        return 0, ""
+    if net < 0:
+        return LOSS_COOLDOWN_SECONDS, "Loss"
+    if net > 0:
+        return WIN_COOLDOWN_SECONDS, "Win"
+    return 0, ""              # exactly flat: nothing to step back from
+
+
 def run_loop() -> None:
     logging.info("MT5 demo runner started (hard demo-account lock enabled)")
     while True:
@@ -293,14 +343,14 @@ def run_loop() -> None:
                 result.get("reason"),
                 result.get("net_pnl"),
             )
-            if float(result.get("net_pnl") or result.get("gross_pnl") or 0.0) < 0:
+            seconds, label = cooldown_for(result)
+            if seconds:
                 logging.info(
-                    "Loss cooldown started for %d seconds after %s",
-                    LOSS_COOLDOWN_SECONDS,
-                    proposal_id,
+                    "%s cooldown started for %ds after %s (net_pnl=%s)",
+                    label, seconds, proposal_id, result.get("net_pnl"),
                 )
-                time.sleep(LOSS_COOLDOWN_SECONDS)
-                logging.info("Loss cooldown completed after %s", proposal_id)
+                time.sleep(seconds)
+                logging.info("%s cooldown completed after %s", label, proposal_id)
         except Exception:
             logging.exception("Paper proposal failed: %s", proposal_id)
             time.sleep(3)

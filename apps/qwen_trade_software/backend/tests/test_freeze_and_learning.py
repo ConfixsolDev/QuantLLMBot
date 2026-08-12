@@ -309,3 +309,127 @@ def test_reconcile_is_called_before_any_decision(monkeypatch):
     start = source.index("def review_positions")
     body = source[start:]
     assert body.index("reconcile_position_state(") < body.index('if not positions:')
+
+
+def test_every_live_path_module_is_in_the_manifest():
+    """A module a change can break is a module the build must track.
+
+    2026-08-11: tick_data_archive.py was omitted on the reasoning that it only
+    moves data around. A one-line dictionary omission in it then killed the
+    executor on every monitor tick and cost seven trades their close records --
+    with build_id unchanged, so the broken system and the fixed one were
+    reported as the same build.
+    """
+    import build_manifest as bm
+
+    must_track = {
+        "paper_executor.py", "paper_runner.py", "reviewer.py",
+        "trade_management.py", "trade_manager.py", "entry_policy.py",
+        "trade_geometry.py", "management_policy.py", "session_planner.py",
+        "tick_data_archive.py", "process_logging.py",
+        "market_context_cache.py", "review_shared.py",
+    }
+    missing = must_track - set(bm.DECISION_MODULES)
+    assert not missing, f"live-path modules absent from the build manifest: {sorted(missing)}"
+
+
+def test_manifest_modules_all_exist():
+    """A typo would hash as 'missing' forever and never move the build id."""
+    import build_manifest as bm
+
+    absent = [m for m in bm.DECISION_MODULES if not (bm.APP_DIR / m).exists()]
+    assert not absent, f"manifest names files that do not exist: {absent}"
+
+
+# --- cooldown after every completed trade -----------------------------------
+
+def test_a_winning_trade_now_cools_down_too():
+    """2026-08-11: only losses paused the runner.
+
+    Trades opening within 30 min of a WINNING close ran n=23, net -353.40,
+    avg -15.37 at a 52% win rate -- a positive hit rate with negative
+    expectancy, i.e. the winners were smaller than the losers. Re-entering
+    immediately after taking profit means entering at a level that has just
+    been reached and reacted to.
+    """
+    import paper_runner as pr
+
+    seconds, label = pr.cooldown_for({"net_pnl": 118.0})
+    assert seconds == pr.WIN_COOLDOWN_SECONDS and label == "Win"
+
+
+def test_a_losing_trade_still_cools_down():
+    import paper_runner as pr
+
+    seconds, label = pr.cooldown_for({"net_pnl": -52.25})
+    assert seconds == pr.LOSS_COOLDOWN_SECONDS and label == "Loss"
+
+
+def test_a_trade_that_never_happened_does_not_cool_down():
+    """signal_expired held no position. Pausing on it throttles for nothing."""
+    import paper_runner as pr
+
+    assert pr.cooldown_for({"reason": "signal_expired", "net_pnl": None}) == (0, "")
+    assert pr.cooldown_for({}) == (0, "")
+
+
+def test_an_unsettled_pnl_does_not_drive_the_cooldown():
+    """net_pnl is the entry commission when the closing deal never settled, so
+    its sign carries no information about whether the trade won or lost."""
+    import paper_runner as pr
+
+    assert pr.cooldown_for({"net_pnl": -3.5, "pnl_is_complete": False}) == (0, "")
+
+
+def test_both_cooldowns_are_in_the_build_manifest():
+    """A cooldown change is a behaviour change; it must move the build_id, or
+    two regimes get averaged into one sample."""
+    import build_manifest as bm
+
+    assert "paper_runner.WIN_COOLDOWN_SECONDS" in bm.MANIFEST["tunables"]
+    assert "paper_runner.LOSS_COOLDOWN_SECONDS" in bm.MANIFEST["tunables"]
+
+
+def test_the_manifest_captures_every_named_tunable():
+    """A tunable that quietly stops being captured stops moving the build id.
+
+    2026-08-11: the import-based reader hit a circular import (five of these
+    modules import build_manifest) and silently captured 0 of paper_runner's
+    constants. Changing LOSS_COOLDOWN_SECONDS would not have changed build_id.
+    """
+    import build_manifest as bm
+
+    broken = [k for k in bm.MANIFEST["tunables"]
+              if "<missing>" in k or "<unreadable>" in k]
+    assert not broken, (
+        f"manifest could not read these tunables: "
+        f"{ {k: bm.MANIFEST['tunables'][k] for k in broken} }"
+    )
+
+
+def test_manifest_reads_annotated_assignments_too():
+    """SCORE_WEIGHTS is declared `X: dict[str, float] = {...}` -- a different
+    AST node from a plain assignment, and originally missed."""
+    import build_manifest as bm
+
+    weights = bm.MANIFEST["tunables"].get("entry_policy.SCORE_WEIGHTS")
+    assert isinstance(weights, dict) and weights, "annotated assignment not captured"
+
+
+def test_manifest_does_not_import_the_modules_it_inspects():
+    """Importing them from module scope is what caused the circular failure.
+
+    Checked against the AST rather than the text, because the docstring in
+    _tunables explains the old __import__ approach and a substring search
+    matches its own history lesson.
+    """
+    tree = ast.parse((BACKEND / "build_manifest.py").read_text(encoding="utf-8"))
+    tunables = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_tunables"
+    )
+    for node in ast.walk(tunables):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            raise AssertionError("_tunables must not import the modules it reads")
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "__import__":
+            raise AssertionError("_tunables must parse source, not __import__")
