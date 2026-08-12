@@ -1043,18 +1043,11 @@ def session_at(moment: datetime) -> dict:
         name, end, permitted = "london", 13, True
     elif 13 <= hour < 16:
         name, end, permitted = "overlap", 16, True
-    elif 16 <= hour < 21:
-        # 2026-08-10: NY enabled for testing. Was permitted=False, which meant
-        # the 16:00-21:00 UTC window produced proposals but never entries --
-        # every one waited with reason "off_session".
-        #
-        # This is a TEST setting. NY has different character to London: thinner
-        # late-session liquidity and a higher share of the day's reversals, so
-        # treat its results as a separate configuration rather than assuming
-        # London behaviour carries over. configuration_ledger.py already keys on
-        # session, so NY expectancy will accumulate on its own line and can be
-        # demoted independently if it underperforms.
-        name, end, permitted = "new_york", 21, True
+    elif 16 <= hour < 17:
+        # 2026-08-13: NY entries cut at 17:00 UTC. Was 16:00-21:00; late NY
+        # (after 17:00) stays off-session for new entries while broker data can
+        # still flow. Overlap ends at 16:00; this leaves a one-hour NY window.
+        name, end, permitted = "new_york", 17, True
     else:
         name, end, permitted = "off_session", 24, False
     end_time = moment.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=end)

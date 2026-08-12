@@ -363,6 +363,56 @@ def test_a_losing_trade_still_cools_down():
 
     seconds, label = pr.cooldown_for({"net_pnl": -52.25})
     assert seconds == pr.LOSS_COOLDOWN_SECONDS and label == "Loss"
+    assert pr.LOSS_COOLDOWN_SECONDS == 1800
+
+
+def test_loss_cooldown_bypass_requires_high_confidence_and_rr():
+    """2026-08-13: 30m loss pause, interruptible only by 82%+ and R:R >= 2.5."""
+    import paper_runner as pr
+
+    strong = {
+        "qwen": {
+            "confidence": 85,
+            "execution_plan": {
+                "side": "sell",
+                "entry_low": 4400.0,
+                "entry_high": 4402.0,
+                "structural_stop_loss": 4405.0,
+                "structural_take_profit": 4385.0,
+            },
+        }
+    }
+    ok, detail = pr.loss_cooldown_bypass_ok(strong)
+    assert ok, detail
+    assert detail["reward_risk"] >= pr.LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK
+
+    weak_conf = {
+        "qwen": {
+            "confidence": 70,
+            "execution_plan": strong["qwen"]["execution_plan"],
+        }
+    }
+    ok, detail = pr.loss_cooldown_bypass_ok(weak_conf)
+    assert not ok
+    assert detail["confidence"] == 70.0
+
+    weak_rr = {
+        "qwen": {
+            "confidence": 90,
+            "execution_plan": {
+                "side": "sell",
+                "entry_low": 4400.0,
+                "entry_high": 4402.0,
+                # Fixed-style ~$3 risk / ~$5 reward -- not "very high".
+                "stop_loss": 4404.0,
+                "take_profit": 4396.0,
+            },
+        }
+    }
+    ok, detail = pr.loss_cooldown_bypass_ok(weak_rr)
+    assert not ok
+    assert detail["reward_risk"] is not None
+    assert detail["reward_risk"] < pr.LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK
 
 
 def test_a_trade_that_never_happened_does_not_cool_down():
@@ -388,6 +438,11 @@ def test_both_cooldowns_are_in_the_build_manifest():
 
     assert "paper_runner.WIN_COOLDOWN_SECONDS" in bm.MANIFEST["tunables"]
     assert "paper_runner.LOSS_COOLDOWN_SECONDS" in bm.MANIFEST["tunables"]
+    assert "paper_runner.LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE" in bm.MANIFEST["tunables"]
+    assert "paper_runner.LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK" in bm.MANIFEST["tunables"]
+    assert bm.MANIFEST["tunables"]["paper_runner.LOSS_COOLDOWN_SECONDS"] == 1800
+    assert bm.MANIFEST["tunables"]["paper_runner.LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE"] == 82
+    assert bm.MANIFEST["tunables"]["paper_runner.LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK"] == 2.5
 
 
 def test_the_manifest_captures_every_named_tunable():

@@ -14,6 +14,7 @@ import MetaTrader5 as mt5
 import build_manifest
 import process_logging
 import paper_executor
+import trade_geometry
 from market_context_cache import latest_entry_context
 
 
@@ -40,19 +41,25 @@ PROPOSAL_POLL_SECONDS = 0.25
 # is entering on a level that has just been reached and reacted to, which is
 # rarely the same setup the plan was built on.
 #
-# Honest limit on the evidence: the 120s figure is NOT validated. Only one
-# trade in the sample closed within 120s of a win, so the threshold is chosen
-# for symmetry with the loss cooldown, not measured. Both are single constants
-# so the strategy work that follows the freeze can move them and see the effect
-# -- and because they are in the build manifest, changing one produces a new
-# build_id rather than silently mixing two regimes in one sample.
-LOSS_COOLDOWN_SECONDS = 120
+# 2026-08-13 -- loss cooldown lengthened; exceptional bypass only
+# --------------------------------------------------------------
+# Three same-thesis M5 pin fades lost ~$516 in ~45 minutes after the old 120s
+# loss pause. 30 minutes covers that re-fire window. During a loss cooldown the
+# runner still polls: a fresh ready proposal may enter only when model
+# confidence is very high AND structural reward:risk is very high. Win
+# cooldown stays short and hard (no bypass).
+LOSS_COOLDOWN_SECONDS = 1800
 WIN_COOLDOWN_SECONDS = 120
+LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE = 82
+# Above normal geometry floor (~0.9) and above the fixed $3/$5 bracket (~1.67).
+LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK = 2.5
 BEST_PRICE_OBSERVATION_SECONDS = 2.0
 BEST_PRICE_RETRACE = 0.10
 RUNNER_LOCK_FILE = APP_DIR / "paper-runner.lock"
 BROKER_TRUTH_REFRESH_SECONDS = 2.0
 _BROKER_COUNT_CACHE = {"checked": 0.0, "count": 0}
+# Active post-trade pause. Cleared on expiry or a qualifying loss-cooldown bypass.
+_COOLDOWN_STATE = {"until_monotonic": 0.0, "label": ""}
 
 _LOG_HANDLER = process_logging.configure(LOG_FILE, owner="paper_runner")
 # Announce the build and alarm if it has drifted from the declared freeze.
@@ -288,6 +295,119 @@ def cooldown_for(result: dict) -> tuple[int, str]:
     return 0, ""              # exactly flat: nothing to step back from
 
 
+def start_cooldown(seconds: int, label: str) -> None:
+    """Arm the post-trade pause. Loss pauses stay interruptible; see bypass."""
+    if seconds <= 0:
+        _COOLDOWN_STATE.update({"until_monotonic": 0.0, "label": ""})
+        return
+    _COOLDOWN_STATE.update(
+        {
+            "until_monotonic": time.monotonic() + float(seconds),
+            "label": label,
+        }
+    )
+
+
+def clear_cooldown() -> None:
+    _COOLDOWN_STATE.update({"until_monotonic": 0.0, "label": ""})
+
+
+def cooldown_remaining_seconds() -> float:
+    remaining = float(_COOLDOWN_STATE.get("until_monotonic") or 0.0) - time.monotonic()
+    return remaining if remaining > 0 else 0.0
+
+
+def active_cooldown_label() -> str:
+    if cooldown_remaining_seconds() <= 0:
+        return ""
+    return str(_COOLDOWN_STATE.get("label") or "")
+
+
+def proposal_confidence(proposal: dict) -> float:
+    qwen = proposal.get("qwen")
+    qwen = qwen if isinstance(qwen, dict) else {}
+    try:
+        return float(qwen.get("confidence"))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def proposal_reward_risk(proposal: dict) -> float | None:
+    """Structural thesis R:R when available; else plan stop/target R:R.
+
+    Uses the same cost haircut as trade_geometry so "very high" is comparable
+    to the live geometry floor, not a raw price-distance ratio.
+    """
+    qwen = proposal.get("qwen")
+    qwen = qwen if isinstance(qwen, dict) else {}
+    plan = qwen.get("execution_plan")
+    plan = plan if isinstance(plan, dict) else {}
+    side = str(plan.get("side") or "").lower()
+    try:
+        entry_low = float(plan["entry_low"])
+        entry_high = float(plan["entry_high"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    entry_mid = (entry_low + entry_high) / 2.0
+
+    def _float(key_primary: str, key_fallback: str) -> float | None:
+        for key in (key_primary, key_fallback):
+            raw = plan.get(key)
+            if raw is None:
+                continue
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    stop = _float("structural_stop_loss", "stop_loss")
+    target = _float("structural_take_profit", "take_profit")
+    if stop is None or target is None:
+        return None
+    if side == "buy":
+        risk = entry_mid - stop
+        reward = target - entry_mid
+    elif side == "sell":
+        risk = stop - entry_mid
+        reward = entry_mid - target
+    else:
+        return None
+    if risk <= 0 or reward <= 0:
+        return None
+    return (reward - trade_geometry.ROUND_TRIP_COST) / risk
+
+
+def loss_cooldown_bypass_ok(proposal: dict) -> tuple[bool, dict]:
+    """True only during a Loss cooldown when confidence and R:R both clear."""
+    confidence = proposal_confidence(proposal)
+    reward_risk = proposal_reward_risk(proposal)
+    detail = {
+        "confidence": confidence,
+        "reward_risk": None if reward_risk is None else round(reward_risk, 3),
+        "min_confidence": LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE,
+        "min_reward_risk": LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK,
+    }
+    if confidence + 1e-9 < LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE:
+        return False, detail
+    if reward_risk is None or reward_risk + 1e-9 < LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK:
+        return False, detail
+    return True, detail
+
+
+def skip_proposal(proposal_id: str, reason: str, **extra) -> None:
+    paper_executor.append_event(
+        {
+            "schema_version": 1,
+            "event": "mt5_execution_skipped",
+            "proposal_id": proposal_id,
+            "created_at_utc": paper_executor.utc_now(),
+            "reason": reason,
+            **extra,
+        }
+    )
+
+
 def run_loop() -> None:
     logging.info("MT5 demo runner started (hard demo-account lock enabled)")
     while True:
@@ -312,15 +432,10 @@ def run_loop() -> None:
         runtime_failures = proposal_runtime_failures(proposal)
         if runtime_failures:
             proposal_id = proposal["proposal_id"]
-            paper_executor.append_event(
-                {
-                    "schema_version": 1,
-                    "event": "mt5_execution_skipped",
-                    "proposal_id": proposal_id,
-                    "created_at_utc": paper_executor.utc_now(),
-                    "reason": "entry_runtime_validation_failed",
-                    "failures": runtime_failures,
-                }
+            skip_proposal(
+                proposal_id,
+                "entry_runtime_validation_failed",
+                failures=runtime_failures,
             )
             logging.info(
                 "Skipped proposal %s runtime_failures=%s",
@@ -333,6 +448,50 @@ def run_loop() -> None:
             logging.info("Single-position gate blocked a new proposal")
             time.sleep(1)
             continue
+
+        remaining = cooldown_remaining_seconds()
+        label = active_cooldown_label()
+        if remaining > 0:
+            proposal_id = proposal["proposal_id"]
+            if label == "Loss":
+                ok, bypass_detail = loss_cooldown_bypass_ok(proposal)
+                if ok:
+                    logging.info(
+                        "Loss cooldown bypassed for %s remaining=%.0fs detail=%s",
+                        proposal_id,
+                        remaining,
+                        bypass_detail,
+                    )
+                    clear_cooldown()
+                else:
+                    skip_proposal(
+                        proposal_id,
+                        "loss_cooldown_active",
+                        remaining_seconds=round(remaining, 1),
+                        bypass=bypass_detail,
+                    )
+                    logging.info(
+                        "Loss cooldown blocked %s remaining=%.0fs bypass=%s",
+                        proposal_id,
+                        remaining,
+                        bypass_detail,
+                    )
+                    time.sleep(PROPOSAL_POLL_SECONDS)
+                    continue
+            else:
+                skip_proposal(
+                    proposal_id,
+                    "win_cooldown_active",
+                    remaining_seconds=round(remaining, 1),
+                )
+                logging.info(
+                    "Win cooldown blocked %s remaining=%.0fs",
+                    proposal_id,
+                    remaining,
+                )
+                time.sleep(PROPOSAL_POLL_SECONDS)
+                continue
+
         proposal_id = proposal["proposal_id"]
         logging.info("Starting validated proposal %s", proposal_id)
         try:
@@ -343,14 +502,13 @@ def run_loop() -> None:
                 result.get("reason"),
                 result.get("net_pnl"),
             )
-            seconds, label = cooldown_for(result)
+            seconds, cool_label = cooldown_for(result)
             if seconds:
+                start_cooldown(seconds, cool_label)
                 logging.info(
                     "%s cooldown started for %ds after %s (net_pnl=%s)",
-                    label, seconds, proposal_id, result.get("net_pnl"),
+                    cool_label, seconds, proposal_id, result.get("net_pnl"),
                 )
-                time.sleep(seconds)
-                logging.info("%s cooldown completed after %s", label, proposal_id)
         except Exception:
             logging.exception("Paper proposal failed: %s", proposal_id)
             time.sleep(3)

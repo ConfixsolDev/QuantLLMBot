@@ -80,6 +80,7 @@ DECISION_MODULES = (
     "process_logging.py",
     "decision_liveness.py",
     "execution_funnel.py",
+    "news_blackout.py",
 )
 
 # Tunables read at runtime. These can change behaviour without any source edit
@@ -160,7 +161,19 @@ def _tunables() -> dict:
     grab("paper_executor", "INITIAL_STOP_DISTANCE", "INITIAL_TAKE_PROFIT_DISTANCE",
          "STRUCTURAL_BRACKET_ENABLED")
     grab("paper_runner", "MIN_ENTRY_CONFIDENCE", "DAILY_PAPER_CAP",
-         "LOSS_COOLDOWN_SECONDS", "WIN_COOLDOWN_SECONDS")
+         "LOSS_COOLDOWN_SECONDS", "WIN_COOLDOWN_SECONDS",
+         "LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE",
+         "LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK",
+         "MAX_PROPOSAL_AGE_SECONDS")
+    # Model placement decides whether a decision can beat its own TTL, so it
+    # belongs in the build identity: GPU and CPU runs must never pool.
+    grab("review_shared", "FORCE_GPU_LAYERS", "MIN_VRAM_SHARE")
+    grab("reviewer", "REQUIRE_GPU", "GPU_PROBE_INTERVAL_SECONDS")
+    # A blackout window change alters which trades are possible, so it is
+    # part of the build identity: news-on and news-off runs must not pool.
+    grab("news_blackout", "BLACKOUT_MINUTES_BEFORE", "BLACKOUT_MINUTES_AFTER",
+         "BLOCK_CURRENCIES", "BLOCK_IMPACTS", "NEWS_ENABLED",
+         "MAX_CACHE_AGE_HOURS")
 
     # Env switches that alter behaviour without touching a file.
     for var in ("QWEN_SKIP_ON_GEOMETRY", "QWEN_MIN_REWARD_RISK", "QWEN_MODEL",

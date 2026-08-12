@@ -50,8 +50,8 @@ INTERVAL_SECONDS = 20
 SYMBOL = "XAUUSDr"
 PLANNING_SESSIONS = ("asia", "london", "overlap", "new_york")
 SESSION_OPEN_HOUR = {"asia": 0, "london": 8, "overlap": 13, "new_york": 16}
-SESSION_CLOSE_HOUR = {"asia": 7, "london": 13, "overlap": 16, "new_york": 21}
-SESSION_HOURS = {"asia": 7, "london": 5, "overlap": 3, "new_york": 5}
+SESSION_CLOSE_HOUR = {"asia": 7, "london": 13, "overlap": 16, "new_york": 17}
+SESSION_HOURS = {"asia": 7, "london": 5, "overlap": 3, "new_york": 1}
 
 DEFAULT_PLANNER_STATE = {
     "updated_at_utc": "",
@@ -117,7 +117,7 @@ def next_session_boundary(moment: datetime) -> datetime:
     hour = moment.hour
     minute = moment.minute
     base = moment.replace(minute=0, second=0, microsecond=0)
-    boundaries = [0, 7, 8, 13, 16, 21, 24]
+    boundaries = [0, 7, 8, 13, 16, 17, 24]
     for boundary in boundaries:
         if hour < boundary or (hour == boundary and minute == 0 and boundary != hour):
             if boundary == 24:
@@ -137,7 +137,7 @@ def build_clock(moment: datetime | None = None) -> dict:
     elif name == "pre_london":
         hour_of_session = 1
     elif name == "off_session":
-        hour_of_session = hour - 21 if hour >= 21 else hour + 3
+        hour_of_session = hour - 17 if hour >= 17 else hour + 7
     else:
         hour_of_session = 1
     return {
@@ -1553,7 +1553,7 @@ def should_generate_hourly(now: datetime, state: dict) -> bool:
 
 def should_generate_verdict(now: datetime, state: dict) -> tuple[bool, str | None]:
     hour = now.hour
-    close_map = {7: "asia", 13: "london", 16: "overlap", 21: "new_york"}
+    close_map = {7: "asia", 13: "london", 16: "overlap", 17: "new_york"}
     if hour not in close_map or now.minute > 10:
         return False, None
     session = close_map[hour]
