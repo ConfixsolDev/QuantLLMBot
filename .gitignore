@@ -48,8 +48,8 @@ apps/qwen_trade_software/planview/out/
 apps/qwen_trade_software/planview/tsconfig.tsbuildinfo
 apps/qwen_trade_software/desk/tsconfig.tsbuildinfo
 
-# Local training zip / packaged dumps (regenerated; not source)
-QuantLLMBot_training.zip
+# Other packaged dumps (regenerated; not source). QuantLLMBot_training.zip is
+# tracked so Colab/v004 weekly trains can pull the frozen curriculum bundle.
 *.training.zip
 
 # Legacy research paths (removed from tree; keep ignored if restored locally)

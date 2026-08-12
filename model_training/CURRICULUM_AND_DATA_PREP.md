@@ -107,6 +107,18 @@ Sample Prepared text (`scripts/utils.py`) must show both lines. Forming candles 
 
 Aim for LoRA capability: location → auction → closed response → side, with explicit reasons — not price memorization.
 
+### 1.3 v004 sideways / three-regime pack
+
+Gold is sideways/balance most of the time (Brooks/Dalton). Curriculum must teach:
+
+| Regime | Playbook | Management |
+|--------|----------|------------|
+| **Sideways** | Outer-third fades + failed breakouts; skip mid/barbwire | **HOLD** normal giveback/rotation inside the box; **CLOSE** only on accepted break against the entry edge |
+| **Trend** | With unfinished acceptance; do not fade local wicks | Losing the breakout level can invalidate (not “mid magnet”) |
+| **Reversal** | Prior trend + TL break + failed retest | Usually births a **new range**, not an instant opposite trend |
+
+Operator gap this pack fixes: cutting sideways fades on temporary gold loss while price recovers to mid. Util: `python_utilities_for_models/append_sideways_regime_v004.py`.
+
 ---
 
 ## 2. Data sources (two streams)
@@ -452,6 +464,7 @@ Hyperparameters: repo `scripts/config.py` (5 epochs, warmup 5, QLoRA r=16).
 | v7 | `append_fib_ema_v7.py` | H4 fib consume + M1 EMA 3/14/31 |
 | v004 geom | `repair_zone_sl_tp_v004.py` | Zone-based gold SL/TP mins (M15≥5/5, H1≥7/10, H4≥10/20) |
 | v004 reasons | `enrich_trade_reasons_v004.py` | trade_reason + confirmation_reason from distilled topics |
+| v004 sideways | `append_sideways_regime_v004.py` | Sideways regime + hold-through-giveback management vs trend/reversal contrast |
 
 Bump a row here when a pack lands. Do not create a second history doc.
 
