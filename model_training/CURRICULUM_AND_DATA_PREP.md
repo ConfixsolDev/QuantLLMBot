@@ -465,6 +465,7 @@ Hyperparameters: repo `scripts/config.py` (5 epochs, warmup 5, QLoRA r=16).
 | v004 geom | `repair_zone_sl_tp_v004.py` | Zone-based gold SL/TP mins (M15≥5/5, H1≥7/10, H4≥10/20) |
 | v004 reasons | `enrich_trade_reasons_v004.py` | trade_reason + confirmation_reason from distilled topics |
 | v004 sideways | `append_sideways_regime_v004.py` | Sideways regime + hold-through-giveback management vs trend/reversal contrast |
+| v004 live SW | `append_sideways_live_20260812.py` | Live 2026-08-12 after 17:20 UTC box ~4397–4413; large-SL vs SL↔TP flip path |
 
 Bump a row here when a pack lands. Do not create a second history doc.
 
