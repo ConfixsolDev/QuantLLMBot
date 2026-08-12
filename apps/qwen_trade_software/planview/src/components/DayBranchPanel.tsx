@@ -1,6 +1,7 @@
 "use client";
 
 import type { BranchState, DayBranches, PlanBranch, PriceSanity } from "@/lib/types";
+import { describeEvidence, describeTrigger } from "@/lib/translate";
 
 /**
  * The day plan as TWO always-present branches.
@@ -60,6 +61,9 @@ function BranchCard({
   const style = STATE_STYLE[branch.state] ?? STATE_STYLE.armed;
   const isBull = branch.side === "buy";
   const dead = branch.state === "invalidated";
+  const trigger = describeTrigger(branch.trigger_text);
+  const reason = branch.reason ? describeTrigger(branch.reason) : "";
+  const evidence = branch.evidence.map(describeEvidence);
 
   return (
     <div className={`rounded-lg border p-3 transition-opacity ${style.card}`}>
@@ -75,16 +79,16 @@ function BranchCard({
         </span>
       </div>
 
-      {branch.reason ? (
+      {reason ? (
         <p className={`mb-2 text-xs ${dead ? "text-slate-500" : "text-slate-300"}`}>
-          {branch.reason}
+          {reason}
         </p>
       ) : null}
 
       <dl className="space-y-1.5 text-sm">
         <div>
           <dt className="text-xs text-slate-500">Trigger</dt>
-          <dd className="text-slate-200">{branch.trigger_text || "—"}</dd>
+          <dd className="text-slate-200">{trigger}</dd>
         </div>
         <div className="grid grid-cols-2 gap-2">
           <div>
@@ -114,10 +118,10 @@ function BranchCard({
             </span>
           </dd>
         </div>
-        {branch.evidence.length ? (
+        {evidence.length ? (
           <div>
             <dt className="text-xs text-slate-500">Evidence</dt>
-            <dd className="text-xs text-slate-400">{branch.evidence.join("; ")}</dd>
+            <dd className="text-xs text-slate-400">{evidence.join("; ")}</dd>
           </div>
         ) : null}
       </dl>

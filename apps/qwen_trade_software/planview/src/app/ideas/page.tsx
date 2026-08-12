@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchTradeIdeas } from "@/lib/api";
 import type { TradeIdeaRow, TradeIdeasResponse } from "@/lib/tradeIdeas";
+import { describeTrigger, levelName } from "@/lib/translate";
 
 function fmt(n: number | null | undefined, digits = 2): string {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";
@@ -254,7 +255,7 @@ export default function TradeIdeasPage() {
                   <td className="px-3 py-3 align-top">
                     <div className="text-slate-200">{row.status || "—"}</div>
                     <div className="max-w-[12rem] text-xs text-slate-500">
-                      {row.plan_reason}
+                      {describeTrigger(row.plan_reason)}
                     </div>
                   </td>
                   <td className="px-3 py-3 align-top">
@@ -267,14 +268,14 @@ export default function TradeIdeasPage() {
                   </td>
                   <td className="px-3 py-3 align-top text-xs text-slate-300">
                     <div>
-                      {row.entry_low_id || "—"} → {row.entry_high_id || "—"}
+                      {levelName(row.entry_low_id)} → {levelName(row.entry_high_id)}
                     </div>
                     <div className="text-slate-500">
                       {fmt(g.entry_low, 3)} – {fmt(g.entry_high, 3)}
                     </div>
                     <div className="mt-1 text-slate-500">
-                      SL lvl {row.stop_level_id || "—"} · TP lvl{" "}
-                      {row.target_level_id || "—"}
+                      SL {levelName(row.stop_level_id)} · TP{" "}
+                      {levelName(row.target_level_id)}
                     </div>
                   </td>
                   <td className="px-3 py-3 align-top text-xs text-slate-300">

@@ -54,6 +54,7 @@ from review_shared import (
     ollama_generate,
     read_json_safe,
     gold_market_open,
+    require_gpu,
     sync_model_residency,
     write_json_atomic,
 )
@@ -1215,6 +1216,17 @@ def main() -> None:
         return
 
     logging.info("Qwen trade-management process starting; interval=%ds", INTERVAL_SECONDS)
+    # Report placement, but NEVER gate on it here.
+    #
+    # The entry loop skips its cycle on CPU because a late entry is worthless:
+    # the proposal has expired and the level has moved. Management is the
+    # opposite. It looks after money already at risk, and a slow decision about
+    # an open position is far better than none -- the deterministic
+    # confirmed_management_guard can also act without the model at all.
+    #
+    # Refusing to manage a live position because inference is slow would turn a
+    # performance problem into an unprotected trade.
+    require_gpu("trade_management")
     while True:
         started = time.monotonic()
         try:

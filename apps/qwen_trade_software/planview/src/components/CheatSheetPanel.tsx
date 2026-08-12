@@ -1,6 +1,7 @@
 "use client";
 
 import type { DayPlan, SessionPlan, TradeIdea } from "@/lib/types";
+import { levelName } from "@/lib/translate";
 
 interface CheatLevel {
   label: string;
@@ -25,9 +26,9 @@ function collectLevels(
   const rows: CheatLevel[] = [];
   for (const level of dayPlan?.key_levels ?? []) {
     rows.push({
-      label: level.label || "day level",
+      label: levelName(level.label) || "day level",
       price: Number(level.price),
-      role: level.role || "level",
+      role: String(level.role || "level").replace(/_/g, " "),
     });
   }
   for (const zone of sessionPlan?.entry_zones ?? []) {

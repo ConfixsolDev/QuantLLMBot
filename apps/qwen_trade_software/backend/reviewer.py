@@ -30,6 +30,7 @@ from decision_liveness import (
     format_alarm,
 )
 import build_manifest
+import news_blackout
 import process_logging
 from market_context_cache import (
     latest_entry_context,
@@ -54,6 +55,7 @@ from review_shared import (
     read_json_safe,
     save_review_tickets,
     gold_market_open,
+    gpu_residency,
     sync_model_residency,
     unload_stale_models,
     write_json_atomic,
@@ -722,6 +724,111 @@ def compact_entry_facts(
         "planner": planner,
         "citeable_evidence_ids": citeable,
     }
+
+
+# Re-probe residency at most this often, and re-alarm at most this often. The
+# entry loop runs every 30s; probing Ollama and shouting on every pass would
+# bury the alarm in its own repetition.
+GPU_PROBE_INTERVAL_SECONDS = 60.0
+GPU_ALARM_INTERVAL_SECONDS = 300.0
+_GPU_GATE_STATE = {"checked_at": 0.0, "ok": True, "alarmed_at": 0.0}
+
+# Set QWEN_REQUIRE_GPU=0 to trade on CPU anyway. Present so an operator who
+# understands the cost can override, not because CPU is a supported mode --
+# decisions arrive after their proposal has expired, which is why this defaults
+# to on.
+REQUIRE_GPU = os.environ.get("QWEN_REQUIRE_GPU", "1") != "0"
+
+# The window a decision has to beat, quoted in the alarm so the number is in
+# front of whoever reads it. Mirrors paper_runner.MAX_PROPOSAL_AGE_SECONDS,
+# which owns the real TTL -- duplicated rather than imported because reviewer
+# does not otherwise depend on the runner, and a wrong number in a log message
+# is cheaper than a new import cycle.
+PROPOSAL_TTL_SECONDS_FOR_ALARM = 60
+
+
+# Re-announce an ongoing blackout at most this often. The entry loop runs every
+# 30s; a 30-minute window would otherwise produce 60 identical lines.
+NEWS_LOG_INTERVAL_SECONDS = 300.0
+_NEWS_GATE_STATE: dict = {"logged_at": 0.0, "event_key": None}
+
+
+def news_blackout_active() -> bool:
+    """True while a high-impact release makes a new entry unwise.
+
+    ENTRIES ONLY. This is never consulted by trade_management, and that
+    asymmetry is deliberate: an open position has money at risk and needs
+    looking after through the release more than at any other time. Closing or
+    abandoning a live trade because a calendar entry exists would be a worse
+    decision than the one being avoided.
+
+    Fails OPEN. Every failure path in news_blackout returns None, so a missing,
+    stale or unreachable calendar lets trading continue and says so loudly.
+    """
+    try:
+        event = news_blackout.active_event()
+    except Exception:
+        logging.exception("news:gate_failed — failing open")
+        return False
+    if not event:
+        _NEWS_GATE_STATE["event_key"] = None
+        return False
+
+    key = f"{event['title']}@{event['event_time_utc']}"
+    now = time.monotonic()
+    if (
+        key != _NEWS_GATE_STATE["event_key"]
+        or now - float(_NEWS_GATE_STATE["logged_at"]) >= NEWS_LOG_INTERVAL_SECONDS
+    ):
+        _NEWS_GATE_STATE.update({"event_key": key, "logged_at": now})
+        logging.info(
+            "news blackout: no new entries — %s %s (%s) at %s, window %s to %s "
+            "(%.0f min away). Open positions continue to be managed.",
+            event["country"], event["title"], event["impact"],
+            event["event_time_utc"][11:16],
+            event["window_start_utc"][11:16], event["window_end_utc"][11:16],
+            event["minutes_to_event"],
+        )
+        news_blackout.record_block(event)
+    return True
+
+
+def gpu_ready_for_entry() -> bool:
+    """True when the model is on the GPU and an entry decision can beat its TTL.
+
+    Cached briefly: residency only changes on a load or an eviction, and this
+    is called every cycle.
+
+    Fails OPEN on an unreadable probe. If Ollama cannot be reached the entry
+    call will fail on its own with a clear error -- refusing to trade because a
+    diagnostic endpoint timed out would be a worse failure than the one being
+    guarded against.
+    """
+    now = time.monotonic()
+    if not REQUIRE_GPU:
+        return True
+    if now - _GPU_GATE_STATE["checked_at"] < GPU_PROBE_INTERVAL_SECONDS:
+        return bool(_GPU_GATE_STATE["ok"])
+
+    residency = gpu_residency()
+    state = residency["state"]
+    # "unloaded" is normal before the first warm and between market sessions;
+    # "unknown" means the probe failed, not that placement is wrong.
+    ok = state in ("gpu", "unloaded", "unknown")
+    _GPU_GATE_STATE["checked_at"] = now
+    _GPU_GATE_STATE["ok"] = ok
+
+    if not ok and now - _GPU_GATE_STATE["alarmed_at"] >= GPU_ALARM_INTERVAL_SECONDS:
+        _GPU_GATE_STATE["alarmed_at"] = now
+        logging.error(
+            "ALARM CRITICAL model:not_on_gpu :: %s is on %s (%s) — entry cycles "
+            "are being SKIPPED. A decision takes 190-455s on CPU against a %ds "
+            "proposal TTL, so every proposal would expire before its answer "
+            "arrived. Free VRAM (`ollama ps` shows what is resident) and "
+            "restart; set QWEN_REQUIRE_GPU=0 to trade anyway.",
+            MODEL, state, residency["detail"], PROPOSAL_TTL_SECONDS_FOR_ALARM,
+        )
+    return ok
 
 
 def wait_reason_for(contradiction: str | None, review: dict) -> str:
@@ -2283,10 +2390,30 @@ def main() -> None:
             logging.info("freed VRAM by evicting: %s", ", ".join(evicted))
     except Exception:
         logging.exception("model:stale_eviction_failed")
+    # Calendar refresh runs on its own clock, off the decision path. A network
+    # call inside the entry loop would be a new way for entries to stall, and
+    # entry latency is already the binding constraint on this system.
+    news_refreshed_at = 0.0
+    NEWS_REFRESH_SECONDS = 3600.0
+    try:
+        news_blackout.refresh_calendar()
+        news_refreshed_at = time.monotonic()
+        for event in news_blackout.upcoming(3):
+            logging.info(
+                "upcoming blackout: %s %s %s at %s (%d min)",
+                event["country"], event["impact"], event["title"],
+                event["event_time_utc"][11:16], event["minutes_away"],
+            )
+    except Exception:
+        logging.exception("news:initial_refresh_failed")
+
     start_dashboard_server()
     while True:
         started = time.monotonic()
         try:
+            if started - news_refreshed_at >= NEWS_REFRESH_SECONDS:
+                news_blackout.refresh_calendar()
+                news_refreshed_at = started
             market = gold_market_open()
             sync_model_residency(market)
             if not market.get("open"):
@@ -2294,6 +2421,23 @@ def main() -> None:
                     "Market closed (%s); Qwen unloaded/idle — skip entry cycle",
                     market.get("reason"),
                 )
+            elif news_blackout_active():
+                # Entries only. A position already open keeps being managed
+                # through the release -- see the note in news_blackout_active().
+                pass
+            elif not gpu_ready_for_entry():
+                # Deliberately skip the cycle rather than call the model.
+                #
+                # On CPU an entry decision takes 190-455s against a 60s
+                # proposal TTL, so the answer is guaranteed to arrive after the
+                # proposal it belongs to has expired. Making the call anyway
+                # burns five minutes, writes a proposal nobody can act on, and
+                # blocks the next cycle behind the model lock -- which is how
+                # 106 proposals produced 4 fills without a single error.
+                #
+                # Skipping keeps the process alive, the alarm visible, and the
+                # logs honest about why nothing is trading.
+                pass
             else:
                 generate_automatic_deal_sheet()
 

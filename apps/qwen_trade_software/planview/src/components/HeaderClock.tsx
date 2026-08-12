@@ -31,9 +31,18 @@ function StatusPill({
         ? "border-emerald-800 bg-emerald-950/50 text-emerald-300"
         : "border-rose-900 bg-rose-950/40 text-rose-300";
   return (
-    <span className={`rounded border px-2 py-1 text-xs ${tone}`}>
+    <span className={`rounded border px-2 py-0.5 text-xs ${tone}`}>
       <span className="font-semibold">{label}</span>
       {detail ? <span className="ml-1 opacity-90">{detail}</span> : null}
+    </span>
+  );
+}
+
+function ClockBit({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <span className="inline-flex items-baseline gap-1.5 whitespace-nowrap">
+      <span className="text-slate-500">{label}</span>
+      <span className={mono ? "font-mono text-slate-100" : "text-slate-100"}>{value}</span>
     </span>
   );
 }
@@ -73,56 +82,46 @@ export function HeaderClock({
           : "unloaded";
 
   return (
-    <header className="card flex flex-wrap items-start justify-between gap-4">
-      <div>
-        <h1 className="text-xl font-semibold text-gold">GoldFlow Plan View</h1>
-        <p className="text-sm text-slate-400">
-          Session-hierarchy planner · hourly validation
-        </p>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <StatusPill
-            ok={modelOk && device === "GPU" ? true : modelOk && device !== "unloaded" ? true : modelOk}
-            label="Model"
-            detail={`${runtime?.model?.replace(":latest", "") || "qwen"} · ${deviceDetail}`}
-          />
-          <StatusPill
-            ok={mt5Ok}
-            label="MT5"
-            detail={mt5Ok ? "connected" : mt5Ok === false ? "disconnected" : "…"}
-          />
-          <StatusPill
-            ok={plannerAlive ?? null}
-            label="Planner"
-            detail={plannerStatus}
-          />
-          <Link
-            href="/ideas/"
-            className="rounded bg-gold px-2.5 py-1 text-xs font-semibold text-ink hover:brightness-110"
-          >
-            Trade ideas &gt;50%
-          </Link>
-        </div>
+    <header className="card flex flex-col gap-2">
+      {/* Line 1 — brand + live status */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <h1 className="shrink-0 text-lg font-semibold text-gold">GoldFlow Plan View</h1>
+        <StatusPill
+          ok={modelOk && device === "GPU" ? true : modelOk && device !== "unloaded" ? true : modelOk}
+          label="Model"
+          detail={`${runtime?.model?.replace(":latest", "") || "qwen"} · ${deviceDetail}`}
+        />
+        <StatusPill
+          ok={mt5Ok}
+          label="MT5"
+          detail={mt5Ok ? "connected" : mt5Ok === false ? "disconnected" : "…"}
+        />
+        <StatusPill
+          ok={plannerAlive ?? null}
+          label="Planner"
+          detail={plannerStatus}
+        />
+        <Link
+          href="/ideas/"
+          className="rounded bg-gold px-2.5 py-0.5 text-xs font-semibold text-ink hover:brightness-110"
+        >
+          Trade ideas &gt;50%
+        </Link>
       </div>
-      <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm md:grid-cols-4">
-        <div>
-          <span className="text-slate-500">UTC</span>
-          <p className="font-mono">{clock.utc_time.replace("T", " ").replace("Z", "")}</p>
-        </div>
-        <div>
-          <span className="text-slate-500">Session</span>
-          <p>
-            {SESSION_LABELS[clock.session] ?? clock.session} · hour{" "}
-            {clock.hour_of_session}
-          </p>
-        </div>
-        <div>
-          <span className="text-slate-500">Hours into day</span>
-          <p>{clock.hours_into_day} / 24</p>
-        </div>
-        <div>
-          <span className="text-slate-500">Next boundary</span>
-          <p className="font-mono text-xs">{remaining}</p>
-        </div>
+
+      {/* Line 2 — clock strip */}
+      <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-sm">
+        <ClockBit
+          label="UTC"
+          value={clock.utc_time.replace("T", " ").replace("Z", "")}
+          mono
+        />
+        <ClockBit
+          label="Session"
+          value={`${SESSION_LABELS[clock.session] ?? clock.session} · hour ${clock.hour_of_session}`}
+        />
+        <ClockBit label="Hours into day" value={`${clock.hours_into_day} / 24`} />
+        <ClockBit label="Next boundary" value={remaining} mono />
       </div>
     </header>
   );

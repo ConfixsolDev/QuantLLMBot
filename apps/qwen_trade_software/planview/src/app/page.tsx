@@ -7,11 +7,10 @@ import { DayBranchPanel } from "@/components/DayBranchPanel";
 import { ExecutionFunnelPanel } from "@/components/ExecutionFunnelPanel";
 import { TimeframeLadderPanel } from "@/components/TimeframeLadder";
 import { HeaderClock } from "@/components/HeaderClock";
-import { HourValidationCard } from "@/components/HourValidationCard";
 import { CheatSheetPanel } from "@/components/CheatSheetPanel";
 import { PlanChart } from "@/components/PlanChart";
-import { SessionTimeline } from "@/components/SessionTimeline";
-import { TradeIdeaStackPanel } from "@/components/TradeIdeaStackPanel";
+import { TechnicalDetails } from "@/components/NarrativePanels";
+import { buildPlanViewModel } from "@/lib/viewModel";
 
 const TIMEFRAMES = ["H4", "H1", "M15"] as const;
 
@@ -21,7 +20,7 @@ export default function PlanViewPage() {
     import("@/lib/types").Candle[]
   >([]);
   const [timeframe, setTimeframe] =
-    useState<(typeof TIMEFRAMES)[number]>("H4");
+    useState<(typeof TIMEFRAMES)[number]>("M15");
   const [selectedHourlyId, setSelectedHourlyId] = useState<string | null>(null);
   const [tradeIdea, setTradeIdea] = useState<TradeIdea | null>(null);
   const [cheatOpen, setCheatOpen] = useState(false);
@@ -88,6 +87,17 @@ export default function PlanViewPage() {
     return hourlyUpdates[hourlyUpdates.length - 1];
   }, [hourlyUpdates, selectedHourlyId]);
 
+  const viewModel = useMemo(
+    () =>
+      buildPlanViewModel(
+        plan,
+        { symbol: plan?.symbol, price: plan?.live_price ?? undefined },
+        tradeIdeaStack ?? undefined,
+        selectedUpdate ?? undefined,
+      ),
+    [plan, tradeIdeaStack, selectedUpdate],
+  );
+
   const defaultClock = {
     utc_time: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
     utc_hour: new Date().getUTCHours(),
@@ -139,13 +149,6 @@ export default function PlanViewPage() {
         </div>
       )}
 
-      <SessionTimeline
-        clock={plan?.clock ?? defaultClock}
-        sessionPlan={plan?.session_plan ?? null}
-        sessionVerdicts={plan?.session_verdicts ?? []}
-        hourlyUpdates={hourlyUpdates}
-      />
-
       <PlanChart
         candles={candles}
         dayPlan={plan?.day_plan ?? null}
@@ -178,42 +181,20 @@ export default function PlanViewPage() {
         tradeIdea={tradeIdea}
       />
 
-      {/*
-        Reading order is deliberate. The two panels that answer the operator's
-        actual questions come first and sit side by side:
-          left  — what is the plan, and are we buying or selling
-          right — are we trading, and if not why not
-        Supporting detail follows below.
-      */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <DayBranchPanel
-          branches={plan?.day_branches}
-          livePrice={plan?.live_price}
-          liveSanity={plan?.day_plan_live_sanity}
-          referencePrice={plan?.day_plan?.reference_price ?? null}
-        />
-        <ExecutionFunnelPanel funnel={plan?.execution_funnel} />
-      </div>
-
+      {/* One home per fact: ladder = TF lean; day plan = bull/bear side by side. */}
       <TimeframeLadderPanel ladder={plan?.timeframe_ladder} />
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <TradeIdeaStackPanel stack={tradeIdeaStack} />
-        <HourValidationCard update={selectedUpdate} />
-      </div>
+      <DayBranchPanel
+        branches={plan?.day_branches}
+        livePrice={plan?.live_price}
+        liveSanity={plan?.day_plan_live_sanity}
+        referencePrice={plan?.day_plan?.reference_price ?? null}
+      />
 
-      {plan?.session_plan && (
-        <div className="card">
-          <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">
-            Active session plan
-          </h2>
-          <p className="text-sm text-slate-300">{plan.session_plan.summary}</p>
-          <p className="mt-2 text-xs text-slate-500">
-            {plan.session_plan.session_plan_id} · {plan.session_plan.active_scenario} ·
-            confidence {plan.session_plan.confidence}
-          </p>
-        </div>
-      )}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <TechnicalDetails vm={viewModel} />
+        <ExecutionFunnelPanel funnel={plan?.execution_funnel} />
+      </div>
     </main>
   );
 }

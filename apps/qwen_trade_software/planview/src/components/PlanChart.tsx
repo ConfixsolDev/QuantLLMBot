@@ -19,6 +19,7 @@ import type {
   TradeIdeaStack,
 } from "@/lib/types";
 import { SessionRibbon } from "@/components/SessionRibbon";
+import { describeLayerStatus } from "@/lib/translate";
 
 const STATUS_COLORS: Record<string, string> = {
   on_track: "#22c55e",
@@ -277,7 +278,8 @@ export function PlanChart({
           </span>
           {h4 && (
             <span className="rounded bg-slate-900 px-2 py-1 text-xs text-amber-200">
-              Day H4 rev {h4.revision} · {h4.side.toUpperCase()} · {h4.status}
+              Day H4 rev {h4.revision} · {h4.side.toUpperCase()} ·{" "}
+              {describeLayerStatus(h4.status)}
             </span>
           )}
           {tradeIdeaStack?.revisions?.length ? (
@@ -298,7 +300,7 @@ export function PlanChart({
                   color: statusColor(status),
                 }}
               >
-                {layer.toUpperCase()} {status}
+                {layer.toUpperCase()} {describeLayerStatus(status)}
               </span>
             );
           })}

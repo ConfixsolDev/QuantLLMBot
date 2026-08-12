@@ -55,6 +55,31 @@ DEFAULT_MODEL = "qwen-trading-v004:latest"
 MODEL = os.environ.get("QWEN_MODEL", DEFAULT_MODEL)
 OLLAMA_GENERATE = "http://127.0.0.1:11434/api/generate"
 OLLAMA_PS = "http://127.0.0.1:11434/api/ps"
+
+# Offload every layer to the GPU. 999 is the idiomatic "all layers" value for
+# Ollama's num_gpu -- it clamps to the model's actual layer count.
+#
+# 2026-08-12 -- why this is not optional
+# --------------------------------------
+# The payload previously carried no placement option at all, so Ollama decided
+# on its own. When VRAM was unavailable at load time it fell back to CPU
+# silently, and the system carried on as though nothing had happened:
+#
+#     entry decision latency on GPU    13-33s
+#     entry decision latency on CPU    190-455s
+#     proposal TTL                     60s
+#
+# Every decision then arrived after the proposal it belonged to had already
+# expired. 106 proposals produced 4 fills. Nothing errored, nothing alarmed --
+# the system did correct work far too slowly to use, which is a worse failure
+# than a crash because it looks like operation.
+FORCE_GPU_LAYERS = int(os.environ.get("QWEN_NUM_GPU_LAYERS", "999"))
+
+# Below this share of the model resident in VRAM, treat the load as CPU or
+# mixed. Ollama reports size_vram against total size; a genuine full-GPU load
+# sits at ~1.0, and anything materially short of that is partly on CPU and
+# will not meet the decision deadline.
+MIN_VRAM_SHARE = 0.90
 QWEN_MAGIC = 26072401
 QWEN_COMMENT_PREFIX = "QWEN_"
 # XAUUSD typically quiets Friday ~21:00 UTC through Sunday ~22:00 UTC. When the
@@ -211,6 +236,8 @@ def _ollama_generate_raw(
                 "temperature": 0,
                 "num_ctx": num_ctx,
                 "num_predict": num_predict,
+                # Put every layer on the GPU. See FORCE_GPU_LAYERS.
+                "num_gpu": FORCE_GPU_LAYERS,
             },
         }
     ).encode("utf-8")
@@ -259,9 +286,90 @@ def ollama_generate(
     )
 
 
+def gpu_residency(model: str = MODEL) -> dict:
+    """Where the model actually sits right now, per Ollama's own accounting.
+
+    Returns {"state": "gpu"|"mixed"|"cpu"|"unloaded"|"unknown", "vram_share":
+    float|None, "detail": str}. Never raises -- a residency probe must not be
+    able to stop trading, only to describe it.
+    """
+    try:
+        with urllib.request.urlopen(OLLAMA_PS, timeout=5) as response:
+            running = json.loads(response.read().decode("utf-8")).get("models", [])
+    except Exception as error:
+        return {"state": "unknown", "vram_share": None, "detail": str(error)}
+
+    resident = next(
+        (
+            row for row in running
+            if row.get("name") == model
+            or str(row.get("name") or "").startswith(model.split(":")[0])
+        ),
+        None,
+    )
+    if not resident:
+        return {"state": "unloaded", "vram_share": None, "detail": "not resident"}
+
+    size = float(resident.get("size") or 0)
+    vram = float(resident.get("size_vram") or 0)
+    share = (vram / size) if size > 0 else 0.0
+    if vram <= 0:
+        state = "cpu"
+    elif share >= MIN_VRAM_SHARE:
+        state = "gpu"
+    else:
+        state = "mixed"
+    return {
+        "state": state,
+        "vram_share": round(share, 3),
+        "detail": f"{vram/1e9:.1f}GB of {size/1e9:.1f}GB in VRAM",
+    }
+
+
+def require_gpu(owner: str = "") -> dict:
+    """Assert the model is on the GPU. Alarm loudly when it is not.
+
+    2026-08-12 -- why this is separate from forcing num_gpu
+    -------------------------------------------------------
+    Setting num_gpu asks for full GPU placement, but Ollama can still fall back
+    -- another model squatting on VRAM, a driver reset, a smaller card than the
+    model needs. Asking is not the same as verifying.
+
+    On CPU this system does not degrade gracefully; it stops functioning while
+    appearing to function. Decisions take 190-455s against a 60-second proposal
+    TTL, so every answer arrives after the question expired: 106 proposals, 4
+    fills, and not one error in the log.
+
+    The alarm is deliberately CRITICAL and names the fix, because the symptom
+    (no trades) looks nothing like the cause (model on CPU) unless someone
+    thinks to compare decision latency against the TTL.
+    """
+    residency = gpu_residency()
+    state = residency["state"]
+    if state == "gpu":
+        logging.info(
+            "model on GPU%s: %s", f" ({owner})" if owner else "", residency["detail"]
+        )
+        return residency
+
+    level = logging.error if state in ("cpu", "mixed") else logging.warning
+    level(
+        "ALARM CRITICAL model:not_on_gpu :: %s is %s (%s). Decisions take "
+        "190-455s on CPU against a %ss proposal TTL, so every proposal expires "
+        "before its answer arrives -- the system will appear to run and take "
+        "almost no trades. Free VRAM (check `ollama ps` for stale models) and "
+        "restart.",
+        MODEL, state, residency["detail"], 60,
+    )
+    return residency
+
+
 def warm_model() -> None:
     ollama_generate("", keep_alive=-1)
-    logging.info("Qwen model loaded and pinned: %s", MODEL)
+    residency = require_gpu("warm_model")
+    logging.info(
+        "Qwen model loaded and pinned: %s (%s)", MODEL, residency["state"]
+    )
 
 
 def unload_model() -> None:

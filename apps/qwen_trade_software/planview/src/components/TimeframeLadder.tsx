@@ -1,6 +1,7 @@
 "use client";
 
 import type { PlanBranch, TimeframeLadder as Ladder, TimeframePair } from "@/lib/types";
+import { describeEvidence, describeTrigger } from "@/lib/translate";
 
 /**
  * D1 / H4 / H1 / M15, each as its own window with BOTH directions live.
@@ -72,6 +73,10 @@ function Frame({ pair }: { pair: TimeframePair }) {
         : "border-slate-800";
 
   const leadBranch = side === "buy" ? pair.bull : side === "sell" ? pair.bear : null;
+  const trigger = leadBranch?.trigger_text
+    ? describeTrigger(leadBranch.trigger_text)
+    : null;
+  const note = pair.note ? describeEvidence(pair.note) : null;
 
   return (
     <div className={`rounded-lg border p-3 ${border} bg-slate-900/40`}>
@@ -97,15 +102,15 @@ function Frame({ pair }: { pair: TimeframePair }) {
         <SideBar branch={pair.bear} lead={side === "sell"} />
       </div>
 
-      {leadBranch?.trigger_text ? (
-        <p className="mt-2 truncate text-[11px] text-slate-400" title={leadBranch.trigger_text}>
-          {leadBranch.trigger_text}
+      {trigger ? (
+        <p className="mt-2 truncate text-[11px] text-slate-400" title={trigger}>
+          {trigger}
         </p>
       ) : null}
 
-      {pair.note ? (
+      {note ? (
         <p className="mt-1.5 rounded bg-amber-500/10 px-2 py-1 text-[10px] text-amber-300/90">
-          {pair.note}
+          {note}
         </p>
       ) : null}
     </div>
