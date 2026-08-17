@@ -28,6 +28,8 @@ from typing import Any, Iterable
 
 import MetaTrader5 as mt5
 
+import live_mapped_levels
+
 
 SCHEMA_VERSION = 1
 QUALIFICATION_VERSION = 2
@@ -83,8 +85,11 @@ MT5_TIMEFRAMES = {
 }
 LOOKBACKS = {
     "D1": timedelta(weeks=8),
-    "H4": timedelta(weeks=8),
-    "H1": timedelta(weeks=2),
+    # Pull near-max broker depth so mapped H4/M15 shelves have real evidence.
+    "H4": timedelta(weeks=16),
+    "H1": timedelta(weeks=4),
+    "M30": timedelta(days=45),
+    "M15": timedelta(days=45),
 }
 MINIMUM_COUNTS = {
     "D1": 35,
@@ -95,6 +100,7 @@ MINIMUM_COUNTS = {
     "M5": 1,
     "M1": 1,
 }
+MAPPED_TRADE_LEVELS_PATH = APP_DIR / "mapped_trade_levels.json"
 COMPLETED_BROKER_METADATA_FIELDS = ("tick_volume", "spread", "real_volume")
 COMPLETED_IMMUTABLE_FIELDS = (
     "symbol",
@@ -392,6 +398,8 @@ class MT5MarketSource:
         day_start = as_of.replace(hour=0, minute=0, second=0, microsecond=0)
         if timeframe == "M1":
             return as_of.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        if timeframe == "M5":
+            return as_of - timedelta(days=3)
         return day_start
 
     def history(
@@ -1082,6 +1090,80 @@ class ContextProjectionBuilder:
         self.cache = cache
         self.symbol = symbol
 
+    def _nearest_touch_candle(
+        self, timeframe: str, zone_low: float, zone_high: float
+    ) -> dict | None:
+        """Pick a completed candle that touched the mapped zone for gate_b evidence."""
+        rows = self.cache.completed(self.symbol, timeframe)
+        if not rows:
+            # Fall back across higher frames so mapped shelves still cite evidence
+            # when the preferred TF has not warmed yet.
+            for fallback in ("H4", "H1", "M30", "M15", "D1"):
+                if fallback == timeframe:
+                    continue
+                rows = self.cache.completed(self.symbol, fallback)
+                if rows:
+                    break
+        if not rows:
+            return None
+        mid = (float(zone_low) + float(zone_high)) / 2.0
+        touching = [
+            row
+            for row in rows
+            if float(row["low"]) <= zone_high and float(row["high"]) >= zone_low
+        ]
+        pool = touching or rows
+        return min(
+            pool,
+            key=lambda row: min(
+                abs(float(row["high"]) - mid),
+                abs(float(row["low"]) - mid),
+                abs(((float(row["high"]) + float(row["low"])) / 2.0) - mid),
+            ),
+        )
+
+    def _mapped_trade_levels(self, as_of: datetime) -> list[dict]:
+        if not MAPPED_TRADE_LEVELS_PATH.exists():
+            return []
+        try:
+            payload = json.loads(MAPPED_TRADE_LEVELS_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if str(payload.get("symbol") or self.symbol) not in {self.symbol, "XAUUSDr", "XAUUSD"}:
+            return []
+        mapped: list[dict] = []
+        for row in payload.get("levels") or []:
+            level_id = str(row.get("level_id") or "").strip()
+            timeframe = str(row.get("timeframe") or "").strip().upper()
+            if not level_id or timeframe not in TIMEFRAME_SECONDS:
+                continue
+            try:
+                zone_low = float(row["zone_low"])
+                zone_high = float(row.get("zone_high", zone_low))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if zone_low > zone_high:
+                zone_low, zone_high = zone_high, zone_low
+            source = self._nearest_touch_candle(timeframe, zone_low, zone_high)
+            if not source:
+                continue
+            mapped.append(
+                {
+                    "level_id": level_id,
+                    "timeframe": timeframe,
+                    "zone_low": zone_low,
+                    "zone_high": zone_high,
+                    "role": str(row.get("role") or "mapped_important"),
+                    "label": row.get("label"),
+                    "source_candle_ids": [source["evidence_id"]],
+                    "calculation_method": str(
+                        row.get("calculation_method") or "operator_mapped"
+                    ),
+                    "valid_from_utc": source.get("close_time_utc") or iso_utc(as_of),
+                }
+            )
+        return mapped
+
     def build_levels(self, as_of: datetime, price: float, raw_hash: str) -> dict:
         levels: list[dict] = []
         evidence: list[str] = []
@@ -1121,6 +1203,43 @@ class ContextProjectionBuilder:
                     "valid_from_utc": prior["close_time_utc"],
                 }
             )
+        seen_ids = {row["level_id"] for row in levels}
+        for row in self._mapped_trade_levels(as_of):
+            if row["level_id"] in seen_ids:
+                continue
+            levels.append(row)
+            seen_ids.add(row["level_id"])
+            evidence.extend(row["source_candle_ids"])
+        completed_by_tf = {
+            timeframe: self.cache.latest_completed(
+                self.symbol, timeframe, live_mapped_levels.LOOKBACK[timeframe]
+            )
+            for timeframe in live_mapped_levels.LOOKBACK
+        }
+        closed_m1 = (completed_by_tf.get("M1") or [None])[-1]
+        for row in live_mapped_levels.build_from_completed(
+            completed_by_tf, closed_m1, price, as_of=as_of
+        ):
+            width = live_mapped_levels.ZONE_WIDTH.get(row["timeframe"], 3.0)
+            merged = False
+            for existing in levels:
+                if existing["timeframe"] != row["timeframe"]:
+                    continue
+                if not live_mapped_levels.overlaps_existing(row, [existing], width):
+                    continue
+                if int(row.get("test_count") or 0) > int(existing.get("test_count") or 0):
+                    existing["test_count"] = row["test_count"]
+                if row.get("pattern") in {"double_top", "double_bottom"}:
+                    existing["pattern"] = row["pattern"]
+                    existing["label"] = row.get("label")
+                    existing["left_after_first"] = row.get("left_after_first")
+                merged = True
+                break
+            if merged or row["level_id"] in seen_ids:
+                continue
+            levels.append(row)
+            seen_ids.add(row["level_id"])
+            evidence.extend(row.get("source_candle_ids") or [])
         levels.sort(key=lambda item: (item["zone_low"], item["level_id"]))
         lower = [row for row in levels if row["zone_high"] <= price]
         upper = [row for row in levels if row["zone_low"] > price]
@@ -1353,10 +1472,8 @@ class ContextProjectionBuilder:
         latest_m1 = self.cache.latest_completed(self.symbol, "M1")[-1]
         forming = self.cache.forming(self.symbol)
         level_rows = levels["payload"]["levels"]
-        nearby = sorted(
-            level_rows,
-            key=lambda row: abs(row["zone_low"] - quote.bid),
-        )[:3]
+        nearby = live_mapped_levels.select_nearby(level_rows, quote.bid, latest_m1)
+        live_map = live_mapped_levels.live_map_packet(level_rows, quote.bid, latest_m1)
         active = (playbooks["payload"].get("playbooks") or [None])[0]
         m1_rows = self.cache.latest_completed(self.symbol, "M1", 21)
         m5_rows = self.cache.latest_completed(self.symbol, "M5", 21)
@@ -1414,14 +1531,8 @@ class ContextProjectionBuilder:
                 key: session["payload"].get(key)
                 for key in ("session", "trade_permitted", "asia_relation", "asia_high", "asia_low")
             },
-            "nearby_levels": [
-                {
-                    "id": row["level_id"],
-                    "price": row["zone_low"],
-                    "distance": round(row["zone_low"] - quote.bid, 6),
-                }
-                for row in nearby
-            ],
+            "nearby_levels": live_mapped_levels.nearby_payload(nearby, quote.bid),
+            "live_map": live_map,
             "playbook": active,
             "position": None,
         }
@@ -3704,6 +3815,48 @@ def latest_entry_context(
         }
     finally:
         cache.close()
+
+
+def get_cached_completed_bars(
+    symbol: str | None = None,
+    timeframe: str = "M1",
+    count: int = 120,
+    path: Path | str = DEFAULT_DB,
+) -> list[dict]:
+    """Closed bars from the context SQLite cache. No MT5 call."""
+    symbol = symbol or "XAUUSDr"
+    try:
+        cache = MarketContextCache(path)
+        try:
+            rows = cache.latest_completed(symbol, timeframe, count)
+        finally:
+            cache.close()
+    except (OSError, sqlite3.Error):
+        return []
+    out = []
+    for row in rows:
+        out.append(
+            {
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "open": float(row["open"]),
+                "evidence_id": row.get("evidence_id"),
+                "open_time_utc": row.get("open_time_utc"),
+                "close_time_utc": row.get("close_time_utc"),
+                "tick_volume": row.get("tick_volume"),
+            }
+        )
+    return out
+
+
+def get_cached_m1_bars(
+    symbol: str | None = None,
+    count: int = 120,
+    path: Path | str = DEFAULT_DB,
+) -> list[dict]:
+    """M1 closed bars for ATR / regime. No MT5 call."""
+    return get_cached_completed_bars(symbol, "M1", count, path)
 
 
 def run_service(args: argparse.Namespace) -> None:

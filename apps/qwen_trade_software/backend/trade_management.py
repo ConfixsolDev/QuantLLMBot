@@ -28,14 +28,16 @@ import logging.handlers
 import socket
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import MetaTrader5 as mt5
 
 import build_manifest
+import live_mapped_levels
 import process_logging
 import management_policy
 import trade_geometry
-from market_context_cache import latest_readiness
+from market_context_cache import latest_entry_context, latest_readiness
 from review_shared import (
     DEFAULT_MANAGEMENT_STATE,
     LOG_DIR,
@@ -88,6 +90,7 @@ INTERVAL_SECONDS = int(os.environ.get("QWEN_REVIEW_INTERVAL_SECONDS", "30"))
 AUTO_MANAGE_QWEN_OWNED = True
 
 LAST_MANAGED_M1_BY_TICKET: dict[int, str] = {}
+LAST_REGIME_HINT: dict[str, float | str | None] = {"hint": None, "atr_ratio": None}
 ENTRY_CONTEXT_BY_TICKET: dict[int, dict] = {}
 EXECUTION_MONITOR_BY_ID: dict[str, dict] = {}
 # Tracks (file, byte offset) for the incremental executions tail below. The
@@ -168,6 +171,101 @@ def deal_to_dict(deal) -> dict:
     }
 
 
+def _mapped_trade_level_prices(symbol: str, current_price: float | None = None) -> dict:
+    """Operator / history-mapped shelves for management ladder + UI."""
+    from regime_engine import mapped_level_within_distance
+
+    path = Path(__file__).resolve().parent / "mapped_trade_levels.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if str(payload.get("symbol") or symbol) not in {symbol, "XAUUSDr", "XAUUSD"}:
+        return {}
+    out = {}
+    for row in payload.get("levels") or []:
+        level_id = str(row.get("level_id") or "").strip()
+        if not level_id:
+            continue
+        try:
+            lo = float(row["zone_low"])
+            hi = float(row.get("zone_high", lo))
+        except (KeyError, TypeError, ValueError):
+            continue
+        mid = (lo + hi) / 2.0
+        if not mapped_level_within_distance(mid, current_price):
+            continue
+        out[level_id] = mid
+    return out
+
+
+def _live_mapped_chart_prices(symbol: str) -> dict:
+    """Same live swing map the entry model sees, for the management UI."""
+    cache_levels = {}
+    try:
+        entry = latest_entry_context(symbol)
+    except Exception:
+        entry = {}
+    if str(entry.get("status") or "") == "ready":
+        for row in entry.get("levels") or []:
+            if str(row.get("calculation_method") or "") != "live_closed_swing":
+                continue
+            level_id = str(row.get("level_id") or "")
+            if not level_id:
+                continue
+            try:
+                cache_levels[level_id] = (
+                    float(row["zone_low"]) + float(row.get("zone_high", row["zone_low"]))
+                ) / 2.0
+            except (KeyError, TypeError, ValueError):
+                continue
+        if cache_levels:
+            return cache_levels
+    timeframes = {
+        "M1": mt5.TIMEFRAME_M1,
+        "M5": mt5.TIMEFRAME_M5,
+        "M15": mt5.TIMEFRAME_M15,
+        "M30": mt5.TIMEFRAME_M30,
+        "H1": mt5.TIMEFRAME_H1,
+        "H4": mt5.TIMEFRAME_H4,
+    }
+    seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400}
+    completed = {}
+    closed_m1 = None
+    for tag, timeframe in timeframes.items():
+        rates = mt5.copy_rates_from_pos(
+            symbol, timeframe, 1, live_mapped_levels.LOOKBACK[tag]
+        )
+        if rates is None:
+            continue
+        rows = []
+        for rate in sorted(rates, key=lambda item: int(item["time"])):
+            opened = datetime.fromtimestamp(int(rate["time"]), timezone.utc)
+            closed = opened + timedelta(seconds=seconds[tag])
+            row = {
+                "evidence_id": f"candle:{symbol}:{tag}:{opened.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+                "open_time_utc": opened.isoformat().replace("+00:00", "Z"),
+                "close_time_utc": closed.isoformat().replace("+00:00", "Z"),
+                "open": float(rate["open"]),
+                "high": float(rate["high"]),
+                "low": float(rate["low"]),
+                "close": float(rate["close"]),
+                "tick_volume": int(rate["tick_volume"]),
+            }
+            rows.append(row)
+        completed[tag] = rows
+        if tag == "M1" and rows:
+            closed_m1 = rows[-1]
+    tick = mt5.symbol_info_tick(symbol)
+    price = float(tick.bid) if tick else 0.0
+    out = {}
+    for row in live_mapped_levels.build_from_completed(completed, closed_m1, price):
+        out[row["level_id"]] = (row["zone_low"] + row["zone_high"]) / 2.0
+    return out
+
+
 def chart_levels(symbol: str) -> dict:
     levels = {}
     timeframes = {
@@ -210,6 +308,10 @@ def chart_levels(symbol: str) -> dict:
                 "D1_S1": 2.0 * pivot - high,
             }
         )
+    tick = mt5.symbol_info_tick(symbol)
+    current_price = float(tick.bid) if tick else None
+    levels.update(_mapped_trade_level_prices(symbol, current_price=current_price))
+    levels.update(_live_mapped_chart_prices(symbol))
     return levels
 
 
@@ -1077,11 +1179,35 @@ def review_positions() -> None:
         )
         return
     snapshot["management_facts"] = facts
+    try:
+        from regime_engine import snapshot_regime
+
+        regime = snapshot_regime(
+            symbol=primary_symbol,
+            current_price=float(facts["position"]["current"]),
+            levels=levels_by_symbol.get(primary_symbol) or {},
+            prev_regime=LAST_REGIME_HINT.get("hint"),
+            prev_atr_ratio=LAST_REGIME_HINT.get("atr_ratio"),
+        )
+        LAST_REGIME_HINT["hint"] = regime.get("regime_hint")
+        LAST_REGIME_HINT["atr_ratio"] = regime.get("atr_ratio_3_51")
+        snapshot["regime_context"] = regime
+        logging.info(
+            "regime_hint=%s transition=%s atr_ratio=%s range=%s m5_swings=%s",
+            regime.get("regime_hint"),
+            regime.get("regime_transition"),
+            regime.get("atr_ratio_3_51"),
+            regime.get("range_detected"),
+            regime.get("m5_swing_pattern"),
+        )
+    except Exception:
+        logging.exception("regime_snapshot:failed")
     guard_review = confirmed_management_guard(facts)
     model_used = MODEL
     total_duration_ns = None
     prompt_text = None
     raw_response = None
+    market_atr = None
     if guard_review:
         raw_response = json.dumps(guard_review, separators=(",", ":"))
         parsed_review, management_failures = validate_management_decision(
@@ -1104,6 +1230,7 @@ def review_positions() -> None:
             format_schema=management_schema(facts),
         )
         total_duration_ns = result.get("total_duration")
+        market_atr = result.get("market_atr")
         raw_response = result.get("response", "{}")
         raw_review = json.loads(raw_response)
         parsed_review, management_failures = validate_management_decision(
@@ -1155,6 +1282,7 @@ def review_positions() -> None:
         model=model_used,
         duration_ns=total_duration_ns,
         mt5_position_id=int(position.ticket),
+        atr=market_atr,
         context={
             "entry_proposal_id": entry.get("proposal_id"),
             "guard_applied": bool(guard_review),

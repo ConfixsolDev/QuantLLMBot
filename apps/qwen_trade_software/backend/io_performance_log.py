@@ -145,9 +145,11 @@ def log_qwen_exchange(
     ok: bool,
     caller: str | None = None,
     error: str | None = None,
+    atr: dict | None = None,
 ) -> None:
     """Archive stores full prompt_text and response_text for later analysis."""
     response = response or {}
+    atr_snapshot = atr if atr is not None else request.get("atr")
     record = {
         "started_at_utc": started_at_utc,
         "finished_at_utc": finished_at_utc,
@@ -155,6 +157,8 @@ def log_qwen_exchange(
         "system": "qwen",
         "caller": caller or _caller_label(skip=3),
         "operation": operation,
+        # Top-level twin of request/response atr so exports never dig for it.
+        "atr": atr_snapshot,
         "request": request,
         "response": {
             "response_text": response.get("response_text"),
@@ -166,21 +170,48 @@ def log_qwen_exchange(
             "done": response.get("done"),
             "done_reason": response.get("done_reason"),
             "model": response.get("model"),
+            # Same snapshot that was recorded on the request, injected onto the
+            # response so every answer carries the volatility regime it saw.
+            "atr": atr_snapshot,
         },
         "ok": ok,
         "error": error,
     }
     _append_jsonl("qwen-io", record)
+    atr_m1_51 = atr_m1_3 = atr_ratio = None
+    if isinstance(atr_snapshot, dict):
+        atr_m1_51 = atr_snapshot.get("atr_m1_51")
+        atr_m1_3 = atr_snapshot.get("atr_m1_3")
+        atr_ratio = atr_snapshot.get("atr_ratio_3_51")
     logging.info(
-        "Qwen %s caller=%s duration_ms=%.1f ok=%s prompt_chars=%s response_chars=%s%s",
+        "Qwen %s caller=%s duration_ms=%.1f ok=%s prompt_chars=%s "
+        "response_chars=%s atr_m1_51=%s atr_m1_3=%s atr_ratio_3_51=%s%s",
         operation,
         record["caller"],
         duration_ms,
         ok,
         request.get("prompt_chars"),
         response.get("response_chars"),
+        atr_m1_51,
+        atr_m1_3,
+        atr_ratio,
         f" error={error}" if error else "",
     )
+
+
+def capture_atr_snapshot(symbol: str | None = None) -> dict:
+    """ATR at Qwen-request time from cached M1 bars. Never calls MT5."""
+    from market_atr import empty_atr_snapshot, snapshot_atr_from_cache
+
+    try:
+        from market_context_cache import get_cached_m1_bars
+
+        m1_bars = get_cached_m1_bars(symbol)
+        if m1_bars:
+            return snapshot_atr_from_cache(m1_bars, symbol)
+        return empty_atr_snapshot(symbol, error="no_cached_m1_bars")
+    except Exception as exc:
+        return empty_atr_snapshot(symbol, error=f"atr_cache_unavailable:{exc}")
 
 
 def log_qwen_generate(
@@ -197,6 +228,7 @@ def log_qwen_generate(
     started_at = utc_now_iso()
     started = time.perf_counter()
     operation = "warm" if not prompt else "generate"
+    atr_snapshot = capture_atr_snapshot()
     request = {
         "model": model,
         "prompt_text": prompt,
@@ -206,12 +238,17 @@ def log_qwen_generate(
         "num_predict": num_predict,
         "timeout": timeout,
         "format": "json" if format_schema or prompt else None,
+        "atr": atr_snapshot,
     }
     error = None
     ok = True
     result: dict = {}
     try:
         result = fn()
+        # Hand the same snapshot to callers (append_qwen_decision, etc.).
+        if isinstance(result, dict):
+            result = dict(result)
+            result["market_atr"] = atr_snapshot
         return result
     except Exception as exc:
         ok = False
@@ -219,20 +256,20 @@ def log_qwen_generate(
         raise
     finally:
         duration_ms = (time.perf_counter() - started) * 1000
-        response_text = result.get("response", "")
+        response_text = result.get("response", "") if isinstance(result, dict) else ""
         log_qwen_exchange(
             operation=operation,
             request=request,
             response={
                 "response_text": response_text,
                 "response_chars": len(response_text),
-                "total_duration_ns": result.get("total_duration"),
-                "load_duration_ns": result.get("load_duration"),
-                "prompt_eval_count": result.get("prompt_eval_count"),
-                "eval_count": result.get("eval_count"),
-                "done": result.get("done"),
-                "done_reason": result.get("done_reason"),
-                "model": result.get("model", model),
+                "total_duration_ns": result.get("total_duration") if isinstance(result, dict) else None,
+                "load_duration_ns": result.get("load_duration") if isinstance(result, dict) else None,
+                "prompt_eval_count": result.get("prompt_eval_count") if isinstance(result, dict) else None,
+                "eval_count": result.get("eval_count") if isinstance(result, dict) else None,
+                "done": result.get("done") if isinstance(result, dict) else None,
+                "done_reason": result.get("done_reason") if isinstance(result, dict) else None,
+                "model": (result.get("model", model) if isinstance(result, dict) else model),
             },
             started_at_utc=started_at,
             finished_at_utc=utc_now_iso(),
@@ -240,4 +277,5 @@ def log_qwen_generate(
             ok=ok,
             caller=caller,
             error=error,
+            atr=atr_snapshot,
         )

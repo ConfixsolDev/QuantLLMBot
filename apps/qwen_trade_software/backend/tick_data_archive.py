@@ -115,6 +115,7 @@ def append_qwen_decision(
     mt5_position_id: int | None = None,
     proposal_id: str | None = None,
     context: dict | None = None,
+    atr: dict | None = None,
 ) -> None:
     """One decision tick: price + full Qwen in/out for decision-tree analysis."""
     record = {
@@ -129,6 +130,9 @@ def append_qwen_decision(
         "prompt_text": prompt_text,
         "raw_response": raw_response,
         "parsed": parsed,
+        # Volatility regime at the Qwen call. Same object logged on qwen-io
+        # request + response so decisions join without replaying candles.
+        "atr": atr,
     }
     if context:
         record["context"] = context
