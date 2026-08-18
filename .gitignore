@@ -37,6 +37,7 @@ apps/qwen_trade_software/backend/cache/
 apps/qwen_trade_software/backend/*.lock
 apps/qwen_trade_software/backend/entry-dashboard-state.json
 apps/qwen_trade_software/backend/management-dashboard-state.json
+apps/qwen_trade_software/backend/qualified-levels.json
 apps/qwen_trade_software/backend/planner-state.json
 apps/qwen_trade_software/backend/model-residency.json
 apps/qwen_trade_software/backend/_tmp_*.py

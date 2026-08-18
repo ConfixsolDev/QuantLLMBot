@@ -21,6 +21,7 @@ import process_logging
 from market_context_cache import (
     DEFAULT_DB,
     latest_entry_context,
+    latest_readiness,
     load_prompt_section,
     session_at,
 )
@@ -47,6 +48,7 @@ from tick_data_archive import (
 
 
 INTERVAL_SECONDS = 20
+MAX_PRICE_REPAIR_ATTEMPTS = 1
 SYMBOL = "XAUUSDr"
 PLANNING_SESSIONS = ("asia", "london", "overlap", "new_york")
 SESSION_OPEN_HOUR = {"asia": 0, "london": 8, "overlap": 13, "new_york": 16}
@@ -446,6 +448,78 @@ def _collect_plan_prices(plan: dict) -> list[tuple[str, float]]:
     return prices
 
 
+def _failure_field(item: str) -> str:
+    return item.split(":", 1)[0]
+
+
+def _is_idea_price_field(field: str) -> bool:
+    return field.startswith("trade_idea_")
+
+
+def _price_out_of_band(value: object, live_price: float, limit: float) -> bool:
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return True
+    if price != price:
+        return True
+    return abs(price - live_price) > limit
+
+
+def _idea_prices_out_of_band(idea: dict | None, live_price: float, limit: float) -> bool:
+    if not isinstance(idea, dict):
+        return False
+    values: list[object] = []
+    for key in ("invalidation", "target"):
+        if idea.get(key) is not None:
+            values.append(idea.get(key))
+    values.extend(idea.get("targets") or [])
+    zone = idea.get("pullback_zone") or []
+    if isinstance(zone, (list, tuple)):
+        values.extend(list(zone)[:2])
+    for row in idea.get("levels") or []:
+        if isinstance(row, dict) and row.get("price") is not None:
+            values.append(row.get("price"))
+    return any(_price_out_of_band(value, live_price, limit) for value in values)
+
+
+def strip_invented_idea_prices(
+    plan: dict, live_price: float, limit: float | None = None
+) -> list[str]:
+    """Drop model-invented idea geometry instead of regenerating forever.
+
+    Session plans were looping on trade_idea_m15 prices near 261 while gold
+    was ~4400. Calling Qwen again copied the same numbers back from the
+    prior stack. Ideas are optional; core scenarios/zones are not.
+    """
+    if live_price is None or live_price <= 0:
+        return []
+    limit = price_deviation_limit(live_price) if limit is None else limit
+    dropped: list[str] = []
+    for key in ("trade_idea_h4", "trade_idea_h1", "trade_idea_m15"):
+        if _idea_prices_out_of_band(plan.get(key), live_price, limit):
+            plan[key] = None
+            dropped.append(key)
+    stack = plan.get("trade_idea_stack")
+    if isinstance(stack, dict):
+        dropped.extend(strip_invented_stack_prices(stack, live_price, limit))
+    return dropped
+
+
+def strip_invented_stack_prices(
+    stack: dict, live_price: float, limit: float | None = None
+) -> list[str]:
+    if not isinstance(stack, dict) or live_price is None or live_price <= 0:
+        return []
+    limit = price_deviation_limit(live_price) if limit is None else limit
+    dropped: list[str] = []
+    for key in ("h4", "h1", "m15"):
+        if _idea_prices_out_of_band(stack.get(key), live_price, limit):
+            stack[key] = None
+            dropped.append(f"trade_idea_stack.{key}")
+    return dropped
+
+
 def apply_live_price_sanity(
     plan: dict,
     live_price: float | None,
@@ -510,6 +584,19 @@ def apply_live_price_sanity(
         if abs(price - live_price) > limit:
             failures.append(f"{label}:{price:.3f} vs live:{live_price:.3f}")
 
+    idea_failures = [
+        item for item in failures if _is_idea_price_field(_failure_field(item))
+    ]
+    stripped = (
+        strip_invented_idea_prices(plan, live_price, limit) if idea_failures else []
+    )
+    if stripped:
+        failures = [
+            item
+            for item in failures
+            if not _is_idea_price_field(_failure_field(item))
+        ]
+
     ok = not failures
     sanity = {
         "ok": ok,
@@ -519,6 +606,7 @@ def apply_live_price_sanity(
         "max_deviation_allowed": limit,
         "source": source,
         "failures": failures,
+        "stripped_ideas": stripped,
     }
     plan["price_sanity"] = sanity
     if not ok and overwrite_reference:
@@ -583,6 +671,7 @@ def _call_model(role: str, facts: dict, schema: dict, num_predict: int = 768) ->
         parsed=parsed,
         model=MODEL,
         duration_ns=result.get("total_duration"),
+        atr=result.get("market_atr"),
         context={"role": role, "clock": facts.get("clock")},
     )
     return parsed
@@ -1202,7 +1291,7 @@ def generate_session_plan(
     facts["clock"] = clock
     facts["day_plan"] = day_plan
     facts["prior_session_verdicts"] = prior_verdicts
-    facts["trade_idea_stack"] = trade_idea_stack or day_plan.get("trade_idea_stack")
+    incoming_stack = trade_idea_stack or day_plan.get("trade_idea_stack")
     live_price = live_mid_from_facts(facts)
     if live_price is None:
         try:
@@ -1215,6 +1304,11 @@ def generate_session_plan(
         )
     facts["reference_price"] = live_price
     facts["reference_price_source"] = "live_mid"
+    if isinstance(incoming_stack, dict):
+        incoming_stack = dict(incoming_stack)
+        strip_invented_stack_prices(incoming_stack, live_price)
+        trade_idea_stack = incoming_stack
+    facts["trade_idea_stack"] = incoming_stack
     facts["trade_idea_rules"] = {
         "revise_same_day_idea": True,
         "h1_refine_only": True,
@@ -1238,12 +1332,14 @@ def generate_session_plan(
         plan,
         prior_verdicts,
     )
+    strip_invented_stack_prices(stack, live_price)
     plan["trade_idea_stack"] = stack
     logging.info(
-        "Session plan price sanity ok=%s live=%s failures=%s revision=%s",
+        "Session plan price sanity ok=%s live=%s failures=%s stripped=%s revision=%s",
         sanity.get("ok"),
         sanity.get("live_price"),
         sanity.get("failures"),
+        sanity.get("stripped_ideas"),
         (stack.get("h4") or {}).get("revision"),
     )
     append_tick_record("session-plans", plan)
@@ -1473,16 +1569,30 @@ def load_plan_history(trading_date: date) -> dict:
     }
 
 
+def _core_price_failures(failures: list | None) -> list[str]:
+    return [
+        item
+        for item in (failures or [])
+        if not _is_idea_price_field(_failure_field(str(item)))
+    ]
+
+
 def plan_needs_price_repair(plan: dict | None, live_price: float | None = None) -> bool:
-    """True when a stored plan was built without live mid or with invented geometry."""
+    """True when core geometry is invented and another Qwen pass may help.
+
+    Invented trade_idea_* prices are stripped locally. Regenerating for those
+    alone kept planner_status=generating and held the GPU for hours.
+    """
     if not isinstance(plan, dict):
         return False
+    if int(plan.get("price_repair_attempts") or 0) >= MAX_PRICE_REPAIR_ATTEMPTS:
+        return False
     sanity = plan.get("price_sanity") if isinstance(plan.get("price_sanity"), dict) else {}
-    if sanity.get("ok") is False:
+    core_failures = _core_price_failures(sanity.get("failures"))
+    if sanity.get("ok") is False and core_failures:
         return True
     if sanity.get("live_price") in (None, 0, 0.0):
-        failures = sanity.get("failures") or []
-        if "live_price_unavailable" in failures:
+        if "live_price_unavailable" in (sanity.get("failures") or []):
             return True
     try:
         reference = float(plan.get("reference_price") or 0.0)
@@ -1493,7 +1603,9 @@ def plan_needs_price_repair(plan: dict | None, live_price: float | None = None) 
     if live_price is None or live_price <= 0:
         return False
     recheck = live_sanity_snapshot(plan, live_price)
-    return bool(recheck and recheck.get("ok") is False)
+    if not recheck or recheck.get("ok") is not False:
+        return False
+    return bool(_core_price_failures(recheck.get("failures")))
 
 
 def should_generate_day_plan(now: datetime, state: dict) -> bool:
@@ -1610,10 +1722,37 @@ class SessionPlanner:
             )
             return
 
+        live_price = live_mid_from_facts(planner_facts())
+        if live_price:
+            for key in ("day_plan", "session_plan"):
+                plan = self.state.get(key)
+                if isinstance(plan, dict):
+                    apply_live_price_sanity(plan, live_price)
+            stack = self.state.get("trade_idea_stack")
+            if isinstance(stack, dict):
+                strip_invented_stack_prices(stack, live_price)
+
+        readiness = latest_readiness(SYMBOL)
+        if not readiness or readiness.get("status") != "ready":
+            logging.info(
+                "Defer planner Qwen until cache is ready (status=%s failures=%s)",
+                (readiness or {}).get("status"),
+                (readiness or {}).get("failures"),
+            )
+            self._set_status("waiting_cache")
+            return
+
         if should_generate_day_plan(now, self.state):
             self._set_status("generating")
+            prior_day = self.state.get("day_plan") or {}
+            repairing_day = prior_day.get("day_plan_id") == day_plan_id(now.date())
             try:
                 day_plan, stack = generate_day_plan(clock, late=now.hour != 23)
+                day_plan["price_repair_attempts"] = (
+                    int(prior_day.get("price_repair_attempts") or 0) + 1
+                    if repairing_day
+                    else 0
+                )
                 self.state["day_plan"] = day_plan
                 self.state["trade_idea_stack"] = stack
                 # Price-repaired day plans invalidate the prior session geometry.
@@ -1637,6 +1776,10 @@ class SessionPlanner:
         need_session, session_name = should_generate_session_plan(now, self.state)
         if need_session and session_name:
             self._set_status("generating")
+            prior_session = self.state.get("session_plan") or {}
+            repairing = prior_session.get("session_plan_id") == session_plan_id(
+                now.date(), session_name
+            )
             try:
                 session_plan, stack = generate_session_plan(
                     clock,
@@ -1644,6 +1787,11 @@ class SessionPlanner:
                     self.state.get("session_verdicts", []),
                     trade_idea_stack=self.state.get("trade_idea_stack"),
                     late=now.hour != SESSION_OPEN_HOUR.get(session_name, 0),
+                )
+                session_plan["price_repair_attempts"] = (
+                    int(prior_session.get("price_repair_attempts") or 0) + 1
+                    if repairing
+                    else 0
                 )
                 self.state["session_plan"] = session_plan
                 self.state["trade_idea_stack"] = stack
@@ -1790,6 +1938,24 @@ def self_test_price_sanity() -> None:
     assert coherent["tradeable"] is True
     recheck = live_sanity_snapshot(coherent, live)
     assert recheck and recheck["ok"] is True
+    idea_only = {
+        "reference_price": live,
+        "bullish_scenario": coherent["bullish_scenario"],
+        "bearish_scenario": coherent["bearish_scenario"],
+        "key_levels": coherent["key_levels"],
+        "trade_idea_m15": {
+            "side": "sell",
+            "pullback_zone": [261.5, 260.5],
+            "invalidation": 262.5,
+            "target": 259.5,
+        },
+        "tradeable": True,
+    }
+    idea_sanity = apply_live_price_sanity(idea_only, live, source="self-test")
+    assert idea_sanity["ok"] is True
+    assert idea_only["trade_idea_m15"] is None
+    assert "trade_idea_m15" in (idea_sanity.get("stripped_ideas") or [])
+    assert plan_needs_price_repair(idea_only, live) is False
     print("session_planner price-sanity self-test passed")
 
 

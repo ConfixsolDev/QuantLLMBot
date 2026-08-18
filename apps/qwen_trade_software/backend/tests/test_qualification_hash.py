@@ -13,11 +13,9 @@ cache_objects. Stripping comments moved the hash:
  -> 3d1bb9d3...  (comment-stripped)
 
 _qualification_is_valid() then rejected a certificate that was still current,
-still passing, and still bound to the right model digest. Because the always-on
-cache child runs with --no-qwen (software_runtime.py), it could never re-run the
-challenge to mint a replacement, so the cache was permanently blocked on
-'qwen_validation_not_run' and every entry decision waited on
-cache_readiness_not_ready.
+still passing, and still bound to the right model digest. The cache child
+starts with --no-qwen; auto-requalify must stay in place so a hash or digest
+change can mint a replacement instead of sitting on qwen_validation_not_run.
 
 Cache ready through 15:03:17 -> blocked from 15:03:42, four seconds after the
 edit landed and the stack restarted.
@@ -121,6 +119,5 @@ def test_production_code_hashes_raw_text():
     window = source[start : start + 700]
     assert "keep_comments=True" in window, (
         "qualification_contract_hash must hash RAW section text. Removing "
-        "keep_comments=True invalidates every stored certificate, and the "
-        "--no-qwen cache child cannot mint a replacement."
+        "keep_comments=True invalidates every stored certificate."
     )

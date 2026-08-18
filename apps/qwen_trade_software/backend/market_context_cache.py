@@ -36,7 +36,7 @@ QUALIFICATION_VERSION = 2
 # Kept in lockstep with review_shared.MODEL -- both processes must talk to the
 # same model or the qualification certificate (keyed on model_digest) is
 # invalidated on every cycle. See CURRICULUM_AND_DATA_PREP.md 3.0.
-MODEL = os.environ.get("QWEN_MODEL", "qwen-trading-v004:latest")
+MODEL = os.environ.get("QWEN_MODEL", "qwen-trading-v005:latest")
 OLLAMA_GENERATE = "http://127.0.0.1:11434/api/generate"
 OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
 OLLAMA_PS = "http://127.0.0.1:11434/api/ps"
@@ -456,6 +456,44 @@ class MarketContextCache:
 
     def close(self) -> None:
         self.connection.close()
+
+    def flush_stale_model_objects(self, symbol: str, keep_digest: str) -> int:
+        """Drop current Qwen-bound rows that belong to another model digest.
+
+        Candles, ticks, and digest-less projection objects stay. Qualification
+        and history/playbook rows stamped with a different digest go stale so
+        the next cycle can mint a certificate for the live model.
+        """
+        now = iso_utc(utc_now())
+        with self.connection:
+            stale = self.connection.execute(
+                """
+                UPDATE cache_objects
+                SET is_current=0,
+                    invalidated_at_utc=?,
+                    invalidation_reason='stale_model_digest'
+                WHERE symbol=?
+                  AND is_current=1
+                  AND model_digest IS NOT NULL
+                  AND model_digest != ?
+                """,
+                (now, symbol, keep_digest),
+            )
+            dropped = stale.rowcount
+            cert = self.connection.execute(
+                """
+                UPDATE cache_objects
+                SET is_current=0,
+                    invalidated_at_utc=?,
+                    invalidation_reason='stale_qualification'
+                WHERE symbol=?
+                  AND is_current=1
+                  AND cache_type='context_qualification'
+                  AND (model_digest IS NULL OR model_digest != ?)
+                """,
+                (now, symbol, keep_digest),
+            )
+            return int(dropped) + int(cert.rowcount)
 
     def _create_schema(self) -> None:
         self.connection.executescript(
@@ -2029,17 +2067,13 @@ class QwenContextShadow:
         # _qualification_is_valid() stopped matching a certificate that was
         # still current, passing and bound to the right model digest.
         #
-        # The always-on cache child runs with --no-qwen (see
-        # software_runtime.py), so it can never re-run the challenge to mint a
-        # replacement. The result was a permanent 'qwen_validation_not_run'
-        # block: cache never reached ready, and entry decisions waited forever
-        # on cache_readiness_not_ready.
-        #
-        # Hashing the RAW section text keeps this identity stable across
-        # loader changes and preserves continuity with every certificate
-        # already on disk. Changing what is hashed here silently invalidates
-        # every stored qualification -- do not do it without also arranging a
-        # re-qualification run.
+        # A digest or contract mismatch used to sit forever on
+        # qwen_validation_not_run because the always-on child starts with
+        # --no-qwen. _heal_stale_qualification now flushes the dead certificate
+        # and overrides --no-qwen for one qualifying cycle (300s cooldown on
+        # failure). Hashing RAW section text still keeps this identity stable
+        # across loader changes. Do not change what is hashed here without
+        # expecting a re-qualification.
         self.qualification_contract_hash = content_hash(
             {
                 "qualification_version": QUALIFICATION_VERSION,
@@ -2058,6 +2092,7 @@ class QwenContextShadow:
                 },
             }
         )
+        self._auto_requalify_fail_at = 0.0
 
     def _model_metrics(self, result: dict) -> dict:
         return {
@@ -2081,6 +2116,64 @@ class QwenContextShadow:
             and certificate.get("model_digest") == model_digest
             and certificate["payload"].get("passed") is True
         )
+
+    def _qualification_stale_reason(self, model_digest: str | None) -> str | None:
+        if self._qualification_is_valid(model_digest):
+            return None
+        certificate = self.cache.object("context_qualification", self.symbol)
+        if not certificate:
+            return "qualification_missing"
+        if certificate.get("model_digest") != model_digest:
+            return "model_digest_mismatch"
+        if certificate.get("source_hash") != self.qualification_contract_hash:
+            return "contract_hash_mismatch"
+        return "qualification_not_passed"
+
+    AUTO_REQUALIFY_RETRY_SECONDS = 300.0
+
+    def _heal_stale_qualification(
+        self,
+        model_digest: str | None,
+        run_qwen: bool,
+        benchmark_minute: bool,
+    ) -> tuple[bool, bool]:
+        """Flush a dead certificate and, if needed, override --no-qwen once.
+
+        The always-on child starts with --no-qwen so it does not hold the model
+        lock on every 30s tick. That also meant a model switch (v004→v005)
+        could sit on qwen_validation_not_run forever. One qualifying cycle is
+        cheaper than a dead Asia session.
+        """
+        reason = self._qualification_stale_reason(model_digest)
+        if reason is None:
+            self._auto_requalify_fail_at = 0.0
+            return run_qwen, benchmark_minute
+        if not model_digest:
+            return run_qwen, benchmark_minute
+        flushed = self.cache.flush_stale_model_objects(self.symbol, model_digest)
+        logging.warning(
+            "stale qualification reason=%s flushed=%s",
+            reason,
+            flushed,
+        )
+        if run_qwen:
+            return True, benchmark_minute
+        now = time.monotonic()
+        if (
+            self._auto_requalify_fail_at
+            and now - self._auto_requalify_fail_at < self.AUTO_REQUALIFY_RETRY_SECONDS
+        ):
+            logging.info(
+                "auto-requalify cooldown %.0fs remaining",
+                self.AUTO_REQUALIFY_RETRY_SECONDS
+                - (now - self._auto_requalify_fail_at),
+            )
+            return False, benchmark_minute
+        logging.warning(
+            "auto-requalify: overriding --no-qwen (%s)",
+            reason,
+        )
+        return True, False
 
     def _store_qualification_certificate(
         self, response: dict, model_digest: str | None
@@ -2408,7 +2501,7 @@ class QwenContextShadow:
         result = self.ollama.generate(
             prompt,
             num_ctx=8192,
-            num_predict=650,
+            num_predict=1024,
             timeout=None,
             format_schema=schema,
         )
@@ -2720,9 +2813,9 @@ class QwenContextShadow:
             structural_result = self.ollama.generate(
                 prompt,
                 num_ctx=12288,
-                # 550 truncated mid-evidence_ids (~1320 chars). Pinning + 1024
-                # leaves headroom for the two long candle evidence ids.
-                num_predict=1024,
+                # 550 truncated mid-evidence_ids (~1320 chars). v005 still
+                # cut the same JSON at ~1335 chars under 1024; 2048 is the floor.
+                num_predict=2048,
                 timeout=None,
                 format_schema=structural_schema,
             )
@@ -2934,7 +3027,7 @@ class QwenContextShadow:
                 session_result = self.ollama.generate(
                     session_prompt,
                     num_ctx=8192,
-                    num_predict=600,
+                    num_predict=1024,
                     timeout=None,
                     format_schema=session_schema,
                 )
@@ -3196,7 +3289,7 @@ class QwenContextShadow:
         result = self.ollama.generate(
             prompt,
             num_ctx=8192,
-            num_predict=1024,
+            num_predict=2048,
             timeout=None,
             format_schema=challenge_schema,
         )
@@ -3322,6 +3415,9 @@ class QwenContextShadow:
             self.symbol, ("D1", "H4", "H1", "M30")
         )
         model_info = self.ollama.model_info()
+        run_qwen, benchmark_minute = self._heal_stale_qualification(
+            model_info.get("digest"), run_qwen, benchmark_minute
+        )
         levels = self.builder.build_levels(as_of, quote.bid, levels_hash)
         structure = self.builder.build_structure(
             as_of, quote.bid, structural_hash, levels
@@ -3507,6 +3603,17 @@ class QwenContextShadow:
         self.cache.write_manifest(self.symbol, manifest)
         for stage, duration in timings.items():
             self.cache.record_latency(self.symbol, cycle_id, stage, duration, {})
+        if self._qualification_is_valid(model_info.get("digest")):
+            self._auto_requalify_fail_at = 0.0
+        elif run_qwen:
+            truncated = any("invalid_json" in str(item) for item in failures)
+            if truncated:
+                logging.warning(
+                    "qualification JSON truncated; retry next cycle without cooldown"
+                )
+                self._auto_requalify_fail_at = 0.0
+            else:
+                self._auto_requalify_fail_at = time.monotonic()
         return manifest
 
 
@@ -3701,18 +3808,45 @@ def latest_entry_context(
     path: Path | str = DEFAULT_DB,
     *,
     now: datetime | None = None,
+    auto_upgrade: bool = True,
 ) -> dict:
-    """Return the current cache-qualified packet permitted to reach entry Qwen."""
+    """Return the current cache-qualified packet permitted to reach entry Qwen.
+
+    Args:
+        auto_upgrade: If True and manifest is blocked, attempt to run_once()
+                      to refresh the cache before returning blocked status.
+    """
     checked_at = as_utc(now or utc_now())
     cache = MarketContextCache(path)
     try:
         manifest = cache.latest_manifest(symbol)
         if not manifest or manifest.get("status") != "ready":
-            return {
-                "status": "blocked",
-                "reason": "cache_readiness_not_ready",
-                "failures": (manifest or {}).get("failures", ["readiness_missing"]),
-            }
+            # Auto-upgrade: try to refresh the cache if it's blocked
+            if auto_upgrade:
+                try:
+                    source = MT5MarketSource(symbol)
+                    source.connect()
+                    ollama = OllamaClient()
+                    shadow = QwenContextShadow(cache, source, ollama)
+                    # Run a context cycle to try to get to ready state
+                    new_manifest = shadow.run_once(run_qwen=True, benchmark_minute=True)
+                    source.close()
+                    # After run_once, check again
+                    manifest = new_manifest if new_manifest.get("status") == "ready" else cache.latest_manifest(symbol)
+                except Exception as upgrade_error:
+                    logging.warning(
+                        "Auto-upgrade context cycle failed: %s",
+                        upgrade_error,
+                        exc_info=True,
+                    )
+                    # Fall through to blocked return below
+            if not manifest or manifest.get("status") != "ready":
+                return {
+                    "status": "blocked",
+                    "reason": "cache_readiness_not_ready",
+                    "failures": (manifest or {}).get("failures", ["readiness_missing"]),
+                    "auto_upgrade_attempted": auto_upgrade,
+                }
         objects = {
             name: cache.object(name, symbol)
             for name in ("structural", "levels", "session", "playbooks", "minute")

@@ -36,22 +36,21 @@ from market_context_cache import DEFAULT_STORE_ROOT, model_generation_lock
 
 # Model version. See model_training/CURRICULUM_AND_DATA_PREP.md 3.0.
 #
-# v004 is the model trained on curriculum v9 (712 rows) -- balanced buy/sell
-# confidence, M30 coverage, frame-coherence skips, live-outcome grounding and
-# the trade-management pack. It replaces v003, which was buy-blind (scored buy
-# non-zero only 14% of the time against 82% for sell).
+# v005 is the 2026-08-17 retrain on curriculum v9 + Phase 4 regime pack (789
+# aligned rows). It replaces v004, which emitted confidence=0 on every live
+# ready. Holdout: direction 100%, action 90%; live still needs 51+ to fill.
 #
-# Switching model invalidates the qualification certificate, which is keyed on
-# model_digest. The always-on cache child runs --no-qwen and cannot mint a new
-# one, so the cache will block on 'qwen_validation_not_run' until a
-# qualification pass is run:
+# Switching model invalidates the qualification certificate (keyed on
+# model_digest). The cache child still starts with --no-qwen, but it now
+# flushes the stale certificate and runs one qualifying cycle automatically.
+# Manual fallback if that cycle fails repeatedly:
 #
-#     ollama list | grep qwen-trading-v004      # confirm the tag first
-#     python market_context_cache.py --once     # WITHOUT --no-qwen
+#     ollama list | grep qwen-trading-v005
+#     py -3 market_context_cache.py --once
 #
 # QWEN_MODEL overrides without a code edit; market_context_cache.py reads the
 # same variable and the two MUST match or the digest check fails every cycle.
-DEFAULT_MODEL = "qwen-trading-v004:latest"
+DEFAULT_MODEL = "qwen-trading-v005:latest"
 MODEL = os.environ.get("QWEN_MODEL", DEFAULT_MODEL)
 OLLAMA_GENERATE = "http://127.0.0.1:11434/api/generate"
 OLLAMA_PS = "http://127.0.0.1:11434/api/ps"

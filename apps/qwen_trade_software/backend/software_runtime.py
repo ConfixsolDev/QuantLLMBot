@@ -138,9 +138,10 @@ class QwenTradeSoftware:
             # its own knowledge base / skill path over time, separate from
             # entry-decision. See trade_management.py's module docstring.
             "trade_management": ("trade_management.py",),
-            # Heavy Qwen qualification is manual/off-hours while the challenger
-            # is blocked.  The always-on child keeps deterministic cache state
-            # current without holding the model lock ahead of the champion.
+            # Steady-state cache ticks skip Qwen (--no-qwen) so they do not
+            # hold the model lock. market_context_cache overrides that for one
+            # cycle when the qualification certificate is missing or bound to
+            # another model digest.
             "context_cache": (
                 "market_context_cache.py",
                 "--no-qwen",
