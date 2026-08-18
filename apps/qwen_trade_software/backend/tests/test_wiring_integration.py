@@ -150,6 +150,24 @@ def test_executor_falls_back_on_poor_rr_when_skip_disabled(mt5_fake, monkeypatch
     assert tp == pytest.approx(4332.822 - pe.INITIAL_TAKE_PROFIT_DISTANCE)
 
 
+def test_executor_refuses_htf_thesis_with_micro_fixed_bracket(mt5_fake, monkeypatch):
+    """2026-08-13: H4+$3 stop is the Asia sudden-loss pattern — never fall back."""
+    import paper_executor as pe
+
+    monkeypatch.setattr(pe, "SKIP_ON_GEOMETRY_REJECTION", frozenset())
+    args = Namespace(
+        side="sell",
+        management_reference_sl=4411.434,
+        management_reference_tp=4401.199,
+        structure_timeframe="H4",
+        stop_level_id="H4",
+        target_level_id="D1",
+    )
+    with pytest.raises(pe.GeometryRejection) as excinfo:
+        pe.broker_bracket_from_plan(args, 4406.323, 3)
+    assert excinfo.value.reason_code == "htf_thesis_micro_bracket"
+
+
 def test_observation_window_records_what_it_would_have_refused(mt5_fake, monkeypatch):
     """The observation window is only worth running if it leaves evidence.
 

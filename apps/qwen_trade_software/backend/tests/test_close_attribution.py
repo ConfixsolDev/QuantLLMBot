@@ -118,7 +118,7 @@ def test_manager_close_is_attributed_to_the_manager_without_a_comment(executor):
     pe_decision = {
         "decision_id": "d-1",
         "mt5_position_id": 555,
-        "model": "qwen-trading-v004:latest",
+        "model": "qwen-trading-v005:latest",
         "parsed": {"action": "close", "confidence": 62, "reason": "idea invalidated"},
     }
     object.__setattr__(pe, "manager_closed_position", lambda ids: pe_decision)

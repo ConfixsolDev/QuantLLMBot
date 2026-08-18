@@ -1,5 +1,7 @@
-<!-- version: 2.5 | owner: human | delivery: always -->
-<!-- changelog: 2.0 stable section IDs added (sections_applied targets these);
+<!-- version: 2.7 | owner: human | delivery: always -->
+<!-- changelog: 2.7 added regime-reading (range/trend/breakout/exhaustion).
+     2.6 added three-step trade finding (context → hunt → arm).
+     2.0 stable section IDs added (sections_applied targets these);
      restored condensed doctrine from operator skill: sessions, fib, entry
      mechanics, breakout/retest, targets, basket; coherence check added.
      2.4 added advance zone-to-trigger and failure-test execution doctrine.
@@ -24,6 +26,28 @@ This is paper research, not live-execution authority.
 
 At every meaningful zone compare three scenarios before choosing: acceptance/
 continuation, rejection/reversal, and unfinished retracement.
+
+## [regime-reading] Range, trend, breakout, exhaustion
+
+Python may supply regime_hint as range, trend, breakout, or exhaustion. Treat
+it as a location hint, not a command. Closed candles at mapped zones outrank
+the hint when they disagree.
+
+- Range: overlapping bodies, two-sided wicks, repeated tests of the same
+  support and resistance. Fade the outer third; skip the middle. First target
+  is the opposing M5 boundary (scalp). Do not run a basket across the box.
+- Trend: higher highs and higher lows, or the inverse. Enter on a pullback to
+  a mapped zone with a closed failure, not at the impulse extreme. Keep the
+  higher-timeframe target (starter basket).
+- Breakout: a closed candle of the level's own timeframe accepts beyond a
+  defined range edge and a retest holds. Chase only after that accept; a wick
+  through the edge is not a breakout.
+- Exhaustion: fast ATR expansion at a mapped extreme with no pullback. Wait.
+  Do not sell the spike or buy the dump.
+
+A CHoCH, BOS, FVG, or liquidity sweep is a supplied confirmation label on
+closed M1/M5. Interpret it at the active zone; do not invent one, and do not
+treat an unfilled FVG as an entry by itself.
 
 ## [timeframe-roles] Timeframe roles
 
@@ -159,18 +183,31 @@ high/higher low may define the local structural invalidation. If that
 invalidation and target room do not fit the supplied execution profile, skip;
 never hide bad geometry behind the quality of the zone.
 
+## [entry-process] Context → hunt → arm
+
+Trade finding is three steps (not context→open):
+1. Context/plan — direction (always-in / HTF auction), named hunt band (pullback
+   or outer-third), invalidation.
+2. Hunt — while price is outside the hunt band, wait with
+   missing_fact=at_entry_location. Do not sell the structure low or buy the
+   high because side is correct. Optional challenger may only force wait/revise.
+3. Arm — price inside the band, then closed M5 (preferred) / M1 timing, then
+   invalidation still valid → ready. Otherwise keep waiting.
+
 ## [entry-buy] Buy entry
 
 Location is not directly under respected resistance. Selling pressure reaches
 support or the M1 EMA cluster and fails: no sustained lower closes. A bullish
 M1 candle reclaims the EMA 3/14/31 cluster with upward acceptance. Enter at
-the next M1 open with invalidation below the rejection extreme.
+the next M1 open with invalidation below the rejection extreme. Hunt the
+pullback support band first when context is buy but price is at the high.
 
 ## [entry-sell] Sell entry
 
 Exact inverse: buying fails at resistance, a bearish M1 candle reclaims down
 through the cluster, enter at the next M1 open, invalidation above the
-rejection extreme.
+rejection extreme. Hunt the pullback resistance band first when context is
+sell but price is at the low.
 
 ## [entry-veto] Late entry and early exception
 

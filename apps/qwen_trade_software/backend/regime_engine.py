@@ -250,3 +250,13 @@ def snapshot_regime(
     packet["m1_bars"] = len(m1_bars)
     packet["m5_bars"] = len(m5_bars)
     return packet
+
+
+def suggested_target_mode(hint: str | None) -> str | None:
+    """Python suggestion for entry target_mode. Qwen may override."""
+    return {
+        "range": "scalp",
+        "exhaustion": "scalp",
+        "trend": "starter_basket",
+        "breakout": "starter_basket",
+    }.get(str(hint or "").strip().lower())

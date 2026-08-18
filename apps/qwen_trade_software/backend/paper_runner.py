@@ -41,14 +41,16 @@ PROPOSAL_POLL_SECONDS = 0.25
 # is entering on a level that has just been reached and reacted to, which is
 # rarely the same setup the plan was built on.
 #
-# 2026-08-13 -- loss cooldown lengthened; exceptional bypass only
-# --------------------------------------------------------------
-# Three same-thesis M5 pin fades lost ~$516 in ~45 minutes after the old 120s
-# loss pause. 30 minutes covers that re-fire window. During a loss cooldown the
-# runner still polls: a fresh ready proposal may enter only when model
-# confidence is very high AND structural reward:risk is very high. Win
+# 2026-08-13 -- loss cooldown shortened back to 5 minutes
+# -------------------------------------------------------
+# 30 minutes (added earlier today) blocked more good follow-through than it
+# prevented. The two sudden Asia losses (−147 then −162) were the same defect:
+# H4 thesis with a fixed $3 stop — cooldown cannot fix that. Pause only long
+# enough to avoid an instant revenge re-fire (~5 M1 bars). During a loss
+# cooldown the runner still polls: a fresh ready proposal may enter only when
+# model confidence is very high AND structural reward:risk is very high. Win
 # cooldown stays short and hard (no bypass).
-LOSS_COOLDOWN_SECONDS = 1800
+LOSS_COOLDOWN_SECONDS = 300
 WIN_COOLDOWN_SECONDS = 120
 LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE = 82
 # Above normal geometry floor (~0.9) and above the fixed $3/$5 bracket (~1.67).

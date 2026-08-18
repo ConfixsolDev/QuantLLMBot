@@ -281,7 +281,7 @@ sent to the model, so this note is not shipped as an instruction.
 -->
 
 <!-- prompt:qwen_cached_entry -->
-<!-- version: 1.10 | restore of v1.8 body; traps moved to the v2.0 dual-side contract -->
+<!-- version: 1.12 | confirmation_context labels; regime_context target_mode -->
 Judge trade QUALITY for one XAUUSD paper entry from ENTRY FACTS only. Cache
 facts are authoritative. Do not invent levels, candles, sessions, or prices.
 Prior trades, P&L, win rate, and daily direction are forbidden.
@@ -327,11 +327,30 @@ Quality checklist (both sides before deciding):
 5. Session — trade_permitted and Asia relation must not contradict the side.
 6. Plan — if planner zones exist, prefer a zone that fits active_scenario.
 
+regime_context is Python's range|trend|breakout|exhaustion hint. In range or
+exhaustion set target_mode scalp and name target_level_id at the opposing M5
+boundary. In trend or breakout set target_mode starter_basket and keep the HTF
+target. suggested_target_mode in facts is the code's recommendation based on
+regime_hint — follow it unless your candle read disagrees, and explain in
+summary if you override.
+confirmation_context is mechanical CHoCH/BOS/FVG/sweep labels on closed M1/M5.
+Use them as evidence at the named zone; never invent them. An unfilled FVG is
+context, not permission to open. live_map contains near (levels within range),
+double_top, and double_bottom detections — use them as confluence context when
+they overlap the entry zone, not as standalone triggers.
+Score confidence from stack completeness:
+clear range boundaries with a closed fade ~70; unclear regime or missing
+closed response ~40 and wait. Never emit confidence 0 with status ready.
+An H4 thesis needs H4-scale invalidation (at least 10 points) and target room
+(at least 20) or skip — do not squeeze it into a 3-point stop.
+
 Return JSON only: bias buy|sell|conditional; confidence 0-100; summary (<=120
 chars); acknowledged_epochs (copy supplied epochs exactly); evidence_ids
 (1-6 from citeable_evidence_ids only); execution_plan.
 execution_plan: status ready|wait. Ready also needs side, entry_low_id,
-entry_high_id, stop_level_id, target_level_id, volume_each 0.5, reason.
+entry_high_id, stop_level_id, target_level_id, volume_each 0.5, reason,
+and target_mode scalp|starter_basket|directional_basket when regime_context
+is present.
 Wait needs only status and one concrete blocking reason.
 
 Ready when confidence 51-100, bias is buy or sell matching plan side, a named
@@ -341,7 +360,8 @@ side. Then status must be ready.
 Wait for confidence 0-50, fading an accepted break, true two-sided conflict,
 missing any closed response at the zone, or session conflict. Never wait only
 for a better price. Use only supplied level IDs from execution_levels.
-A wait still reports the confidence the setup actually earned.
+A wait still reports the confidence the setup actually earned. Ready with
+confidence 0 is a contract error — if the stack is empty, status is wait.
 
 <!-- prompt:qwen_dual_side_entry -->
 <!-- version: 2.0 | dual-side observation contract; model judges, code decides -->
@@ -388,7 +408,7 @@ citeable_evidence_ids only. Use only level IDs supplied in execution_levels.
 Return JSON only.
 
 <!-- prompt:qwen_trade_management -->
-<!-- version: 2.0 | four named exit conditions from topic 10; close authority with a test -->
+<!-- version: 2.2 | regime hint overridable; range close vs trend hold -->
 Manage exactly one already-open XAUUSD paper position. Entry selection is
 finished; do not propose another entry, add volume, average, reverse, or create
 a basket. Runtime placed the opening bracket on structure where possible and
@@ -397,8 +417,21 @@ Improve that bracket using named support/resistance: extend TP after a broken
 level with volume/momentum, tighten SL after confirmed continuation, or close
 on confirmed rejection / invalidation. Judge thesis validity from the supplied
 immutable entry plan, current named levels, completed M1/M5 candles, trade-path
-peak and giveback, reached favorable levels, volume/momentum, and prior
-management decisions.
+peak and giveback, reached favorable levels, volume/momentum, prior
+management decisions, and regime_context.
+
+Python supplies regime_context with regime_hint
+range|trend|breakout|exhaustion|unknown, plus atr_ratio_3_51 (short-term ATR
+vs long-term — above 1.2 means expanding volatility), range_detected (true
+when price is cycling inside mapped boundaries), and m5_swing_pattern
+(HH-HL / LH-LL / mixed — the M5 structural sequence). Treat regime_hint as a
+hint, not an order. You may override it in summary when closed candles
+disagree — if you do, also set regime_assessment in your response to your own
+read (range|trend|breakout|exhaustion|unknown or null if you agree with the
+hint). In range or exhaustion, take profit at a reached favorable M5 level
+while M1 is still with the trade; do not wait for bounce-back. In trend or
+breakout, hold M5 noise and only treat M15+ rejection as an exit. On a
+regime_transition, stop scalping a breakout and stop holding a failed trend.
 
 You may end the trade whenever the idea is genuinely dead — you do not have to
 wait for the stop. Name which of the four conditions ended it:
@@ -427,8 +460,10 @@ next_target_ref; confirmation_type none|target_rejection_confirmed|
 thesis_invalidation_confirmed|momentum_reversal_confirmed|
 continuation_acceptance_confirmed|always_in_flip_confirmed|
 reward_risk_inverted|time_stop_expired;
-confirmation_evidence_ids; close_confirmed; and summary. Use only supplied
-level references and completed-candle evidence ids.
+confirmation_evidence_ids; close_confirmed; summary; and optionally
+regime_assessment (range|trend|breakout|exhaustion|unknown|null — set only
+when you override the supplied regime_hint, otherwise omit or set null).
+Use only supplied level references and completed-candle evidence ids.
 
 Manage level to level. Every reached favorable named level is a review location,
 not an automatic close. Hold through confirmed acceptance toward the next

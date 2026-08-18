@@ -363,11 +363,11 @@ def test_a_losing_trade_still_cools_down():
 
     seconds, label = pr.cooldown_for({"net_pnl": -52.25})
     assert seconds == pr.LOSS_COOLDOWN_SECONDS and label == "Loss"
-    assert pr.LOSS_COOLDOWN_SECONDS == 1800
+    assert pr.LOSS_COOLDOWN_SECONDS == 300
 
 
 def test_loss_cooldown_bypass_requires_high_confidence_and_rr():
-    """2026-08-13: 30m loss pause, interruptible only by 82%+ and R:R >= 2.5."""
+    """Loss pause (5m) interruptible only by 82%+ and R:R >= 2.5."""
     import paper_runner as pr
 
     strong = {
@@ -440,7 +440,7 @@ def test_both_cooldowns_are_in_the_build_manifest():
     assert "paper_runner.LOSS_COOLDOWN_SECONDS" in bm.MANIFEST["tunables"]
     assert "paper_runner.LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE" in bm.MANIFEST["tunables"]
     assert "paper_runner.LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK" in bm.MANIFEST["tunables"]
-    assert bm.MANIFEST["tunables"]["paper_runner.LOSS_COOLDOWN_SECONDS"] == 1800
+    assert bm.MANIFEST["tunables"]["paper_runner.LOSS_COOLDOWN_SECONDS"] == 300
     assert bm.MANIFEST["tunables"]["paper_runner.LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE"] == 82
     assert bm.MANIFEST["tunables"]["paper_runner.LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK"] == 2.5
 

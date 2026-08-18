@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import entry_policy
+import live_mapped_levels
 import plan_ladder
 from execution_funnel import build_funnel
 from decision_liveness import (
@@ -535,6 +536,8 @@ def cache_levels_for_decision(entry_cache: dict) -> dict:
                 "price": float(row["zone_low"]),
                 "zone_high": float(row["zone_high"]),
                 "role": row.get("role"),
+                "pattern": row.get("pattern"),
+                "test_count": row.get("test_count"),
                 "source_candle_ids": row.get("source_candle_ids", []),
             }
         )
@@ -557,7 +560,12 @@ def _slim_candle(row: dict) -> dict:
 def _execution_level_ladder(
     decision_levels: dict, mid_price: float, each_side: int = 6
 ) -> list[dict]:
-    """Nearest named levels above and below price for geometry only."""
+    """Nearest named levels above and below price for geometry only.
+
+    Live and operator-mapped shelves inside PIN_BAND, or an active double
+    top/bottom, stay selectable so the model can name the zone it actually sees.
+    Distant yesterday shelves are not pinned into the enum.
+    """
     rows = [
         {
             "id": str(row["id"]),
@@ -565,6 +573,8 @@ def _execution_level_ladder(
             "lo": float(row["price"]),
             "hi": float(row["zone_high"]),
             "role": row.get("role"),
+            "pattern": row.get("pattern"),
+            "test_count": row.get("test_count"),
         }
         for timeframe, level_rows in decision_levels.items()
         for row in level_rows
@@ -572,7 +582,17 @@ def _execution_level_ladder(
     rows.sort(key=lambda item: item["lo"])
     below = [row for row in rows if row["hi"] <= mid_price][-each_side:]
     above = [row for row in rows if row["lo"] > mid_price][:each_side]
-    return below + above
+    pinned = [row for row in rows if live_mapped_levels.should_pin(row, mid_price)]
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for row in below + above + pinned:
+        level_id = row["id"]
+        if level_id in seen:
+            continue
+        seen.add(level_id)
+        merged.append(row)
+    merged.sort(key=lambda item: item["lo"])
+    return merged
 
 
 def compact_entry_facts(
@@ -684,8 +704,14 @@ def compact_entry_facts(
         _add_cite(row.get("id"))
     for row in minute.get("nearby_levels") or []:
         _add_cite(row.get("id"))
+    live_map = minute.get("live_map") or {}
+    for row in live_map.get("near") or []:
+        _add_cite(row.get("id"))
+    for key in ("double_top", "double_bottom"):
+        if isinstance(live_map.get(key), dict):
+            _add_cite(live_map[key].get("id"))
 
-    return {
+    packet = {
         "symbol": symbol,
         "quote": {
             "bid": quote.get("bid"),
@@ -719,11 +745,46 @@ def compact_entry_facts(
         "forming": forming_slim,
         "volume": minute.get("volume") or {},
         "nearby_levels": minute.get("nearby_levels") or [],
+        "live_map": live_map,
         "recent_closed": recent,
         "execution_levels": execution_levels,
         "planner": planner,
         "citeable_evidence_ids": citeable,
+        "regime_context": {},
+        "confirmation_context": {},
+        "suggested_target_mode": None,
     }
+    try:
+        from regime_engine import snapshot_regime, suggested_target_mode
+
+        level_prices = {}
+        for row in execution_levels:
+            level_id = row.get("id")
+            if not level_id:
+                continue
+            try:
+                lo = float(row.get("lo") or row.get("price") or 0)
+                hi = float(row.get("hi") or lo)
+            except (TypeError, ValueError):
+                continue
+            level_prices[str(level_id)] = (lo + hi) / 2.0
+        if mid > 0:
+            packet["regime_context"] = snapshot_regime(symbol, mid, level_prices)
+        packet["suggested_target_mode"] = suggested_target_mode(
+            packet["regime_context"].get("regime_hint")
+        )
+        packet["regime_context"]["suggested_target_mode"] = packet[
+            "suggested_target_mode"
+        ]
+    except Exception:
+        pass
+    try:
+        from confirmation_engine import snapshot_confirmations
+
+        packet["confirmation_context"] = snapshot_confirmations(symbol)
+    except Exception:
+        pass
+    return packet
 
 
 # Re-probe residency at most this often, and re-alarm at most this often. The
@@ -831,6 +892,49 @@ def gpu_ready_for_entry() -> bool:
     return ok
 
 
+def _stamp_regime_target_mode(review: dict, facts: dict) -> None:
+    """Attach Python regime hint and suggested target_mode; keep Qwen's if set."""
+    from regime_engine import suggested_target_mode
+    from qualified_levels import remember_qualified_level_ids
+
+    regime = (facts or {}).get("regime_context") or {}
+    hint = regime.get("regime_hint")
+    suggested = (facts or {}).get("suggested_target_mode") or suggested_target_mode(hint)
+    plan = review.get("execution_plan")
+    if not isinstance(plan, dict):
+        plan = {}
+        review["execution_plan"] = plan
+    plan["regime_hint"] = hint
+    plan["suggested_target_mode"] = suggested
+    if plan.get("status") == "ready" and not plan.get("target_mode"):
+        plan["target_mode"] = suggested
+    logging.info(
+        "entry_regime hint=%s suggested_target_mode=%s qwen_target_mode=%s",
+        hint,
+        suggested,
+        plan.get("target_mode"),
+    )
+    try:
+        from confirmation_engine import compact_confirmation_log
+
+        logging.info(
+            "entry_confirm %s",
+            compact_confirmation_log((facts or {}).get("confirmation_context")),
+        )
+    except Exception:
+        pass
+    if plan.get("status") == "ready":
+        remembered = remember_qualified_level_ids(
+            [
+                plan.get("entry_low_id"),
+                plan.get("entry_high_id"),
+                plan.get("stop_level_id"),
+                plan.get("target_level_id"),
+            ]
+        )
+        logging.info("qualified_levels count=%d", len(remembered))
+
+
 def wait_reason_for(contradiction: str | None, review: dict) -> str:
     """Plain-language wait reason naming the actual cause.
 
@@ -933,10 +1037,18 @@ def entry_decision_schema(entry_cache: dict, decision_levels: dict, facts: dict 
                     "entry_high_id": {"type": "string", "enum": level_ids},
                     "stop_level_id": {"type": "string", "enum": level_ids},
                     "target_level_id": {"type": "string", "enum": level_ids},
+                    "target_mode": {
+                        "type": "string",
+                        "enum": ["scalp", "starter_basket", "directional_basket"],
+                    },
                     "volume_each": {"type": "number", "const": 0.5},
                     "reason": {"type": "string", "maxLength": 120},
                 },
-                "required": ["status", "reason"],
+                "required": [
+                    "status", "side", "entry_low_id", "entry_high_id",
+                    "stop_level_id", "target_level_id", "target_mode",
+                    "volume_each", "reason",
+                ],
                 "additionalProperties": False,
             },
         },
@@ -1770,6 +1882,8 @@ def generate_dashboard_deal_sheet() -> dict:
     decision_wall_seconds = None
     decision_duration_ns = None
     prompt_text = None
+    market_atr = None
+    facts: dict = {}
     market = gold_market_open()
 
     if not market.get("open"):
@@ -1849,6 +1963,7 @@ def generate_dashboard_deal_sheet() -> dict:
         )
         decision_wall_seconds = round(time.monotonic() - decision_started, 3)
         decision_duration_ns = result.get("total_duration")
+        market_atr = result.get("market_atr")
         logging.info(
             "Qwen entry decision took %.2fs prompt_bytes=%d (model total_duration=%sns)",
             decision_wall_seconds,
@@ -1926,6 +2041,7 @@ def generate_dashboard_deal_sheet() -> dict:
                 }
                 provenance_failures.extend(plan_failures)
         review["entry_validation_failures"] = provenance_failures
+        _stamp_regime_target_mode(review, facts)
     if (
         review["execution_plan"].get("status") == "ready"
         and review.get("invalidation") is None
@@ -1993,6 +2109,7 @@ def generate_dashboard_deal_sheet() -> dict:
             model=snapshot.get("model") or MODEL,
             duration_ns=decision_duration_ns,
             proposal_id=proposal_id,
+            atr=market_atr,
             context={
                 "cache_status": entry_cache.get("status"),
                 "session": entry_cache.get("session"),

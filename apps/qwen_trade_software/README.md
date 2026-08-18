@@ -79,7 +79,7 @@ silently enables execution.
 
 ## Qwen model download
 
-Live trading uses `qwen-trading-v003:latest` in Ollama (`ollama create qwen-trading-v003 -f Modelfile` from the Colab GGUF export). An older `qwen-trading-v002` package is still on [Google Drive](https://drive.google.com/file/d/1pShA0JKZdBdXUOVkhXdFzgwADt5rutrm/view?usp=drive_link) if needed.
+Live trading uses `qwen-trading-v005:latest` in Ollama (`ollama create qwen-trading-v005 -f Modelfile` from the Colab GGUF export). Keep `qwen-trading-v004` installed if you need a rollback.
 
 ## Deployed locations
 

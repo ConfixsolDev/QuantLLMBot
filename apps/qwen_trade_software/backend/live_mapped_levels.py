@@ -194,6 +194,27 @@ def m1_failure_at_zone(zone: dict, closed_m1: dict | None) -> bool:
     return probed and failed
 
 
+def hunt_zone_from_band(side: str, zone_low: float, zone_high: float) -> dict:
+    """Buy hunts support (low); sell hunts resistance (high)."""
+    return {
+        "kind": "low" if str(side).lower() == "buy" else "high",
+        "zone_low": float(zone_low),
+        "zone_high": float(zone_high),
+    }
+
+
+def m1_failure_for_entry(
+    side: str,
+    zone_low: float,
+    zone_high: float,
+    closed_m1: dict | None,
+) -> bool:
+    """True when a completed M1 probed the hunt band and failed to close through."""
+    return m1_failure_at_zone(
+        hunt_zone_from_band(side, zone_low, zone_high), closed_m1
+    )
+
+
 def _level_id(timeframe: str, zone: dict) -> str:
     kind = "H" if zone["kind"] == "high" else "L"
     stamp = ""

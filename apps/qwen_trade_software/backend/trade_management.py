@@ -9,7 +9,12 @@ that future work harder than it needed to be.
 This process owns everything that happens AFTER a Qwen position is already
 open: reading live positions/deals from MT5, building the deterministic
 management facts (trade path, structural levels, execution-monitor state),
-asking Qwen (or the deterministic confirmation guard) whether to hold,
+asking Qwen whether to hold, protect, or close. A safety guard still closes on
+hard invalidation. If Qwen is down for several cycles, a timeout guard is the
+last-resort mechanical close. This process owns everything that happens AFTER a
+Qwen position is already open: reading live positions/deals from MT5, building
+the deterministic management facts (trade path, structural levels, execution-monitor state),
+and applying that decision to the live position's SL/TP.
 protect, or close, and applying that decision to the live position's SL/TP.
 It runs on its own interval (QWEN_REVIEW_INTERVAL_SECONDS, default 30s) and
 writes its own dashboard-state file (management-dashboard-state.json) that
@@ -62,11 +67,14 @@ from review_shared import (
 )
 from tick_data_archive import append_qwen_decision, append_tick_record
 from trade_manager import (
+    GUARD_TIMEOUT_CYCLES,
     build_management_facts,
     build_management_prompt,
-    confirmed_management_guard,
     decision_is_currently_applicable,
     management_schema,
+    safety_guard,
+    timeout_guard,
+    unavailable_hold,
     validate_management_decision,
 )
 
@@ -91,6 +99,7 @@ AUTO_MANAGE_QWEN_OWNED = True
 
 LAST_MANAGED_M1_BY_TICKET: dict[int, str] = {}
 LAST_REGIME_HINT: dict[str, float | str | None] = {"hint": None, "atr_ratio": None}
+CONSECUTIVE_QWEN_FAILURES: dict[int, int] = {}
 ENTRY_CONTEXT_BY_TICKET: dict[int, dict] = {}
 EXECUTION_MONITOR_BY_ID: dict[str, dict] = {}
 # Tracks (file, byte offset) for the incremental executions tail below. The
@@ -357,15 +366,21 @@ def historical_respect_counts(symbol: str, flat_levels: dict) -> dict:
 def levels_for_ui(flat_levels: dict, symbol: str = None) -> dict:
     grouped = {}
     respect_counts = historical_respect_counts(symbol, flat_levels) if symbol else {}
+    from qualified_levels import load_qualified_level_ids
+
+    qualified_ids = load_qualified_level_ids()
     for level_id, price in flat_levels.items():
         timeframe = level_id.split("_", 1)[0]
         role = level_id.replace(f"{timeframe}_", "").replace("_", " ").title()
+        cited = level_id in qualified_ids
         grouped.setdefault(timeframe, []).append(
             {
                 "id": level_id,
                 "price": price,
                 "role": role,
                 "respect_count": respect_counts.get(level_id, 0),
+                "qualified": cited,
+                "display": "qualified" if cited else "candidate",
             }
         )
     for timeframe in grouped:
@@ -464,6 +479,12 @@ def update_dashboard(positions, levels_by_symbol, today, review=None) -> None:
         row["under_review"] = position.ticket in review_tickets
         row["qwen_owned"] = is_qwen_owned(position)
         position_rows.append(row)
+    ui_levels = levels_for_ui(levels_by_symbol.get(symbol, {}), symbol)
+    qualified_rows = []
+    candidate_rows = []
+    for rows in ui_levels.values():
+        for row in rows:
+            (qualified_rows if row.get("qualified") else candidate_rows).append(row)
     state = read_json_safe(MANAGEMENT_STATE_FILE, DEFAULT_MANAGEMENT_STATE)
     state.update(
         {
@@ -473,7 +494,11 @@ def update_dashboard(positions, levels_by_symbol, today, review=None) -> None:
             "symbol": symbol,
             "price": tick.bid if tick else 0.0,
             "change": 0.0,
-            "levels": levels_for_ui(levels_by_symbol.get(symbol, {}), symbol),
+            "levels": ui_levels,
+            "level_display": {
+                "qualified": qualified_rows,
+                "candidate": candidate_rows,
+            },
             "market_context": recent_candle_context(symbol),
             "positions": position_rows,
             "today": {
@@ -1068,13 +1093,14 @@ def reconcile_position_state(live_tickets: set[int]) -> None:
     """
     stale_tickets = (
         set(LAST_MANAGED_M1_BY_TICKET) | set(ENTRY_CONTEXT_BY_TICKET)
-        | set(_REBRACKETED_TICKETS)
+        | set(_REBRACKETED_TICKETS) | set(CONSECUTIVE_QWEN_FAILURES)
     ) - live_tickets
     if not stale_tickets and (live_tickets or not EXECUTION_MONITOR_BY_ID):
         return
 
     for ticket in stale_tickets:
         LAST_MANAGED_M1_BY_TICKET.pop(ticket, None)
+        CONSECUTIVE_QWEN_FAILURES.pop(ticket, None)
         ENTRY_CONTEXT_BY_TICKET.pop(ticket, None)
         _REBRACKETED_TICKETS.discard(ticket)
 
@@ -1160,13 +1186,39 @@ def review_positions() -> None:
         raise RuntimeError("Open Qwen position has no recoverable immutable entry plan.")
     primary_symbol = position.symbol
     market_context = recent_candle_context(primary_symbol)
+    pos = position_to_dict(position)
+    regime = {}
+    try:
+        from regime_engine import snapshot_regime
+
+        regime = snapshot_regime(
+            symbol=primary_symbol,
+            current_price=float(pos["current_price"]),
+            levels=levels_by_symbol.get(primary_symbol) or {},
+            prev_regime=LAST_REGIME_HINT.get("hint"),
+            prev_atr_ratio=LAST_REGIME_HINT.get("atr_ratio"),
+        )
+        LAST_REGIME_HINT["hint"] = regime.get("regime_hint")
+        LAST_REGIME_HINT["atr_ratio"] = regime.get("atr_ratio_3_51")
+        logging.info(
+            "regime_hint=%s transition=%s atr_ratio=%s range=%s m5_swings=%s",
+            regime.get("regime_hint"),
+            regime.get("regime_transition"),
+            regime.get("atr_ratio_3_51"),
+            regime.get("range_detected"),
+            regime.get("m5_swing_pattern"),
+        )
+    except Exception:
+        logging.exception("regime_snapshot:failed")
+        regime = {}
     facts = build_management_facts(
-        position_to_dict(position),
+        pos,
         entry["plan"],
         levels_by_symbol[primary_symbol],
         market_context,
         execution_state=execution_management_state(entry),
         prior_management=recent_management_history(int(position.ticket)),
+        regime_context=regime,
     )
     latest_management_candle = facts.get("latest_completed_m1")
     if not latest_management_candle:
@@ -1179,65 +1231,110 @@ def review_positions() -> None:
         )
         return
     snapshot["management_facts"] = facts
-    try:
-        from regime_engine import snapshot_regime
-
-        regime = snapshot_regime(
-            symbol=primary_symbol,
-            current_price=float(facts["position"]["current"]),
-            levels=levels_by_symbol.get(primary_symbol) or {},
-            prev_regime=LAST_REGIME_HINT.get("hint"),
-            prev_atr_ratio=LAST_REGIME_HINT.get("atr_ratio"),
-        )
-        LAST_REGIME_HINT["hint"] = regime.get("regime_hint")
-        LAST_REGIME_HINT["atr_ratio"] = regime.get("atr_ratio_3_51")
-        snapshot["regime_context"] = regime
-        logging.info(
-            "regime_hint=%s transition=%s atr_ratio=%s range=%s m5_swings=%s",
-            regime.get("regime_hint"),
-            regime.get("regime_transition"),
-            regime.get("atr_ratio_3_51"),
-            regime.get("range_detected"),
-            regime.get("m5_swing_pattern"),
-        )
-    except Exception:
-        logging.exception("regime_snapshot:failed")
-    guard_review = confirmed_management_guard(facts)
+    snapshot["regime_context"] = regime
+    hard_stop = safety_guard(facts)
     model_used = MODEL
     total_duration_ns = None
     prompt_text = None
     raw_response = None
     market_atr = None
-    if guard_review:
-        raw_response = json.dumps(guard_review, separators=(",", ":"))
+    guard_review = None
+    if hard_stop:
+        guard_review = hard_stop
+        raw_response = json.dumps(hard_stop, separators=(",", ":"))
         parsed_review, management_failures = validate_management_decision(
-            guard_review, facts
+            hard_stop, facts
         )
-        model_used = "deterministic-confirmation-guard"
+        model_used = "safety_guard_invalidation"
         logging.info(
-            "Confirmed management guard ticket=%s action=%s level=%s",
+            "Safety guard ticket=%s action=%s level=%s",
             position.ticket,
             parsed_review.get("action"),
             parsed_review.get("decision_level_ref"),
         )
     else:
         prompt_text = build_management_prompt(facts, STORE_ROOT)
-        result = ollama_generate(
-            prompt_text,
-            timeout=None,
-            num_predict=512,
-            num_ctx=4096,
-            format_schema=management_schema(facts),
-        )
-        total_duration_ns = result.get("total_duration")
-        market_atr = result.get("market_atr")
-        raw_response = result.get("response", "{}")
-        raw_review = json.loads(raw_response)
-        parsed_review, management_failures = validate_management_decision(
-            raw_review, facts
-        )
+        try:
+            result = ollama_generate(
+                prompt_text,
+                timeout=None,
+                num_predict=512,
+                num_ctx=4096,
+                format_schema=management_schema(facts),
+            )
+            total_duration_ns = result.get("total_duration")
+            market_atr = result.get("market_atr")
+            raw_response = result.get("response", "{}")
+            raw_review = json.loads(raw_response)
+            parsed_review, management_failures = validate_management_decision(
+                raw_review, facts
+            )
+            CONSECUTIVE_QWEN_FAILURES[position.ticket] = 0
+            model_used = MODEL
+        except Exception as exc:
+            ticket = int(position.ticket)
+            CONSECUTIVE_QWEN_FAILURES[ticket] = (
+                CONSECUTIVE_QWEN_FAILURES.get(ticket, 0) + 1
+            )
+            failures_count = CONSECUTIVE_QWEN_FAILURES[ticket]
+            logging.warning(
+                "Qwen failure %d/%d for ticket=%s: %s",
+                failures_count,
+                GUARD_TIMEOUT_CYCLES,
+                ticket,
+                exc,
+            )
+            if failures_count >= GUARD_TIMEOUT_CYCLES:
+                guard_review = timeout_guard(facts)
+                if guard_review:
+                    parsed_review, management_failures = validate_management_decision(
+                        guard_review, facts
+                    )
+                    model_used = "timeout_guard"
+                    raw_response = json.dumps(guard_review, separators=(",", ":"))
+                    logging.warning(
+                        "Timeout guard activated: %d consecutive Qwen failures, ticket=%s",
+                        failures_count,
+                        ticket,
+                    )
+                else:
+                    parsed_review = unavailable_hold(
+                        f"Qwen down {failures_count} cycles, guard found no exit."
+                    )
+                    management_failures = []
+                    model_used = "timeout_guard_hold"
+                    raw_response = json.dumps(parsed_review, separators=(",", ":"))
+            else:
+                parsed_review = unavailable_hold(
+                    f"Qwen unavailable ({failures_count}/{GUARD_TIMEOUT_CYCLES}), holding."
+                )
+                management_failures = []
+                model_used = "qwen_unavailable_hold"
+                raw_response = json.dumps(parsed_review, separators=(",", ":"))
     LAST_MANAGED_M1_BY_TICKET[position.ticket] = latest_management_candle
     parsed_review["validation_failures"] = management_failures
+    try:
+        from qualified_levels import remember_qualified_level_ids
+
+        refs = facts.get("level_references") or {}
+        cited = []
+        for key in (
+            parsed_review.get("decision_level_ref"),
+            parsed_review.get("next_target_ref"),
+        ):
+            if key and key in refs:
+                cited.append(refs[key].get("level_id"))
+            elif key:
+                cited.append(key)
+        if cited:
+            remembered = remember_qualified_level_ids(cited)
+            logging.info(
+                "qualified_levels count=%d cited=%s",
+                len(remembered),
+                ",".join(str(item) for item in cited if item),
+            )
+    except Exception:
+        logging.exception("qualified_levels:remember_failed")
     update_dashboard(positions, levels_by_symbol, today, parsed_review)
     applications = []
     response_age_seconds = time.monotonic() - cycle_started
@@ -1349,8 +1446,8 @@ def main() -> None:
     # The entry loop skips its cycle on CPU because a late entry is worthless:
     # the proposal has expired and the level has moved. Management is the
     # opposite. It looks after money already at risk, and a slow decision about
-    # an open position is far better than none -- the deterministic
-    # confirmed_management_guard can also act without the model at all.
+    # an open position is far better than none -- safety_guard still closes on
+    # hard invalidation, and timeout_guard can act if Qwen stays down.
     #
     # Refusing to manage a live position because inference is slow would turn a
     # performance problem into an unprotected trade.

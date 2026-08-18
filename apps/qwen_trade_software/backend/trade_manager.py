@@ -58,6 +58,7 @@ def build_management_facts(
     market_context: dict,
     execution_state: dict | None = None,
     prior_management: list[dict] | None = None,
+    regime_context: dict | None = None,
 ) -> dict:
     """Build a compact management packet with a resumable trade path."""
     side = position["side"]
@@ -187,6 +188,7 @@ def build_management_facts(
                 float(entry_plan["entry_high"]),
             ],
             "side": entry_plan["side"],
+            "structure_timeframe": entry_plan.get("structure_timeframe"),
         },
         "trade_path": {
             "peak_price": round(peak_price, 3),
@@ -199,6 +201,7 @@ def build_management_facts(
                 reached_favorable[0] if reached_favorable else None
             ),
         },
+        "regime_context": dict(regime_context or {}),
         "prior_management": prior_management,
         "level_references": level_references,
         "completed_candles": candles,
@@ -226,6 +229,25 @@ def _candle_touched(row: dict, level: float) -> bool:
     )
 
 
+GUARD_TIMEOUT_CYCLES = 3
+_NOISE_TIMEFRAMES = frozenset({"M1", "M5"})
+_HTF_TIMEFRAMES = frozenset({"M15", "M30", "H1", "H4", "D1"})
+
+
+def regime_hint(facts: dict) -> str:
+    ctx = facts.get("regime_context") or {}
+    hint = str(ctx.get("regime_hint") or "").strip().lower()
+    return hint if hint else "unknown"
+
+
+def scalp_regime(facts: dict) -> bool:
+    return regime_hint(facts) in {"range", "exhaustion"}
+
+
+def _level_timeframe(reference: dict) -> str:
+    return str(reference.get("level_id", "")).upper().split("_", 1)[0]
+
+
 def _reaction_level(reference: dict) -> bool:
     level_id = str(reference.get("level_id", "")).upper()
     timeframe = level_id.split("_", 1)[0]
@@ -237,59 +259,160 @@ def _reaction_level(reference: dict) -> bool:
     )
 
 
-def confirmed_management_guard(facts: dict) -> dict | None:
-    """Return a close only when supplied M1/M5 facts confirm it structurally."""
+def _thesis_timeframe(facts: dict) -> str:
+    return str(
+        (facts.get("entry_thesis") or {}).get("structure_timeframe") or ""
+    ).upper()
+
+
+def _latest_candles(facts: dict) -> tuple[dict | None, dict | None, str | None, str | None]:
     candles = facts.get("completed_candles", [])
     by_id = {row.get("evidence_id"): row for row in candles}
-    latest_m1_id = facts.get("latest_completed_m1")
-    latest_m5_id = facts.get("latest_completed_m5")
-    latest_m1 = by_id.get(latest_m1_id)
-    latest_m5 = by_id.get(latest_m5_id)
-    if not latest_m1 or not latest_m5:
+    m1_id = facts.get("latest_completed_m1")
+    m5_id = facts.get("latest_completed_m5")
+    return by_id.get(m1_id), by_id.get(m5_id), m1_id, m5_id
+
+
+def _m1_favorable(latest_m1: dict, side: str) -> bool:
+    direction = latest_m1.get("direction")
+    if side == "buy":
+        return direction == "up"
+    return direction == "down"
+
+
+def _closed_m1_extreme(facts: dict, side: str) -> float | None:
+    rows = [
+        row for row in facts.get("completed_candles", [])
+        if row.get("timeframe") == "M1"
+    ]
+    if not rows:
         return None
-    side = facts.get("position", {}).get("side")
+    if side == "buy":
+        return max(float(row["high"]) for row in rows)
+    return min(float(row["low"]) for row in rows)
+
+
+def _reached_on_closed_m1(facts: dict, level: float, side: str, entry: float) -> bool:
+    """Trend reach: a closed M1 printed through the level, not a live tick wick."""
+    extreme = _closed_m1_extreme(facts, side)
+    if extreme is None:
+        return False
+    if side == "buy":
+        return entry < level <= extreme
+    return extreme <= level < entry
+
+
+def _thesis_allows_level(facts: dict, reference: dict) -> bool:
+    thesis_tf = _thesis_timeframe(facts)
+    if thesis_tf not in _HTF_TIMEFRAMES:
+        return True
+    return _level_timeframe(reference) not in _NOISE_TIMEFRAMES
+
+
+def _favorable_candidates(facts: dict, *, reached: list, m5_only: bool) -> list[str]:
     levels = facts.get("level_references", {})
-
-    invalidation = levels.get("planned_invalidation")
-    if invalidation:
-        price = float(invalidation["price"])
-        if _closed_beyond(latest_m1, price, side, False) and _closed_beyond(
-            latest_m5, price, side, False
-        ):
-            return {
-                "action": "close",
-                "thesis_state": "invalidated",
-                "decision_level_ref": "planned_invalidation",
-                "next_target_ref": None,
-                "confirmation_type": "thesis_invalidation_confirmed",
-                "confirmation_evidence_ids": [latest_m1_id, latest_m5_id],
-                "close_confirmed": True,
-                "summary": "Closed M1 and M5 accepted beyond immutable invalidation.",
-            }
-
-    reached = facts.get("trade_path", {}).get(
-        "reached_favorable_level_refs", []
-    )
-    candidates = [
+    out = [
         level_ref for level_ref in reached
         if level_ref in levels
         and level_ref != "planned_invalidation"
         and (level_ref == "planned_target" or _reaction_level(levels[level_ref]))
     ]
-    candidates.sort(
+    if m5_only:
+        out = [
+            level_ref for level_ref in out
+            if "M5" in str(levels[level_ref].get("level_id", "")).upper()
+            or level_ref == "planned_target"
+        ]
+    else:
+        out = [
+            level_ref for level_ref in out
+            if _thesis_allows_level(facts, levels[level_ref])
+        ]
+    out.sort(
         key=lambda ref: abs(
             float(levels[ref]["price"]) - float(facts["position"]["entry"])
         ),
         reverse=True,
     )
-    m5_rows = [row for row in candles if row.get("timeframe") == "M5"]
-    latest_against = (
-        latest_m1.get("direction") == "down"
-        if side == "buy"
-        else latest_m1.get("direction") == "up"
-    )
-    if not latest_against:
+    return out
+
+
+def safety_guard(facts: dict) -> dict | None:
+    """Hard stop only. Always active, even when Qwen is responding."""
+    latest_m1, latest_m5, m1_id, m5_id = _latest_candles(facts)
+    if not latest_m1 or not latest_m5:
         return None
+    side = facts.get("position", {}).get("side")
+    inv = (facts.get("level_references") or {}).get("planned_invalidation")
+    if not inv:
+        return None
+    price = float(inv["price"])
+    if _closed_beyond(latest_m1, price, side, False) and _closed_beyond(
+        latest_m5, price, side, False
+    ):
+        return {
+            "action": "close",
+            "thesis_state": "invalidated",
+            "decision_level_ref": "planned_invalidation",
+            "next_target_ref": None,
+            "confirmation_type": "thesis_invalidation_confirmed",
+            "confirmation_evidence_ids": [m1_id, m5_id],
+            "close_confirmed": True,
+            "summary": "Hard invalidation: M1+M5 closed beyond stop.",
+        }
+    return None
+
+
+def _scalp_guard(facts: dict) -> dict | None:
+    """Range/exhaustion timeout path: TP at M5 while M1 is still favorable."""
+    latest_m1, latest_m5, m1_id, m5_id = _latest_candles(facts)
+    if not latest_m1 or not latest_m5:
+        return None
+    side = facts.get("position", {}).get("side")
+    if not _m1_favorable(latest_m1, side):
+        return None
+    reached = facts.get("trade_path", {}).get("reached_favorable_level_refs", [])
+    candidates = _favorable_candidates(facts, reached=reached, m5_only=True)
+    if not candidates:
+        return None
+    best = candidates[0]
+    return {
+        "action": "close",
+        "thesis_state": "target_response",
+        "decision_level_ref": best,
+        "next_target_ref": None,
+        "confirmation_type": "target_rejection_confirmed",
+        "confirmation_evidence_ids": [m1_id, m5_id],
+        "close_confirmed": True,
+        "summary": f"Range scalp: TP at {best} while M1 favorable.",
+    }
+
+
+def _rejection_guard(facts: dict) -> dict | None:
+    """Trend/breakout timeout path: thesis-TF rejection on closed M1 reach."""
+    latest_m1, latest_m5, m1_id, m5_id = _latest_candles(facts)
+    if not latest_m1 or not latest_m5:
+        return None
+    side = facts.get("position", {}).get("side")
+    entry = float(facts["position"]["entry"])
+    levels = facts.get("level_references", {})
+    peak_reached = facts.get("trade_path", {}).get(
+        "reached_favorable_level_refs", []
+    )
+    reached = [
+        level_ref for level_ref in peak_reached
+        if level_ref in levels
+        and _reached_on_closed_m1(
+            facts, float(levels[level_ref]["price"]), side, entry
+        )
+    ]
+    candidates = _favorable_candidates(facts, reached=reached, m5_only=False)
+    if _m1_favorable(latest_m1, side):
+        return None
+    m5_rows = [
+        row for row in facts.get("completed_candles", [])
+        if row.get("timeframe") == "M5"
+    ]
     for level_ref in candidates:
         level = float(levels[level_ref]["price"])
         if not _closed_beyond(latest_m1, level, side, False):
@@ -310,13 +433,41 @@ def confirmed_management_guard(facts: dict) -> dict | None:
                 "next_target_ref": None,
                 "confirmation_type": "target_rejection_confirmed",
                 "confirmation_evidence_ids": [
-                    latest_m1_id,
+                    m1_id,
                     confirming_m5["evidence_id"],
                 ],
                 "close_confirmed": True,
                 "summary": "Reached favorable level rejected by completed M1 and M5.",
             }
     return None
+
+
+def timeout_guard(facts: dict) -> dict | None:
+    """Last-resort mechanical close after Qwen has been down too long."""
+    if scalp_regime(facts):
+        return _scalp_guard(facts)
+    return _rejection_guard(facts)
+
+
+def unavailable_hold(summary: str) -> dict:
+    return {
+        "action": "hold",
+        "thesis_state": "valid",
+        "decision_level_ref": None,
+        "next_target_ref": None,
+        "confirmation_type": "none",
+        "confirmation_evidence_ids": [],
+        "close_confirmed": False,
+        "summary": str(summary)[:180],
+    }
+
+
+def confirmed_management_guard(facts: dict) -> dict | None:
+    """Safety invalidation, then timeout-style mechanical close.
+
+    Live management must not call this before Qwen. Timeout path only.
+    """
+    return safety_guard(facts) or timeout_guard(facts)
 
 
 def build_management_prompt(facts: dict, store_root: Path) -> str:
@@ -353,6 +504,12 @@ def management_schema(facts: dict) -> dict:
                 "maxItems": 3,
             },
             "close_confirmed": {"type": "boolean"},
+            "regime_assessment": {
+                "type": ["string", "null"],
+                "enum": [
+                    None, "range", "trend", "breakout", "exhaustion", "unknown",
+                ],
+            },
             "summary": {"type": "string", "maxLength": 180},
         },
         "required": [
@@ -394,7 +551,8 @@ def validate_management_decision(
     close_confirmed = decision.get("close_confirmed") is True
     latest_m1 = facts.get("latest_completed_m1")
     latest_m5 = facts.get("latest_completed_m5")
-    required_close = confirmed_management_guard(facts)
+    required_close = safety_guard(facts)
+    scalp_ok = scalp_regime(facts)
     if action == "close":
         if not close_confirmed:
             failures.append("management:unconfirmed_close")
@@ -436,7 +594,7 @@ def validate_management_decision(
                 <= float(supplied_candles[item].get("high", float("-inf")))
                 for item in cited
             )
-            if not touched:
+            if not touched and not scalp_ok:
                 failures.append("management:confirmation_level_not_tested")
             side = facts.get("position", {}).get("side")
             against = (
@@ -444,13 +602,13 @@ def validate_management_decision(
                 if side == "buy"
                 else latest.get("direction") == "up"
             )
-            if not against:
+            if not against and not scalp_ok:
                 failures.append("management:latest_m1_not_against_position")
             if confirmation in {
                 "thesis_invalidation_confirmed",
                 "momentum_reversal_confirmed",
                 "target_rejection_confirmed",
-            }:
+            } and not scalp_ok:
                 crossed = (
                     float(latest.get("close")) < level_price
                     if side == "buy"
@@ -499,6 +657,7 @@ def validate_management_decision(
         "confirmation_type": confirmation,
         "confirmation_evidence_ids": cited,
         "close_confirmed": close_confirmed,
+        "regime_assessment": decision.get("regime_assessment"),
         "summary": str(decision.get("summary", ""))[:180],
     }
     if failures:
@@ -533,8 +692,10 @@ def decision_is_currently_applicable(
     level = float(reference["price"])
     side = facts.get("position", {}).get("side")
     if decision.get("action") == "close":
-        # Rejection or thesis failure remains actionable only while price is
-        # still on the adverse side of the confirmed decision level.
+        # Rejection stays actionable on the adverse side of the level.
+        # Range scalp stays actionable while price is still at/through the TP.
+        if scalp_regime(facts):
+            return current_price >= level if side == "buy" else current_price <= level
         return current_price < level if side == "buy" else current_price > level
     # Protection is applicable only while price remains accepted beyond it.
     return current_price > level if side == "buy" else current_price < level
@@ -654,7 +815,7 @@ def self_test() -> dict:
             }
         ],
     )
-    replay_guard = confirmed_management_guard(replay_facts)
+    replay_guard = timeout_guard(replay_facts)
     if not replay_guard or replay_guard.get("action") != "close":
         failures.append("profitable_rejection_replay_not_closed")
     elif replay_guard.get("decision_level_ref") != "current:M5_PREVIOUS_HIGH":
@@ -671,16 +832,13 @@ def self_test() -> dict:
     bad_hold = {
         "action": "hold",
         "thesis_state": "valid",
-        "decision_level_ref": "current:M5_PREVIOUS_HIGH",
-        "next_target_ref": "planned_target",
-        "confirmation_type": "momentum_reversal_confirmed",
-        "confirmation_evidence_ids": ["candle:M5:04:45"],
+        "decision_level_ref": "planned_invalidation",
+        "next_target_ref": None,
+        "confirmation_type": "none",
+        "confirmation_evidence_ids": [],
         "close_confirmed": False,
-        "summary": "Hold despite confirmed reversal.",
+        "summary": "Hold despite confirmed invalidation.",
     }
-    _, bad_hold_failures = validate_management_decision(bad_hold, replay_facts)
-    if "management:confirmed_close_ignored" not in bad_hold_failures:
-        failures.append("confirmed_rejection_hold_not_blocked")
     invalidation_facts = {
         "latest_completed_m1": "candle:M1:invalidated",
         "latest_completed_m5": "candle:M5:invalidated",
@@ -726,4 +884,7 @@ def self_test() -> dict:
         )
         if invalidation_failures:
             failures.append("confirmed_invalidation_guard_failed_validation")
+    _, bad_hold_failures = validate_management_decision(bad_hold, invalidation_facts)
+    if "management:confirmed_close_ignored" not in bad_hold_failures:
+        failures.append("confirmed_invalidation_hold_not_blocked")
     return {"passed": not failures, "failures": failures}

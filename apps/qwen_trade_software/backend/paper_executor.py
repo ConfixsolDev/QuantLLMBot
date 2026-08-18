@@ -13,6 +13,7 @@ from pathlib import Path
 import MetaTrader5 as mt5
 
 import build_manifest
+import live_mapped_levels
 import trade_geometry
 from tick_data_archive import append_tick_record
 
@@ -290,11 +291,46 @@ def entry_price_allowed(
     high: float,
     stop_loss: float | None = None,
 ) -> bool:
-    """True when price is in-zone or favorably outside it (not chasing, not past stop)."""
-    return entry_location(side, price, low, high, stop_loss) in (
-        "inside_zone",
-        "favorable_outside",
-    )
+    """True only when price is inside the approved hunt/entry band.
+
+    2026-08-13 — Context → Hunt → Arm: filling on ``favorable_outside`` let
+    sells fire below a resistance hunt zone (structure-low fills while the
+    plan's band was higher). Approach side is still classified for logs, but
+    execution waits until price is actually in-band (learning teaches the same
+    wait via missing_fact=at_entry_location).
+    """
+    return entry_location(side, price, low, high, stop_loss) == "inside_zone"
+
+
+def latest_closed_m1_bar(symbol: str) -> dict | None:
+    """Last completed M1 from MT5. None if the terminal has no closed bar yet."""
+    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, 1)
+    if rates is None or len(rates) < 1:
+        return None
+    rate = rates[-1]
+    return {
+        "open": float(rate["open"]),
+        "high": float(rate["high"]),
+        "low": float(rate["low"]),
+        "close": float(rate["close"]),
+    }
+
+
+def entry_fill_ready(
+    side: str,
+    price: float,
+    low: float,
+    high: float,
+    stop_loss: float | None,
+    closed_m1: dict | None,
+) -> tuple[bool, str]:
+    """Inside the hunt band AND a completed M1 failed at that band."""
+    location = entry_location(side, price, low, high, stop_loss)
+    if location != "inside_zone":
+        return False, location
+    if not live_mapped_levels.m1_failure_for_entry(side, low, high, closed_m1):
+        return False, "inside_zone_waiting_m1_failure"
+    return True, "armed_m1_failure"
 
 
 def remaining_signal_seconds(created_at: datetime, now: datetime, ttl: float) -> float:
@@ -316,10 +352,10 @@ def favorable_price_move(mark: float, average_entry: float, side: str) -> float:
 class BestPriceRangeTracker:
     """Enter immediately on the first fresh allowed tick.
 
-    Allowed means inside Qwen's approved zone, or favorably outside it:
-    buy below the zone low, sell above the zone high. Chasing the wrong
-    side of the zone still waits. Price already through the structural
-    stop never enters.
+    Allowed means inside Qwen's approved hunt/entry band only.
+    Favorable approach (buy above support / sell below resistance) waits
+    until price tags the band — hunt step. Through the zone or past stop
+    never enters.
 
     2026-08-06 change: this used to wait up to `observation_seconds` (2s)
     hunting for a small retrace before entering, and if nothing retraced it
@@ -588,6 +624,26 @@ def initial_safety_bracket(side: str, order_price: float, digits: int) -> tuple[
     return round(stop_loss, digits), round(take_profit, digits)
 
 
+# H1+ theses resolve over dollars measured in ATR×structure, not a $3 scalp
+# pad. Fixed micro brackets on those frames are the measured Asia failure mode
+# (2026-08-13: −147 then −162 — both H4 + $3 stop). Cooldown cannot fix that.
+HTF_MICRO_BRACKET_FRAMES = frozenset({"H1", "H4", "D1"})
+
+
+def _refuse_htf_micro_bracket(args, *, detail: str) -> None:
+    frame = str(getattr(args, "structure_timeframe", "") or "").strip().upper()
+    if frame not in HTF_MICRO_BRACKET_FRAMES:
+        return
+    raise GeometryRejection(
+        "htf_thesis_micro_bracket",
+        (
+            f"structure_timeframe={frame} cannot use fixed "
+            f"${INITIAL_STOP_DISTANCE}/${INITIAL_TAKE_PROFIT_DISTANCE} brackets; "
+            f"{detail}"
+        ),
+    )
+
+
 def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[float, float, str]:
     """Place the entry bracket. Structural when possible, fixed $3/$5 otherwise.
 
@@ -611,19 +667,26 @@ def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[flo
     position size absorb the extra distance, so a wider stop is a smaller
     position rather than a larger loss.
 
-    Fallback is deliberate: if the plan carries no usable structural levels, or
-    geometry rejects the setup, we return the exact legacy bracket rather than
-    leaving a position unprotected. Worst case is today's behaviour.
+    Fallback is deliberate for M15/M30: if the plan carries no usable structural
+    levels, or geometry rejects the setup, we return the legacy bracket rather
+    than leaving a position unprotected. H1/H4/D1 theses never take that
+    fallback -- a micro stop on an HTF idea is the overfit we already measured.
 
-    Set QWEN_STRUCTURAL_BRACKET=0 to force the legacy path.
+    Set QWEN_STRUCTURAL_BRACKET=0 to force the legacy path (still HTF-blocked).
     """
     safety_sl, safety_tp = initial_safety_bracket(args.side, order_price, digits)
     if not STRUCTURAL_BRACKET_ENABLED:
+        _refuse_htf_micro_bracket(
+            args, detail="structural brackets disabled; refuse HTF micro pad"
+        )
         return safety_sl, safety_tp, "fixed_3_5"
 
     invalidation = getattr(args, "management_reference_sl", None)
     target = getattr(args, "management_reference_tp", None)
     if invalidation is None or target is None:
+        _refuse_htf_micro_bracket(
+            args, detail="no structural invalidation/target on the plan"
+        )
         return safety_sl, safety_tp, "fixed_3_5_no_structure"
 
     bracket = trade_geometry.build_bracket(
@@ -638,18 +701,22 @@ def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[flo
         allow_fallback=False,
     )
     if not bracket.ok:
-        # 2026-08-11 observation window: do not refuse on level/R:R geometry.
-        # Log the structural verdict, then place with the fixed $3/$5 bracket
-        # so ready ideas still execute. Re-enable hard skips with
-        # QWEN_SKIP_ON_GEOMETRY=1 after we have enough live evidence.
+        # 2026-08-11 observation window: do not refuse on level/R:R geometry for
+        # M15/M30. Log the structural verdict, then place with the fixed $3/$5
+        # bracket so those ideas still execute. H1/H4/D1 never fall through to
+        # the micro pad — that was the Asia sudden-loss pattern.
         if bracket.reason_code in SKIP_ON_GEOMETRY_REJECTION:
             raise GeometryRejection(bracket.reason_code, bracket.detail)
-        # Observation window. Geometry disliked this entry but is not enforcing,
-        # so record WHAT it would have refused -- keyed by proposal_id -- and
-        # take the trade anyway. Refusing a trade tells you nothing about
-        # whether refusing it was right; letting it run and keeping the
-        # counterfactual is what makes the decision measurable in a day or two.
-        # Report: tools/geometry_observation_report.py
+        _refuse_htf_micro_bracket(
+            args,
+            detail=(
+                f"geometry={bracket.reason_code}; refuse fixed micro pad on HTF thesis"
+            ),
+        )
+        # Observation window for sub-H1. Geometry disliked this entry but is
+        # not enforcing, so record WHAT it would have refused -- keyed by
+        # proposal_id -- and take the trade anyway. Report:
+        # tools/geometry_observation_report.py
         record_geometry_observation(args, bracket, order_price)
         logging.info(
             "structural bracket unavailable (%s: %s); using fixed %s/%s (level geometry does not block entry)",
@@ -790,7 +857,7 @@ def _run(args) -> dict:
                     "management_owner": "qwen_trade_management",
                     "signal_ttl_seconds": args.signal_ttl_seconds,
                     "entry_price_policy": (
-                        "in_zone_or_favorable_outside;"
+                        "inside_hunt_zone_only;"
                         "buy_below_low_and_sell_above_high_allowed;"
                         "unfavorable_chase_waits"
                     ),
@@ -871,13 +938,15 @@ def _run(args) -> dict:
                 args.entry_high,
                 args.stop_loss,
             )
-            currently_allowed = not fills and entry_price_allowed(
+            currently_allowed, gate = entry_fill_ready(
                 args.side,
                 entry_quote,
                 args.entry_low,
                 args.entry_high,
                 args.stop_loss,
+                latest_closed_m1_bar(args.symbol),
             )
+            currently_allowed = not fills and currently_allowed
             if not fills and not currently_allowed:
                 now = time.monotonic()
                 if outside_zone_since is None:
@@ -887,7 +956,7 @@ def _run(args) -> dict:
                         "paper_executor %s: price %.3f %s vs zone [%.3f, %.3f] stop %.3f after %.1fs",
                         execution_id,
                         entry_quote,
-                        location,
+                        gate,
                         args.entry_low,
                         args.entry_high,
                         args.stop_loss,
@@ -906,6 +975,13 @@ def _run(args) -> dict:
             )
             if not fills and tracker_state.get("enter"):
                 phase = "single_entry"
+                logging.info(
+                    "paper_executor %s: entry_gate=%s filling inside zone [%.3f, %.3f]",
+                    execution_id,
+                    gate,
+                    args.entry_low,
+                    args.entry_high,
+                )
                 try:
                     order_result, safety_sl, safety_tp, bracket_source = (
                         submit_single_position(args, execution_id, tick)
@@ -943,6 +1019,7 @@ def _run(args) -> dict:
                         6,
                     ),
                     "entry_selection_reason": tracker_state["reason"],
+                    "entry_gate": gate,
                     "entry_observation_seconds": tracker_state["observation_seconds"],
                     "entry_observations": tracker_state["observations"],
                     "improvement_from_previous": None,
@@ -1153,11 +1230,21 @@ def self_test() -> None:
     assert entry_location("sell", 99, 100, 102, 105) == "favorable_outside"
     assert entry_location("sell", 103, 100, 102, 105) == "unfavorable_outside"
     assert entry_location("sell", 105, 100, 102, 105) == "past_stop"
-    assert entry_price_allowed("buy", 103, 100, 102, 97)
-    assert entry_price_allowed("sell", 99, 100, 102, 105)
+    assert entry_price_allowed("buy", 101, 100, 102, 97)
+    assert entry_price_allowed("sell", 101, 100, 102, 105)
+    assert not entry_price_allowed("buy", 103, 100, 102, 97)  # approach: wait for hunt tag
+    assert not entry_price_allowed("sell", 99, 100, 102, 105)  # approach: wait for hunt tag
     assert not entry_price_allowed("buy", 99, 100, 102, 97)
     assert not entry_price_allowed("sell", 103, 100, 102, 105)
     assert not entry_price_allowed("buy", 97, 100, 102, 97)
+    fail_m1 = {"open": 101.2, "high": 101.4, "low": 99.8, "close": 100.4}
+    through_m1 = {"open": 100.2, "high": 99.6, "low": 99.1, "close": 99.4}
+    ready, gate = entry_fill_ready("buy", 101, 100, 102, 97, fail_m1)
+    assert ready and gate == "armed_m1_failure"
+    waiting, wait_gate = entry_fill_ready("buy", 101, 100, 102, 97, through_m1)
+    assert not waiting and wait_gate == "inside_zone_waiting_m1_failure"
+    outside, outside_gate = entry_fill_ready("buy", 103, 100, 102, 97, fail_m1)
+    assert not outside and outside_gate == "favorable_outside"
     assert average_fill_price([{"price": 101, "volume": 0.5}]) == 101
     assert favorable_price_move(104, 101, "buy") == 3
     assert favorable_price_move(98, 101, "sell") == 3
@@ -1171,7 +1258,7 @@ def self_test() -> None:
     assert remaining_signal_seconds(
         created, created + timedelta(seconds=60), 60
     ) == 0
-    # First fresh allowed tick fires immediately (in-zone or favorable outside).
+    # First fresh allowed tick fires immediately only when in-zone (hunt tag).
     buy_tracker = BestPriceRangeTracker("buy", 2.0, 0.1)
     first = buy_tracker.observe(
         101.0,
@@ -1184,15 +1271,15 @@ def self_test() -> None:
     assert first["enter"] and first["reason"] == "immediate_zone_entry"
     assert first["best_price"] == 101.0
     assert first["observations"] == 1
-    buy_better = BestPriceRangeTracker("buy", 2.0, 0.1).observe(
+    buy_approach = BestPriceRangeTracker("buy", 2.0, 0.1).observe(
         103.0,
         0.0,
-        inside_range=True,
+        inside_range=False,
         signal_seconds_left=10,
         poll_seconds=0.25,
         location="favorable_outside",
     )
-    assert buy_better["enter"] and buy_better["reason"] == "favorable_outside_zone_entry"
+    assert not buy_approach["enter"] and buy_approach["reason"] == "outside_entry_range"
     outside = BestPriceRangeTracker("buy", 2.0, 0.1).observe(
         99.0,
         0.0,
@@ -1212,15 +1299,15 @@ def self_test() -> None:
         location="inside_zone",
     )
     assert immediate["enter"] and immediate["best_price"] == 100.0
-    sell_better = BestPriceRangeTracker("sell", 1.0, 0.1).observe(
+    sell_approach = BestPriceRangeTracker("sell", 1.0, 0.1).observe(
         99.0,
         0.0,
-        inside_range=True,
+        inside_range=False,
         signal_seconds_left=10,
         poll_seconds=0.25,
         location="favorable_outside",
     )
-    assert sell_better["enter"] and sell_better["reason"] == "favorable_outside_zone_entry"
+    assert not sell_approach["enter"] and sell_approach["reason"] == "outside_entry_range"
     improved = sell_tracker.observe(
         100.2,
         1.0,

@@ -227,6 +227,7 @@ def test_compact_facts_expose_live_map_ids():
         ]
     }
     facts = compact_entry_facts(entry_cache, decision, {}, "XAUUSDr")
+    assert "confirmation_context" in facts
     assert facts["live_map"]["double_top"]["id"] == "M5_LIVE_H_4323_0110"
     assert "M5_LIVE_H_4323_0110" in {row["id"] for row in facts["execution_levels"]}
     assert "M5_LIVE_H_4323_0110" in facts["citeable_evidence_ids"]

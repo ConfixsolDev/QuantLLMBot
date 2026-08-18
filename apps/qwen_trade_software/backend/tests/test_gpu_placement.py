@@ -26,7 +26,7 @@ BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
 
-def _resident(size_gb=9.0, vram_gb=9.0, name="qwen-trading-v004:latest"):
+def _resident(size_gb=9.0, vram_gb=9.0, name="qwen-trading-v005:latest"):
     return {"models": [{"name": name, "size": size_gb * 1e9,
                         "size_vram": vram_gb * 1e9}]}
 
