@@ -140,6 +140,23 @@ Session permission and closed-bar acceptance override pattern names."""
     missing_fact = contract.get("missing_fact")
     trade_reason = contract.get("trade_reason") or contract.get("decision_conditions") or ""
     confirmation_reason = contract.get("confirmation_reason") or ""
+    atr_m1_51 = contract.get("atr_m1_51")
+    atr_m1_3 = contract.get("atr_m1_3")
+    atr_ratio_3_51 = contract.get("atr_ratio_3_51")
+    if atr_m1_51 is None and isinstance(contract.get("atr"), dict):
+        atr_m1_51 = contract["atr"].get("atr_m1_51")
+        atr_m1_3 = contract["atr"].get("atr_m1_3")
+        atr_ratio_3_51 = contract["atr"].get("atr_ratio_3_51")
+    if atr_ratio_3_51 is None and atr_m1_3 is not None and atr_m1_51:
+        try:
+            atr_ratio_3_51 = round(float(atr_m1_3) / float(atr_m1_51), 4)
+        except (TypeError, ValueError, ZeroDivisionError):
+            atr_ratio_3_51 = None
+    atr_line = (
+        f"ATR M1: 51={atr_m1_51} | 3={atr_m1_3} | ratio3/51={atr_ratio_3_51}"
+        if atr_m1_51 is not None or atr_m1_3 is not None
+        else "ATR M1: 51=N/A | 3=N/A | ratio3/51=N/A"
+    )
     action = contract.get("action")
     direction = contract.get("direction")
     if not action or not direction:
@@ -187,6 +204,7 @@ Next Target: {n_target}
 Close Confirmed: {str(close_ok).lower()}
 Auction State: {auction_state}
 Confidence: {conf}
+{atr_line}
 
 Key Levels: {key_levels}
 Entry: N/A
@@ -203,12 +221,27 @@ with conditions '{summary}' → management_action={mgmt} (never average/reverse)
         is_no_trade = action in ("wait", "skip") or entry in (0, 0.0, None)
         skip_line = f"Skip Reason Code: {skip_code}" if action == "skip" and skip_code else "Skip Reason Code: none"
         miss_line = f"Missing Fact: {missing_fact}" if action == "wait" and missing_fact else "Missing Fact: none"
+        trigger_tf = contract.get("trigger_tf") or "M5"
+        trigger_line = f"Trigger TF: {trigger_tf}"
+        side_ideas = contract.get("side_ideas")
+        if isinstance(side_ideas, dict):
+            long_i = side_ideas.get("long") or {}
+            short_i = side_ideas.get("short") or {}
+            side_ideas_line = (
+                f"Side Ideas: long_conf={long_i.get('confidence')} "
+                f"short_conf={short_i.get('confidence')} pick={side_ideas.get('pick')}"
+            )
+        else:
+            side_ideas_line = "Side Ideas: none"
         reason_line = trade_reason or summary or "Concept + location decide; entries alone do not."
         confirm_line = confirmation_reason or (
-            "Closed M1/M5 response at the mapped zone required; forming candles are context only."
+            "Closed M5 response at the mapped zone required; M1 pins are context only."
         )
         if is_no_trade:
             trade_mgmt = f"""Key Levels: {key_levels}
+{atr_line}
+{trigger_line}
+{side_ideas_line}
 Entry: N/A
 Stop Loss: N/A
 Take Profit: N/A
@@ -217,6 +250,9 @@ Trade Reason: {reason_line}
 Confirmation Reason: {confirm_line}"""
         else:
             trade_mgmt = f"""Key Levels: {key_levels}
+{atr_line}
+{trigger_line}
+{side_ideas_line}
 Entry: {entry}
 Stop Loss: {sl} (${sl_usd} gold beyond invalidation zone)
 Take Profit: {tp} (${tp_usd} gold target zone)

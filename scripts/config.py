@@ -126,9 +126,9 @@ class PipelineConfig:
     # new material sits at the end of the file. Re-check these after any
     # append_*.py run; audit_training_dataset.py prints the current totals.
     training_lines_start: int = 0
-    training_lines_end: int = 702
-    test_lines_start: int = 702
-    test_lines_end: int = 712
+    training_lines_end: int = 779
+    test_lines_start: int = 779
+    test_lines_end: int = 789
 
     # Evaluation metrics
     eval_metrics: list = None

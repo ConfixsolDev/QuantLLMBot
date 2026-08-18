@@ -2,7 +2,7 @@
 
 **THE ONLY process document** for curriculum, data preparation, tick→train loop, and Colab training.
 
-Last updated: 2026-08-10
+Last updated: 2026-08-17
 
 ---
 
@@ -94,6 +94,26 @@ Open-entry samples place stop/target on **named support/resistance**, not a tiny
 
 Rules: prefer `key_levels` prices on the correct side of entry; if nearer than the TF min, pad **beyond that level** to the min; no inventing geometry when no usable opposing level → wait/skip with SL/TP N/A. Repair util: `python_utilities_for_models/repair_zone_sl_tp_v004.py`.
 
+### 1.1b V5 dual M1 ATR (required on every decision row)
+
+Every stage_02 / stage_04 / stage_05 row and every live Qwen I/O record carries:
+
+| Field | Meaning |
+|-------|---------|
+| `atr_m1_51` | Wilder ATR **period 51** on **closed M1** bars (slow baseline) |
+| `atr_m1_3` | Wilder ATR **period 3** on **closed M1** bars (fast leg) |
+| `atr_ratio_3_51` | `atr_m1_3 / atr_m1_51` — compress / normal / expand **hint** |
+| `atr_timeframe` | always `M1` |
+| `atr_source` | e.g. `mt5_m1_eod:2026-08-12` or live request snapshot |
+
+Live capture: `apps/qwen_trade_software/backend/market_atr.py` (on every `ollama_generate`).  
+Backfill + curriculum stamp: `python_utilities_for_models/enrich_atr_v5.py`.  
+Sample Prepared must show `ATR M1: 51=… \| 3=… \| ratio3/51=…` (`scripts/utils.py`).
+
+Use ATR to size the move and label regime hints (1× vs multi-ATR extension / expand vs quiet), not to invent direction. **Do not hard-gate** entries on fixed ratio thresholds in code — teach location in curriculum (topics 07–09). News/shock cool-down stays a **code** gate.
+
+Legacy note: earlier V5 stamped `atr_m1_6`; that field is retired in favour of `atr_m1_3` + `atr_ratio_3_51`.
+
 ### 1.2 v004 reason + candle confirmation (teach concepts, not entries alone)
 
 Every stage_04 row (open / wait / skip / management) must carry:
@@ -105,7 +125,20 @@ Every stage_04 row (open / wait / skip / management) must carry:
 
 Sample Prepared text (`scripts/utils.py`) must show both lines. Forming candles are never confirmation. Read distilled topics when enriching — do not invent SMC narratives. Enrich util: `python_utilities_for_models/enrich_trade_reasons_v004.py`.
 
-Aim for LoRA capability: location → auction → closed response → side, with explicit reasons — not price memorization.
+Aim for LoRA capability: **context/plan → hunt (at_entry_location) → arm (closed M5/M1) → side**, with explicit reasons — not price memorization.
+
+### 1.2b Three-step trade finding (Context → Hunt → Arm)
+
+Operator process (books: Elder Triple Screen, Brooks L2 / breakout-pullback, Murphy retracement band):
+
+| Step | Name | Model behaviour |
+|------|------|-----------------|
+| 1 | **Context / plan** | Direction + named hunt band + invalidation (from auction / trade_idea stack) |
+| 2 | **Hunt** | Price outside band → `wait`, `missing_fact=at_entry_location` (armed plan; do not relocate zone to the live extreme) |
+| 3 | **Arm** | In band → closed M5 (preferred) timing → invalidation check → `open` / ready |
+
+Live executor fills **only inside** the approved band (no approach-side fill below a sell hunt zone).  
+Util: `python_utilities_for_models/append_entry_location_hunt_v5.py`.
 
 ### 1.3 v004 sideways / three-regime pack
 
@@ -206,12 +239,10 @@ or the exported model will not match the data that produced it.
 
 | What | Current | Where it is set |
 |------|---------|-----------------|
-| **Model / LoRA version** | **v4** (`qwen-trading-v004`) | `export_lora_to_ollama_colab.py` `--outfile-prefix`; `QWEN_MODEL` env, default in `review_shared.py` + `market_context_cache.py` |
-| **Curriculum / dataset version** | **v9** | this file, §3 size line below |
+| **Model / LoRA version** | **v5** (`qwen-trading-v005`) | `export_lora_to_ollama_colab.py` `--outfile-prefix`; `QWEN_MODEL` env, default in `review_shared.py` + `market_context_cache.py` |
+| **Curriculum / dataset version** | **v9** + Phase 4 regime pack | this file, §3 size line below |
 
-**v4 is the model trained on curriculum v9** (712 aligned rows, packs in §3.1
-and §3.2). Anything built from an earlier dataset is not v4, whatever it is
-named.
+**v5 is the model trained on curriculum v9 + Phase 4 regime/architecture pack** (789 aligned rows). Anything built from an earlier dataset is not v5, whatever it is named.
 
 Model version history:
 
@@ -219,24 +250,21 @@ Model version history:
 |-------|-----------|-------|
 | v002 | early curriculum | export script default was still stuck here until 2026-08-10 |
 | v003 | ~389 rows | live through 2026-08-10; buy-blind — scored buy non-zero only **14%** of the time against **82%** for sell |
-| **v004** | **712 rows, curriculum v9** | balanced buy/sell confidence, M30 coverage, frame-coherence skips, live-outcome grounding, trade-management pack. Holdout eval: **direction agreement 100%**, action 90% |
+| v004 | 712 rows, curriculum v9 | balanced buy/sell; live **confidence=0** on ready after Phase 4 prompt fields |
+| **v005** | **789 rows, v9 + Phase 4 pack** | regime vocabulary + calibrated confidence. Holdout: **direction 100%**, action 90%; opens scored ~86 |
 
-> **Note on the number 4.** `v004` names *two different things* in this repo:
-> the **model build** (above) and the **geometry/reason conventions** in §1.1
-> and §1.2, which are curriculum rules. Same number, different scope. When
-> writing about either, say "the v004 *model*" or "the v004 *geometry*".
+> **Note on the number 4.** `v004` still names the **geometry/reason conventions** in §1.1 and §1.2 (curriculum rules), not the live Ollama tag. The live tag is **v005**.
 
-**Deployment is a separate step from training.** Exporting `qwen-trading-v004`
-to Ollama does not switch the live system over. Until you switch it, the bot
-keeps running v003.
+**Deployment is a separate step from training.** Exporting `qwen-trading-v005`
+to Ollama does not switch the live system over until `DEFAULT_MODEL` / `QWEN_MODEL` point at it.
 
 ```bash
 # 1. confirm the model actually exists in Ollama first
-ollama list | grep qwen-trading-v004
+ollama list | grep qwen-trading-v005
 
 # 2. point the runtime at it (both processes read the same variable)
-set QWEN_MODEL=qwen-trading-v004:latest      # Windows
-export QWEN_MODEL=qwen-trading-v004:latest   # bash
+set QWEN_MODEL=qwen-trading-v005:latest      # Windows
+export QWEN_MODEL=qwen-trading-v005:latest   # bash
 
 # 3. restart the stack
 ```
@@ -254,13 +282,11 @@ so run a qualification pass after switching:
 python market_context_cache.py --once     # without --no-qwen
 ```
 
-Default stays v003 in code so an exported-but-unverified model cannot silently
-break live trading. Flip `DEFAULT_MODEL` in `review_shared.py` only after v004
-has run a clean session.
+Default in code is **v005**. Flip `DEFAULT_MODEL` in `review_shared.py` only after a new GGUF has a holdout you accept; then qualify cache without `--no-qwen`.
 
-**Current size (curriculum v9):** 712 aligned stage_02/04 examples
-(702 train / 10 holdout at end) + 321 stage_05 rows.  
-**Config:** `scripts/config.py` → `training_lines_end=702`, `test_lines_end=712`.
+**Current size (curriculum v9 + v5 ATR3/51 + regime/dual/M5/FVG + entry-hunt + V2 architecture Phase 4 packs):** 789 aligned stage_02/04 examples
+(779 train / 10 holdout at end) + 721 stage_05 rows.  
+**Config:** `scripts/config.py` → `training_lines_end=779`, `test_lines_end=789`.
 
 > **Bounds are absolute row indices, not proportions.** After any `append_*.py`
 > run you MUST bump both values or the appended rows — which land at the end of
@@ -459,6 +485,14 @@ Hyperparameters: repo `scripts/config.py` (5 epochs, warmup 5, QLoRA r=16).
 
 | Pack | Script (under `python_utilities_for_models/`) | Focus |
 |------|--------|--------|
+| v5 ATR | `enrich_atr_v5.py` | Backfill past tick days + stamp `atr_m1_51` / `atr_m1_3` / `atr_ratio_3_51` on all stage_02/04/05 |
+| v5 pullback | `append_pullback_entry_v5.py` | With-trend entry only after pullback — never sell the low / buy the high (2026-08-13 −147/−162) |
+| v5 regime ATR | `append_regime_atr_v5.py` | Expand/compress/normal + pullback + calibrated confidence (topics 07–08) |
+| v5 dual-side | `append_dual_side_ideas_v5.py` | Long+short idea cases then pick/wait (curriculum only; live `entry_policy` dual-side revive deferred — see reviewer note + prior dual_side study) |
+| v5 M5 confirm | `append_m5_confirm_v5.py` | Closed M5 confirms; M1 pin alone waits (topic 04) |
+| v5 FVG/OB lit | `append_fvg_ob_literature_v5.py` | Micro measuring gap / impulse-origin zone aliases (topics 05–06) |
+| v5 entry hunt | `append_entry_location_hunt_v5.py` | Context → Hunt → Arm; `missing_fact=at_entry_location` outside band |
+| v2 regime arch | `append_regime_architecture_v2.py` | Regime hint + override, CHoCH/FVG interpret, calibrated confidence, H4 geometry, live_map double-top |
 | v5 | `append_discipline_pack_v5.py` | Poison rewrite, holdout, action/direction |
 | v6 | `append_sop_mgmt_m1_v6.py` | Skip codes, management, M1 double-test |
 | v7 | `append_fib_ema_v7.py` | H4 fib consume + M1 EMA 3/14/31 |
