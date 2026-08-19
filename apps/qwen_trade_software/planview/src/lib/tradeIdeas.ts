@@ -61,3 +61,28 @@ export type TradeIdeasResponse = {
   frame_min_stops: Record<string, number>;
   ideas: TradeIdeaRow[];
 };
+
+export type LifecycleResponse = {
+  active_idea?: {
+    state?: string;
+    watching_zone?: string;
+    watching_side?: string;
+    active_idea?: {
+      idea_id?: string;
+      zone_id?: string;
+      side?: string;
+      zone?: number[];
+      thesis?: string;
+      state?: string;
+      approach_summary?: Record<string, unknown>;
+    };
+  };
+  approach?: {
+    assessment?: string;
+    current_distance?: number;
+    distance_trend?: string;
+    price_reached_zone?: boolean;
+    observations?: number;
+    target_zone?: number[];
+  };
+};

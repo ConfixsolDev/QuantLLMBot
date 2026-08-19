@@ -299,13 +299,38 @@ def load_previous_day_verdicts(trading_date: date) -> list[dict]:
 
 def planner_facts(symbol: str = SYMBOL) -> dict:
     entry_cache = latest_entry_context(symbol)
+    level_rows = entry_cache.get("levels", [])
+    # Build a compact nearby-level list the model can pick from for pricing.
+    # This prevents hallucinated prices by giving the model actual cache-derived
+    # S/R levels with their timeframe and zone boundaries.
+    quote = (entry_cache.get("minute") or {}).get("quote") or {}
+    mid = 0.0
+    try:
+        bid = float(quote.get("bid") or 0)
+        ask = float(quote.get("ask") or 0)
+        mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else bid or ask
+    except (TypeError, ValueError):
+        pass
+    nearby_for_planning = []
+    if mid > 0 and level_rows:
+        by_dist = sorted(level_rows, key=lambda r: abs(float(r.get("price", 0)) - mid))
+        for row in by_dist[:20]:
+            nearby_for_planning.append({
+                "id": row.get("level_id"),
+                "tf": row.get("timeframe"),
+                "price": round(float(row.get("price", 0)), 3),
+                "zone_low": round(float(row.get("zone_low", row.get("price", 0))), 3),
+                "zone_high": round(float(row.get("zone_high", row.get("price", 0))), 3),
+                "role": row.get("role"),
+            })
     return {
         "symbol": symbol,
         "cache_status": entry_cache.get("status"),
         "cache_reason": entry_cache.get("reason"),
         "structure": entry_cache.get("structure", {}),
         "session": entry_cache.get("session", {}),
-        "levels": entry_cache.get("levels", []),
+        "levels": level_rows,
+        "nearby_levels_for_planning": nearby_for_planning,
         "recent_closed": entry_cache.get("recent_closed", {}),
         "minute": entry_cache.get("minute", {}),
         "epochs": entry_cache.get("epochs", {}),
@@ -845,6 +870,7 @@ def _fallback_h4_from_day_plan(plan: dict) -> dict:
 
 
 def _fallback_h1_from_session(plan: dict, h4: dict) -> dict:
+    """Build H1 levels from entry_zones, H4, or cache levels near price."""
     levels = []
     for zone in plan.get("entry_zones") or []:
         z = zone.get("zone") or []
@@ -854,25 +880,94 @@ def _fallback_h1_from_session(plan: dict, h4: dict) -> dict:
     if not levels:
         for ref, price in zip(h4.get("key_level_refs") or [], h4.get("targets") or []):
             levels.append({"price": float(price), "label": str(ref)})
+    # Still empty — pull the nearest H1/H4 cache levels from MT5
+    if not levels:
+        live_price = plan.get("reference_price")
+        if live_price and float(live_price) > 0:
+            live = float(live_price)
+            try:
+                entry_cache = latest_entry_context(SYMBOL)
+                level_rows = entry_cache.get("levels", [])
+                # Prefer H1 and H4 timeframe levels for H1 view
+                h1_h4 = [r for r in level_rows if r.get("timeframe") in ("H1", "H4")]
+                if not h1_h4:
+                    h1_h4 = level_rows
+                by_dist = sorted(h1_h4, key=lambda r: abs(float(r.get("price", 0)) - live))
+                for row in by_dist[:6]:
+                    p = float(row.get("price", 0))
+                    if abs(p - live) < price_deviation_limit(live):
+                        label = f"{row.get('timeframe', '')} {row.get('role', 'level')}"
+                        levels.append({"price": round(p, 3), "label": label.strip()[:60]})
+            except Exception:
+                pass
+    inv = 0.0
+    if plan.get("entry_zones"):
+        inv = float((plan["entry_zones"][0]).get("invalidation") or 0.0)
+    if not inv:
+        inv = float(h4.get("invalidation") or 0.0)
     return {
         "summary": str(plan.get("summary") or "H1 refine of day idea")[:160],
         "levels": levels[:6],
-        "invalidation": float(
-            (plan.get("entry_zones") or [{}])[0].get("invalidation")
-            if plan.get("entry_zones")
-            else h4.get("invalidation")
-            or 0.0
-        ),
+        "invalidation": inv,
         "status": "active",
     }
 
 
 def _fallback_m15_from_session(plan: dict, h4: dict) -> dict | None:
+    """Build M15 pullback from entry_zones, then cache levels, then H4.
+
+    2026-08-18: the old fallback computed M15 from (H4.inv + H4.target) / 2
+    which produced prices far from the market when H4 side was neutral or
+    when the model hallucinated H4 geometry. Now we prefer entry_zones, then
+    nearby_levels_for_planning from the cache (actual MT5-derived levels),
+    then H4 only as a last resort with live_price sanity.
+    """
     zones = plan.get("entry_zones") or []
-    if not zones:
-        if h4.get("side") in ("buy", "sell") and h4.get("targets"):
-            inv = float(h4.get("invalidation") or 0.0)
-            tgt = float(h4["targets"][0])
+    if zones:
+        zone = zones[0]
+        z = list(zone.get("zone") or [0.0, 0.0])
+        return {
+            "side": zone.get("side") or _side_from_scenario(plan.get("active_scenario", "neutral")),
+            "pullback_zone": [float(z[0]), float(z[1])],
+            "invalidation": float(zone.get("invalidation") or h4.get("invalidation") or 0.0),
+            "target": float(zone.get("target") or (h4.get("targets") or [0.0])[0]),
+            "status": "active",
+        }
+    # No entry_zones — try to build from actual cache levels near price.
+    live_price = plan.get("reference_price")
+    if live_price and float(live_price) > 0:
+        live = float(live_price)
+        # Fetch actual MT5-derived S/R levels from the cache
+        try:
+            entry_cache = latest_entry_context(SYMBOL)
+            level_rows = entry_cache.get("levels", [])
+            facts = sorted(level_rows, key=lambda r: abs(float(r.get("price", 0)) - live))[:20]
+        except Exception:
+            facts = []
+        if len(facts) >= 2:
+            by_price = sorted(facts, key=lambda r: float(r.get("price", 0)))
+            below = [r for r in by_price if float(r.get("price", 0)) <= live]
+            above = [r for r in by_price if float(r.get("price", 0)) > live]
+            if below and above:
+                lo_level = below[-1]   # nearest support below price
+                hi_level = above[0]    # nearest resistance above price
+                lo_price = float(lo_level.get("zone_low", lo_level.get("price", 0)))
+                hi_price = float(hi_level.get("zone_high", hi_level.get("price", 0)))
+                side = h4.get("side") if h4.get("side") in ("buy", "sell") else "buy"
+                inv_price = lo_price - 3.0 if side == "buy" else hi_price + 3.0
+                tgt_price = hi_price + 5.0 if side == "buy" else lo_price - 5.0
+                return {
+                    "side": side,
+                    "pullback_zone": [round(lo_price, 3), round(hi_price, 3)],
+                    "invalidation": round(inv_price, 3),
+                    "target": round(tgt_price, 3),
+                    "status": "active",
+                }
+    # Last resort: H4 geometry (only if side is directional)
+    if h4.get("side") in ("buy", "sell") and h4.get("targets"):
+        inv = float(h4.get("invalidation") or 0.0)
+        tgt = float(h4["targets"][0])
+        if live_price and abs(inv - float(live_price)) < 100 and abs(tgt - float(live_price)) < 100:
             mid = (inv + tgt) / 2.0
             width = abs(tgt - inv) * 0.08
             return {
@@ -882,16 +977,7 @@ def _fallback_m15_from_session(plan: dict, h4: dict) -> dict | None:
                 "target": tgt,
                 "status": "active",
             }
-        return None
-    zone = zones[0]
-    z = list(zone.get("zone") or [0.0, 0.0])
-    return {
-        "side": zone.get("side") or _side_from_scenario(plan.get("active_scenario", "neutral")),
-        "pullback_zone": [float(z[0]), float(z[1])],
-        "invalidation": float(zone.get("invalidation") or h4.get("invalidation") or 0.0),
-        "target": float(zone.get("target") or (h4.get("targets") or [0.0])[0]),
-        "status": "active",
-    }
+    return None
 
 
 def build_initial_trade_idea_stack(day_plan: dict) -> dict:

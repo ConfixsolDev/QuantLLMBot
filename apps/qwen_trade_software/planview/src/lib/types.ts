@@ -308,6 +308,22 @@ export interface TradeIdea {
 
 export interface Snapshot {
   qwen?: TradeIdea | null;
+  connected?: boolean;
+  symbol?: string;
+  price?: number;
+  positions?: Array<{ ticket?: number; price_open?: number; price_current?: number }>;
+  profit_protection?: {
+    ticket?: number; state?: string; armed?: boolean; entry?: number;
+    current?: number; peak?: number; candidate_stop?: number | null;
+    progress_r?: number; locked_cash?: number; risk_cash?: number;
+    timestamp_utc?: string;
+  } | null;
+  paper_execution?: {
+    event?: string;
+    reason?: string;
+    fills?: unknown[];
+    proposal_id?: string;
+  } | null;
 }
 
 export interface Candle {

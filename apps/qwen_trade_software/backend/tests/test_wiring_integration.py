@@ -155,6 +155,7 @@ def test_executor_refuses_htf_thesis_with_micro_fixed_bracket(mt5_fake, monkeypa
     import paper_executor as pe
 
     monkeypatch.setattr(pe, "SKIP_ON_GEOMETRY_REJECTION", frozenset())
+    monkeypatch.setattr(pe, "ENFORCE_HTF_MICRO_BRACKET", True)
     args = Namespace(
         side="sell",
         management_reference_sl=4411.434,
@@ -166,6 +167,29 @@ def test_executor_refuses_htf_thesis_with_micro_fixed_bracket(mt5_fake, monkeypa
     with pytest.raises(pe.GeometryRejection) as excinfo:
         pe.broker_bracket_from_plan(args, 4406.323, 3)
     assert excinfo.value.reason_code == "htf_thesis_micro_bracket"
+
+
+def test_executor_observes_htf_micro_bracket_during_establishment(mt5_fake, monkeypatch):
+    """Demo establishment mode takes the protected trade and records the bypass."""
+    import paper_executor as pe
+
+    monkeypatch.setattr(pe, "SKIP_ON_GEOMETRY_REJECTION", frozenset())
+    monkeypatch.setattr(pe, "ENFORCE_HTF_MICRO_BRACKET", False)
+    args = Namespace(
+        side="sell",
+        proposal_id="establishment-1",
+        management_reference_sl=4411.434,
+        management_reference_tp=4401.199,
+        structure_timeframe="H4",
+        stop_level_id="H4",
+        target_level_id="D1",
+    )
+
+    sl, tp, source = pe.broker_bracket_from_plan(args, 4406.323, 3)
+
+    assert source.startswith("fixed_3_5_after_")
+    assert sl == pytest.approx(4406.323 + pe.INITIAL_STOP_DISTANCE)
+    assert tp == pytest.approx(4406.323 - pe.INITIAL_TAKE_PROFIT_DISTANCE)
 
 
 def test_observation_window_records_what_it_would_have_refused(mt5_fake, monkeypatch):
@@ -286,6 +310,34 @@ def test_submit_single_position_always_returns_a_four_tuple():
     assert "GeometryRejection" in caught, "_run must convert the rejection to a skip"
 
 
+def test_order_uses_planned_invalidation_as_live_broker_stop():
+    """A crossed invalidation exits on the first broker quote, not M1/M5 close."""
+    source = (Path(__file__).resolve().parents[1] / "paper_executor.py").read_text(
+        encoding="utf-8"
+    )
+    assert "safety_sl = planned_invalidation" in source
+    assert '"geometry:invalidation_already_crossed"' in source
+
+
+def test_structural_stop_distance_controls_submitted_volume(mt5_fake):
+    """Wide structural invalidation reduces size instead of increasing risk."""
+    import paper_executor as pe
+
+    args = Namespace(
+        side="sell", management_reference_sl=4344.279,
+        management_reference_tp=4320.0, structure_timeframe="M30",
+        stop_level_id="H1_PREVIOUS_HIGH", target_level_id="M30_PREVIOUS_LOW",
+        proposal_id="risk-sized", risk_budget=150.0,
+    )
+    sl, _, source, volume = pe.broker_bracket_from_plan(
+        args, 4332.822, 3, include_volume=True
+    )
+    assert source == "structural_same_frame"
+    assert sl > args.management_reference_sl
+    assert volume < 0.5
+    assert volume == pytest.approx(0.12, abs=0.02)
+
+
 def test_flag_disables_structural_bracket(mt5_fake, monkeypatch):
     import paper_executor as pe
 
@@ -301,7 +353,7 @@ def test_flag_disables_structural_bracket(mt5_fake, monkeypatch):
 # ===========================================================================
 
 def test_rebracket_sends_an_sltp_order(mt5_fake, tm_module):
-    """The whole point: SL and TP actually move at the broker."""
+    """Post-fill correction may extend TP but cannot increase accepted risk."""
     tm = tm_module
     mt5_fake.set_price(4333.2)
     position = _position()
@@ -316,24 +368,14 @@ def test_rebracket_sends_an_sltp_order(mt5_fake, tm_module):
     sent = mt5_fake.sent[-1]
     assert sent["action"] == _FakeMT5.TRADE_ACTION_SLTP
     assert sent["position"] == position.ticket
-    assert sent["sl"] > position.sl, "stop must move away from the entry bracket"
+    assert sent["sl"] == position.sl
     assert sent["tp"] == pytest.approx(4320.0)
 
 
-def test_rebracket_is_clipped_when_the_position_was_sized_for_a_tight_stop(
+def test_rebracket_never_widens_a_legacy_tight_stop(
     mt5_fake, tm_module
 ):
-    """The ceiling and the structural stop genuinely conflict on legacy fills.
-
-    A position sized for a $3 stop cannot be re-bracketed to an 11.46-point
-    invalidation without ~4x-ing the risk, so the 1.75x solvency rail clips it.
-    The stop still improves (3.00 -> 5.25 points of room) but does not reach
-    structure.
-
-    This is why Stage 3 matters: sizing for the structural stop AT ENTRY means
-    the re-bracket becomes a small correction instead of a risk explosion. The
-    clip only affects fills opened under the old flat-$3 sizing.
-    """
+    """A legacy fill cannot be rescued by increasing risk after acceptance."""
     tm = tm_module
     mt5_fake.set_price(4333.2)
     position = _position()   # sized for a 3.00 stop
@@ -343,9 +385,7 @@ def test_rebracket_is_clipped_when_the_position_was_sized_for_a_tight_stop(
     sent = mt5_fake.sent[-1]
     room_before = abs(position.price_open - position.sl)
     room_after = abs(position.price_open - sent["sl"])
-    assert room_after > room_before, "must gain room"
-    assert room_after == pytest.approx(5.25, abs=0.01), "clipped to 1.75x initial risk"
-    assert sent["sl"] < 4344.279, "ceiling prevents reaching structure on a legacy fill"
+    assert room_after == pytest.approx(room_before)
 
 
 def test_rebracket_reaches_structure_when_sized_correctly(mt5_fake, tm_module):
@@ -358,7 +398,7 @@ def test_rebracket_reaches_structure_when_sized_correctly(mt5_fake, tm_module):
     tm.rebracket_if_needed(position, levels)
 
     sent = mt5_fake.sent[-1]
-    assert sent["sl"] > 4344.279, "stop should sit beyond the invalidation"
+    assert sent["sl"] == position.sl
 
 
 def test_rebracket_ignores_current_open_levels(mt5_fake, tm_module):
@@ -406,9 +446,7 @@ def test_rebracket_handles_buy_side(mt5_fake, tm_module):
     levels = {"XAUUSDr": {"H1_PREVIOUS_LOW": 4331.974, "M30_PREVIOUS_HIGH": 4355.0}}
     tm.rebracket_if_needed(position, levels)
     sent = mt5_fake.sent[-1]
-    # Direction is what matters here: a buy stop moves DOWN, away from entry.
-    # How far it gets is bounded by the risk ceiling (see the clipping test).
-    assert sent["sl"] < position.sl, "buy stop must move below the entry bracket"
+    assert sent["sl"] == position.sl
     assert sent["tp"] == pytest.approx(4355.0)
 
 
@@ -445,8 +483,8 @@ def test_rebracket_never_tightens_a_correct_structural_bracket(mt5_fake, tm_modu
         assert sent["tp"] >= position.tp, "re-bracket pulled the target closer"
 
 
-def test_rebracket_still_rescues_a_bracket_inside_structure(mt5_fake, tm_module):
-    """The rescue case must keep working -- that is the whole point of R1."""
+def test_rebracket_does_not_rescue_by_widening_after_fill(mt5_fake, tm_module):
+    """An inadequate entry bracket is an entry defect, not management licence."""
     tm = tm_module
     mt5_fake.set_price(4333.2)
     position = _position()   # sell, stop 4335.822, only 3.00 of room
@@ -454,7 +492,7 @@ def test_rebracket_still_rescues_a_bracket_inside_structure(mt5_fake, tm_module)
     tm.rebracket_if_needed(position, levels)
 
     sent = mt5_fake.sent[-1]
-    assert abs(position.price_open - sent["sl"]) > abs(position.price_open - position.sl)
+    assert sent["sl"] == position.sl
 
 
 def test_rebracket_no_structure_is_a_noop(mt5_fake, tm_module):

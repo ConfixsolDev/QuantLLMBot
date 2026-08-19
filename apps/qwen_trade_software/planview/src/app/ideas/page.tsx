@@ -2,8 +2,13 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { fetchTradeIdeas } from "@/lib/api";
-import type { TradeIdeaRow, TradeIdeasResponse } from "@/lib/tradeIdeas";
+import { fetchLifecycle, fetchSnapshot, fetchTradeIdeas } from "@/lib/api";
+import {
+  LOW_CONFIDENCE_FLOOR,
+  useHideLowConfidence,
+} from "@/lib/hideLowConfidence";
+import type { LifecycleResponse, TradeIdeaRow, TradeIdeasResponse } from "@/lib/tradeIdeas";
+import type { Snapshot } from "@/lib/types";
 import { describeTrigger, levelName } from "@/lib/translate";
 
 function fmt(n: number | null | undefined, digits = 2): string {
@@ -76,13 +81,21 @@ function OutcomeCell({ row }: { row: TradeIdeaRow }) {
       </div>
     );
   }
-  if (outcome.event === "mt5_fill" || outcome.event === "mt5_execution_started") {
+  if (outcome.event === "mt5_fill") {
     return (
       <div>
         <div className="font-medium text-sky-300">Taken / open</div>
         <div className="text-xs text-slate-400">
           entry {fmt(outcome.average_entry, 3)}
         </div>
+      </div>
+    );
+  }
+  if (outcome.event === "mt5_execution_started") {
+    return (
+      <div>
+        <div className="font-medium text-violet-300">Watching entry — not filled</div>
+        <div className="text-xs text-slate-400">executor started; broker position not confirmed</div>
       </div>
     );
   }
@@ -103,20 +116,24 @@ function OutcomeCell({ row }: { row: TradeIdeaRow }) {
 
 export default function TradeIdeasPage() {
   const [data, setData] = useState<TradeIdeasResponse | null>(null);
+  const [lifecycle, setLifecycle] = useState<LifecycleResponse | null>(null);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [readyOnly, setReadyOnly] = useState(false);
   const [geometryOnly, setGeometryOnly] = useState(false);
-  const [minConfidence] = useState(50);
+  const { hideLowConfidence, setHideLowConfidence } = useHideLowConfidence();
+  const minConfidence = hideLowConfidence ? LOW_CONFIDENCE_FLOOR : -1;
 
   const load = useCallback(async () => {
     try {
-      const response = await fetchTradeIdeas({
-        minConfidence,
-        days: 2,
-        readyOnly,
-        limit: 400,
-      });
+      const [response, liveLifecycle, liveSnapshot] = await Promise.all([
+        fetchTradeIdeas({ minConfidence, days: 2, readyOnly, limit: 400 }),
+        fetchLifecycle(),
+        fetchSnapshot(),
+      ]);
       setData(response);
+      setLifecycle(liveLifecycle);
+      setSnapshot(liveSnapshot);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load trade ideas");
@@ -145,11 +162,12 @@ export default function TradeIdeasPage() {
             GoldFlow Plan View
           </p>
           <h1 className="text-2xl font-semibold text-slate-100">
-            Trade ideas (confidence &gt; {minConfidence}%)
+            Trade ideas
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-slate-400">
-            High-confidence ideas with stop/target distances and reward:risk so
-            you can see geometry blocks (HTF minimum target / R:R gate).
+            {hideLowConfidence
+              ? `Hiding plans at or below ${LOW_CONFIDENCE_FLOOR}% confidence. Uncheck the box at the top to include 0-confidence plans.`
+              : "Including 0-confidence plans. Check the box at the top to hide them again."}
           </p>
         </div>
         <Link
@@ -161,6 +179,14 @@ export default function TradeIdeasPage() {
       </header>
 
       <div className="flex flex-wrap items-center gap-3 text-sm">
+        <label className="flex items-center gap-2 font-medium text-slate-200">
+          <input
+            type="checkbox"
+            checked={hideLowConfidence}
+            onChange={(e) => setHideLowConfidence(e.target.checked)}
+          />
+          Hide low confidence (≤{LOW_CONFIDENCE_FLOOR}%)
+        </label>
         <label className="flex items-center gap-2 text-slate-300">
           <input
             type="checkbox"
@@ -198,6 +224,57 @@ export default function TradeIdeasPage() {
         </div>
       )}
 
+      <section className="grid gap-3 md:grid-cols-5">
+        <div className="card p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">1 · Context</div>
+          <div className="mt-2 text-lg font-semibold text-slate-100">
+            {snapshot?.connected ? "Live" : "Disconnected"} · {fmt(snapshot?.price, 3)}
+          </div>
+          <div className="text-xs text-slate-400">{snapshot?.symbol || "XAUUSDr"} broker quote</div>
+        </div>
+        <div className="card p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">2 · Zone memory</div>
+          <div className="mt-2 flex items-center gap-2">
+            <SideBadge side={lifecycle?.active_idea?.watching_side} />
+            <span className="font-medium text-slate-100">
+              {lifecycle?.active_idea?.watching_zone || "No active zone"}
+            </span>
+          </div>
+          <div className="mt-1 text-xs text-slate-400">
+            {lifecycle?.active_idea?.active_idea?.zone?.map((n) => fmt(n, 3)).join(" – ") || "—"}
+          </div>
+        </div>
+        <div className="card p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">3 · Entry search</div>
+          <div className="mt-2 text-lg font-semibold text-slate-100">
+            {lifecycle?.active_idea?.state || "idle"}
+          </div>
+          <div className="text-xs text-slate-400">
+            {lifecycle?.approach?.assessment || "no approach"} · {lifecycle?.approach?.distance_trend || "—"} · distance {fmt(lifecycle?.approach?.current_distance, 3)}
+          </div>
+        </div>
+        <div className="card p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">4 · Broker truth</div>
+          <div className={`mt-2 text-lg font-semibold ${(snapshot?.positions?.length || 0) > 0 ? "text-sky-300" : "text-emerald-300"}`}>
+            {(snapshot?.positions?.length || 0) > 0
+              ? `${snapshot?.positions?.length} open position(s)`
+              : "No open position"}
+          </div>
+          <div className="text-xs text-slate-400">
+            last executor: {snapshot?.paper_execution?.event || "—"} · {snapshot?.paper_execution?.reason || "—"}
+          </div>
+        </div>
+        <div className="card p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">5 · Profit protection</div>
+          <div className={`mt-2 text-lg font-semibold ${snapshot?.profit_protection?.armed ? "text-amber-300" : "text-slate-300"}`}>
+            {snapshot?.profit_protection?.state || "Not armed"}
+          </div>
+          <div className="text-xs text-slate-400">
+            floor {fmt(snapshot?.profit_protection?.candidate_stop, 3)} · {fmt(snapshot?.profit_protection?.progress_r, 2)}R · locked ${fmt(snapshot?.profit_protection?.locked_cash, 2)}
+          </div>
+        </div>
+      </section>
+
       <div className="card overflow-x-auto p-0">
         <table className="min-w-full text-left text-sm">
           <thead className="border-b border-slate-800 bg-slate-950/80 text-xs uppercase tracking-wide text-slate-400">
@@ -224,7 +301,11 @@ export default function TradeIdeasPage() {
                 <tr
                   key={row.proposal_id}
                   className={`border-b border-slate-800/80 ${
-                    highlight ? "bg-amber-950/20" : "hover:bg-slate-900/50"
+                    highlight
+                      ? "bg-amber-950/20"
+                      : row.confidence <= LOW_CONFIDENCE_FLOOR
+                        ? "bg-slate-950/40 text-slate-400"
+                        : "hover:bg-slate-900/50"
                   }`}
                 >
                   <td className="whitespace-nowrap px-3 py-3 align-top text-xs">
@@ -324,7 +405,7 @@ export default function TradeIdeasPage() {
                   colSpan={10}
                   className="px-3 py-8 text-center text-slate-500"
                 >
-                  No ideas above {minConfidence}% yet for the selected filters.
+                  No ideas yet for the selected filters.
                 </td>
               </tr>
             )}

@@ -26,7 +26,10 @@ BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
 
-def _resident(size_gb=9.0, vram_gb=9.0, name="qwen-trading-v005:latest"):
+def _resident(size_gb=9.0, vram_gb=9.0, name=None):
+    if name is None:
+        from runtime_config import ACTIVE_QWEN_MODEL
+        name = ACTIVE_QWEN_MODEL
     return {"models": [{"name": name, "size": size_gb * 1e9,
                         "size_vram": vram_gb * 1e9}]}
 
@@ -132,6 +135,28 @@ def test_the_override_exists_and_works(monkeypatch):
     monkeypatch.setattr(rv, "gpu_residency",
                         lambda: {"state": "cpu", "vram_share": 0.0, "detail": "x"})
     assert rv.gpu_ready_for_entry() is True
+
+
+def test_model_identity_has_one_runtime_source_of_truth():
+    import market_context_cache
+    import review_shared
+    import runtime_config
+
+    assert review_shared.MODEL == runtime_config.ACTIVE_QWEN_MODEL
+    assert market_context_cache.MODEL == runtime_config.ACTIVE_QWEN_MODEL
+
+    runtime_files = [
+        path for path in BACKEND.glob("*.py")
+        if path.name != "runtime_config.py"
+    ]
+    duplicated = [
+        path.name for path in runtime_files
+        if runtime_config.DEFAULT_QWEN_MODEL in path.read_text(encoding="utf-8")
+    ]
+    assert duplicated == [], (
+        "model tag must be changed only in runtime_config.py; duplicated in "
+        + ", ".join(duplicated)
+    )
 
 
 def test_management_is_never_gated_on_placement():

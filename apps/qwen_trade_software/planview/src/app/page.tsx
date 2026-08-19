@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchCandles, fetchPlan, fetchSnapshot } from "@/lib/api";
-import type { HourlyUpdate, PlannerState, TradeIdea } from "@/lib/types";
+import type { HourlyUpdate, PlannerState, Snapshot, TradeIdea } from "@/lib/types";
 import { DayBranchPanel } from "@/components/DayBranchPanel";
 import { ExecutionFunnelPanel } from "@/components/ExecutionFunnelPanel";
 import { TimeframeLadderPanel } from "@/components/TimeframeLadder";
@@ -23,6 +23,7 @@ export default function PlanViewPage() {
     useState<(typeof TIMEFRAMES)[number]>("M15");
   const [selectedHourlyId, setSelectedHourlyId] = useState<string | null>(null);
   const [tradeIdea, setTradeIdea] = useState<TradeIdea | null>(null);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [cheatOpen, setCheatOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,6 +50,7 @@ export default function PlanViewPage() {
     try {
       const snapshot = await fetchSnapshot();
       setTradeIdea(snapshot.qwen ?? null);
+      setSnapshot(snapshot);
     } catch {
       // Trade idea overlay is optional; chart still works without it.
     }
@@ -154,6 +156,7 @@ export default function PlanViewPage() {
         dayPlan={plan?.day_plan ?? null}
         sessionPlan={plan?.session_plan ?? null}
         tradeIdea={tradeIdea}
+        profitProtection={snapshot?.profit_protection}
         tradeIdeaStack={tradeIdeaStack ?? null}
         hourlyUpdates={hourlyUpdates}
         selectedHourlyId={selectedUpdate?.hourly_id ?? null}

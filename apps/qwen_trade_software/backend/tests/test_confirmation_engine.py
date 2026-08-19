@@ -104,16 +104,16 @@ def test_sweep_and_bos_are_exclusive_on_last_swing():
 
 def test_compact_confirmation_log():
     packet = {
-        "m1": {
+        "m5": {
             "bos": None,
             "choch": {"direction": "bearish"},
             "liquidity_sweep": {"kind": "sweep_high"},
             "fvg": [{"side": "bearish"}],
         },
-        "m5": {"bos": None, "choch": None, "liquidity_sweep": None, "fvg": []},
+        "m15": {"bos": None, "choch": None, "liquidity_sweep": None, "fvg": []},
     }
     line = ce.compact_confirmation_log(packet)
-    assert "m1_choch=bearish" in line
-    assert "m1_sweep=sweep_high" in line
-    assert "m1_fvg=1" in line
+    assert "m5_choch=bearish" in line
+    assert "m5_sweep=sweep_high" in line
+    assert "m5_fvg=1" in line
     assert ce.compact_confirmation_log({}) == "none"

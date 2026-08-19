@@ -15,6 +15,7 @@ import MetaTrader5 as mt5
 import build_manifest
 import live_mapped_levels
 import trade_geometry
+from trade_step_log import log_step
 from tick_data_archive import append_tick_record
 
 
@@ -34,9 +35,26 @@ MIN_ENTRY_CONFIDENCE = 51
 # reference the entry guard validates against -- see broker_bracket_from_plan.
 INITIAL_STOP_DISTANCE = 3.0
 INITIAL_TAKE_PROFIT_DISTANCE = 5.0
+
+# ── Optimal entry price gate ────────────────────────────────────────────
+# Instead of filling anywhere inside the zone, wait for price to reach
+# within OPTIMAL_ENTRY_TOLERANCE_PTS of the optimal zone edge.
+# Buy → optimal = zone low, fill only when price <= optimal + tolerance.
+# Sell → optimal = zone high, fill only when price >= optimal - tolerance.
+# This ensures we buy at the bottom and sell at the top of the zone.
+OPTIMAL_ENTRY_TOLERANCE_PTS = 0.5  # allow 0.5pt slippage from optimal edge
+
 # Stage 3: place the stop beyond the structural invalidation and let size absorb
 # the distance. Set QWEN_STRUCTURAL_BRACKET=0 to fall back to the flat $3/$5.
 STRUCTURAL_BRACKET_ENABLED = os.environ.get("QWEN_STRUCTURAL_BRACKET", "1") != "0"
+
+# Strategy-establishment window: allow an H1+ thesis to fall back to the
+# protected fixed bracket when structural geometry cannot be built.  This is
+# deliberately one switch so the stricter rule can be restored after enough
+# demo outcomes exist by setting QWEN_ENFORCE_HTF_MICRO_BRACKET=1.
+ENFORCE_HTF_MICRO_BRACKET = (
+    os.environ.get("QWEN_ENFORCE_HTF_MICRO_BRACKET", "0") == "1"
+)
 
 # Geometry verdicts that *can* refuse entry rather than degrading to $3/$5.
 #
@@ -303,8 +321,28 @@ def entry_price_allowed(
 
 
 def latest_closed_m1_bar(symbol: str) -> dict | None:
-    """Last completed M1 from MT5. None if the terminal has no closed bar yet."""
+    """Last completed M1 timing bar from MT5.
+
+    Direction, zone, target and invalidation are already fixed upstream. M1
+    therefore decides only the execution moment; it never rewrites structure.
+    Waiting for an M5 close here routinely enters after the zone response is
+    exhausted.
+    """
     rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, 1)
+    if rates is None or len(rates) < 1:
+        return None
+    rate = rates[-1]
+    return {
+        "open": float(rate["open"]),
+        "high": float(rate["high"]),
+        "low": float(rate["low"]),
+        "close": float(rate["close"]),
+    }
+
+
+def latest_closed_m5_bar(symbol: str) -> dict | None:
+    """Compatibility helper for callers that explicitly need M5 context."""
+    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 1, 1)
     if rates is None or len(rates) < 1:
         return None
     rate = rates[-1]
@@ -323,14 +361,41 @@ def entry_fill_ready(
     high: float,
     stop_loss: float | None,
     closed_m1: dict | None,
+    optimal_entry_price: float | None = None,
 ) -> tuple[bool, str]:
-    """Inside the hunt band AND a completed M1 failed at that band."""
+    """Inside the hunt band, near its optimal edge, after a closed M1 failure.
+
+    M1 is permitted only because upstream has already committed direction,
+    mapped the zone, and supplied structural invalidation/target. It times that
+    plan; it does not promote an M1 move into higher-timeframe structure.
+
+    2026-08-18: added optimal entry price gate. Instead of filling
+    anywhere inside the zone, wait for price to reach within tolerance
+    of the zone edge (buy at the bottom, sell at the top). This is the
+    core quality-of-entry improvement — a human trader waits for price
+    to reach the level, not the middle of the range.
+    """
     location = entry_location(side, price, low, high, stop_loss)
     if location != "inside_zone":
         return False, location
     if not live_mapped_levels.m1_failure_for_entry(side, low, high, closed_m1):
         return False, "inside_zone_waiting_m1_failure"
-    return True, "armed_m1_failure"
+
+    # ── Optimal price gate ───────────────────────────────────────────
+    # Brooks: after a valid closed failure at the edge, enter while the signal
+    # remains actionable; demanding the exact extreme can miss the response.
+    # Restrict fills to the favorable outer half of the zone.
+    if optimal_entry_price is not None:
+        tol = OPTIMAL_ENTRY_TOLERANCE_PTS
+        midpoint = (low + high) / 2.0
+        buy_limit = max(optimal_entry_price + tol, midpoint)
+        sell_limit = min(optimal_entry_price - tol, midpoint)
+        if side == "buy" and price > buy_limit:
+            return False, "inside_zone_waiting_optimal_buy_low"
+        if side == "sell" and price < sell_limit:
+            return False, "inside_zone_waiting_optimal_sell_high"
+
+    return True, "armed_m1_failure_at_optimal"
 
 
 def remaining_signal_seconds(created_at: datetime, now: datetime, ttl: float) -> float:
@@ -634,6 +699,17 @@ def _refuse_htf_micro_bracket(args, *, detail: str) -> None:
     frame = str(getattr(args, "structure_timeframe", "") or "").strip().upper()
     if frame not in HTF_MICRO_BRACKET_FRAMES:
         return
+    if not ENFORCE_HTF_MICRO_BRACKET:
+        logging.warning(
+            "HTF micro-bracket observation override: proposal=%s frame=%s "
+            "using protected $%s/$%s fallback; would_refuse=%s",
+            getattr(args, "proposal_id", None),
+            frame,
+            INITIAL_STOP_DISTANCE,
+            INITIAL_TAKE_PROFIT_DISTANCE,
+            detail,
+        )
+        return
     raise GeometryRejection(
         "htf_thesis_micro_bracket",
         (
@@ -644,7 +720,9 @@ def _refuse_htf_micro_bracket(args, *, detail: str) -> None:
     )
 
 
-def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[float, float, str]:
+def broker_bracket_from_plan(
+    args, order_price: float, digits: int, *, include_volume: bool = False
+):
     """Place the entry bracket. Structural when possible, fixed $3/$5 otherwise.
 
     2026-08-10 -- why this changed
@@ -675,11 +753,22 @@ def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[flo
     Set QWEN_STRUCTURAL_BRACKET=0 to force the legacy path (still HTF-blocked).
     """
     safety_sl, safety_tp = initial_safety_bracket(args.side, order_price, digits)
+    risk_budget = float(
+        getattr(args, "risk_budget", trade_geometry.DEFAULT_RISK_BUDGET)
+    )
+    fallback_volume = trade_geometry.size_for_risk(
+        abs(order_price - safety_sl), risk_budget
+    )
+
+    def result(sl: float, tp: float, source: str, volume: float):
+        values = (sl, tp, source, volume)
+        return values if include_volume else values[:3]
+
     if not STRUCTURAL_BRACKET_ENABLED:
         _refuse_htf_micro_bracket(
             args, detail="structural brackets disabled; refuse HTF micro pad"
         )
-        return safety_sl, safety_tp, "fixed_3_5"
+        return result(safety_sl, safety_tp, "fixed_3_5", fallback_volume)
 
     invalidation = getattr(args, "management_reference_sl", None)
     target = getattr(args, "management_reference_tp", None)
@@ -687,7 +776,9 @@ def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[flo
         _refuse_htf_micro_bracket(
             args, detail="no structural invalidation/target on the plan"
         )
-        return safety_sl, safety_tp, "fixed_3_5_no_structure"
+        return result(
+            safety_sl, safety_tp, "fixed_3_5_no_structure", fallback_volume
+        )
 
     bracket = trade_geometry.build_bracket(
         side=args.side,
@@ -697,7 +788,7 @@ def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[flo
         frame=getattr(args, "structure_timeframe", None),
         invalidation_id=getattr(args, "stop_level_id", None),
         target_id=getattr(args, "target_level_id", None),
-        risk_budget=float(getattr(args, "risk_budget", trade_geometry.DEFAULT_RISK_BUDGET)),
+        risk_budget=risk_budget,
         allow_fallback=False,
     )
     if not bracket.ok:
@@ -725,7 +816,12 @@ def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[flo
             INITIAL_STOP_DISTANCE,
             INITIAL_TAKE_PROFIT_DISTANCE,
         )
-        return safety_sl, safety_tp, f"fixed_3_5_after_{bracket.reason_code}"
+        return result(
+            safety_sl,
+            safety_tp,
+            f"fixed_3_5_after_{bracket.reason_code}",
+            fallback_volume,
+        )
 
     logging.info(
         "structural bracket: stop %.3f (beyond %s) target %.3f, distance %.2f, "
@@ -733,10 +829,11 @@ def broker_bracket_from_plan(args, order_price: float, digits: int) -> tuple[flo
         bracket.stop_loss, bracket.invalidation_id, bracket.take_profit,
         bracket.stop_distance, bracket.volume, bracket.expected_risk,
     )
-    return (
+    return result(
         round(bracket.stop_loss, digits),
         round(bracket.take_profit, digits),
         bracket.geometry_source,
+        bracket.volume,
     )
 
 
@@ -748,13 +845,42 @@ def submit_single_position(args, execution_id: str, tick):
     # GeometryRejection propagates to _run, which owns the skip record. This
     # function's contract is a 4-tuple; returning anything else here breaks the
     # caller's unpacking.
-    safety_sl, safety_tp, bracket_source = broker_bracket_from_plan(
-        args, order_price, digits
+    safety_sl, safety_tp, bracket_source, effective_volume = broker_bracket_from_plan(
+        args, order_price, digits, include_volume=True
     )
+    # The plan's invalidation is a hard live-price boundary, not a level that
+    # waits for candle confirmation. Put it on the broker order itself so the
+    # first tradable quote through it exits even if the manager or executor is
+    # delayed. The wider structural stop remains a management reference only.
+    planned_invalidation = round(float(args.stop_loss), digits)
+    invalidation_is_valid = (
+        planned_invalidation < order_price
+        if is_buy
+        else planned_invalidation > order_price
+    )
+    if not invalidation_is_valid:
+        raise GeometryRejection(
+            "geometry:invalidation_already_crossed",
+            f"{args.side} entry {order_price:.3f} is already beyond "
+            f"planned invalidation {planned_invalidation:.3f}",
+        )
+    safety_sl = planned_invalidation
+    # The observation override may accept geometry that fell back to a nominal
+    # $3 bracket, while the broker stop is the plan's actual invalidation.
+    # Re-size against that real distance so loosening entry frequency never
+    # silently increases the configured dollar risk.
+    effective_volume = min(
+        effective_volume,
+        trade_geometry.size_for_risk(
+            abs(order_price - safety_sl),
+            float(getattr(args, "risk_budget", trade_geometry.DEFAULT_RISK_BUDGET)),
+        ),
+    )
+    bracket_source = f"planned_invalidation_live+{bracket_source}"
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": args.symbol,
-        "volume": args.volume,
+        "volume": effective_volume,
         "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
         "price": order_price,
         "sl": safety_sl,
@@ -856,10 +982,12 @@ def _run(args) -> dict:
                     "initial_safety_distance": INITIAL_SAFETY_DISTANCE,
                     "management_owner": "qwen_trade_management",
                     "signal_ttl_seconds": args.signal_ttl_seconds,
+                    "optimal_entry_price": getattr(args, "optimal_entry_price", None),
+                    "optimal_entry_tolerance_pts": OPTIMAL_ENTRY_TOLERANCE_PTS,
                     "entry_price_policy": (
-                        "inside_hunt_zone_only;"
-                        "buy_below_low_and_sell_above_high_allowed;"
-                        "unfavorable_chase_waits"
+                        "optimal_zone_edge_fill;"
+                        "buy_at_zone_low_sell_at_zone_high;"
+                        "tolerance_0.5pts_from_optimal"
                     ),
                     "best_price_observation_seconds": args.best_price_observation_seconds,
                     "best_price_retrace": args.best_price_retrace,
@@ -877,6 +1005,7 @@ def _run(args) -> dict:
         STALL_LOG_THRESHOLD_SECONDS = 2.0
         stale_tick_since = None
         outside_zone_since = None
+        outside_zone_gate = None
 
         while True:
             if not fills and time.monotonic() >= signal_deadline:
@@ -919,6 +1048,12 @@ def _run(args) -> dict:
                     now = time.monotonic()
                     if stale_tick_since is None:
                         stale_tick_since = now
+                        log_step(
+                            "quote_freshness", "stale", proposal_id=args.proposal_id,
+                            execution_id=execution_id, symbol=args.symbol,
+                            price=float(tick.bid), quote_age_ms=age_ms,
+                            detail="entry blocked pending fresh MT5 quote",
+                        )
                     elif now - stale_tick_since >= STALL_LOG_THRESHOLD_SECONDS:
                         logging.warning(
                             "paper_executor %s: MT5 tick is %dms stale, stuck for %.1fs (symbol=%s)",
@@ -927,6 +1062,12 @@ def _run(args) -> dict:
                         stale_tick_since = now
                 time.sleep(args.poll_ms / 1000)
                 continue
+            if stale_tick_since is not None:
+                log_step(
+                    "quote_freshness", "recovered", proposal_id=args.proposal_id,
+                    execution_id=execution_id, symbol=args.symbol,
+                    price=float(tick.bid), quote_age_ms=max(0, age_ms),
+                )
             stale_tick_since = None
 
             entry_quote = fill_price(tick, args.side)
@@ -945,14 +1086,24 @@ def _run(args) -> dict:
                 args.entry_high,
                 args.stop_loss,
                 latest_closed_m1_bar(args.symbol),
+                optimal_entry_price=getattr(args, "optimal_entry_price", None),
             )
             currently_allowed = not fills and currently_allowed
             if not fills and not currently_allowed:
                 now = time.monotonic()
-                if outside_zone_since is None:
+                if outside_zone_since is None or gate != outside_zone_gate:
                     outside_zone_since = now
+                    outside_zone_gate = gate
+                    log_step(
+                        "execution_gate", "waiting", proposal_id=args.proposal_id,
+                        execution_id=execution_id, symbol=args.symbol,
+                        price=entry_quote, quote_age_ms=max(0, age_ms), detail=gate,
+                        entry_low=args.entry_low, entry_high=args.entry_high,
+                    )
                 elif now - outside_zone_since >= STALL_LOG_THRESHOLD_SECONDS:
-                    logging.warning(
+                    # Emit one diagnostic per unchanged gate state. Repeating
+                    # this every two seconds hid actionable warnings.
+                    logging.info(
                         "paper_executor %s: price %.3f %s vs zone [%.3f, %.3f] stop %.3f after %.1fs",
                         execution_id,
                         entry_quote,
@@ -962,9 +1113,10 @@ def _run(args) -> dict:
                         args.stop_loss,
                         now - outside_zone_since,
                     )
-                    outside_zone_since = now
+                    outside_zone_since = float("inf")
             else:
                 outside_zone_since = None
+                outside_zone_gate = None
             tracker_state = entry_tracker.observe(
                 entry_quote,
                 time.monotonic(),
@@ -975,10 +1127,18 @@ def _run(args) -> dict:
             )
             if not fills and tracker_state.get("enter"):
                 phase = "single_entry"
+                log_step(
+                    "m1_trigger", "passed", proposal_id=args.proposal_id,
+                    execution_id=execution_id, symbol=args.symbol,
+                    price=entry_quote, quote_age_ms=max(0, age_ms), detail=gate,
+                )
                 logging.info(
-                    "paper_executor %s: entry_gate=%s filling inside zone [%.3f, %.3f]",
+                    "paper_executor %s: entry_gate=%s filling at %.3f "
+                    "optimal=%.3f zone=[%.3f, %.3f]",
                     execution_id,
                     gate,
+                    entry_quote,
+                    getattr(args, "optimal_entry_price", 0.0) or 0.0,
                     args.entry_low,
                     args.entry_high,
                 )
@@ -1006,6 +1166,14 @@ def _run(args) -> dict:
                     append_event(skipped)
                     return skipped
                 actual_fill = float(order_result.price or entry_quote)
+                log_step(
+                    "position_open", "filled", proposal_id=args.proposal_id,
+                    execution_id=execution_id, symbol=args.symbol,
+                    price=actual_fill, side=args.side,
+                )
+                actual_volume = float(
+                    getattr(order_result, "volume", 0.0) or args.volume
+                )
                 best_observed = float(tracker_state["best_price"])
                 fill = {
                     "position_number": 1,
@@ -1023,7 +1191,7 @@ def _run(args) -> dict:
                     "entry_observation_seconds": tracker_state["observation_seconds"],
                     "entry_observations": tracker_state["observations"],
                     "improvement_from_previous": None,
-                    "volume": args.volume,
+                    "volume": actual_volume,
                     "filled_at_utc": utc_now(),
                     "tick_time_msc": tick.time_msc,
                     "deal": int(order_result.deal),
@@ -1079,6 +1247,7 @@ def _run(args) -> dict:
                 giveback = peak_price_move - price_move
                 adverse_price_move = max(0.0, -price_move)
                 active_stop_distance = abs(average_entry - float(structural_sl))
+
                 now_monotonic = time.monotonic()
                 if (
                     last_monitor_monotonic is None
@@ -1239,12 +1408,26 @@ def self_test() -> None:
     assert not entry_price_allowed("buy", 97, 100, 102, 97)
     fail_m1 = {"open": 101.2, "high": 101.4, "low": 99.8, "close": 100.4}
     through_m1 = {"open": 100.2, "high": 99.6, "low": 99.1, "close": 99.4}
+    # No optimal price → fills anywhere in zone (backward compat)
     ready, gate = entry_fill_ready("buy", 101, 100, 102, 97, fail_m1)
-    assert ready and gate == "armed_m1_failure"
+    assert ready and gate == "armed_m1_failure_at_optimal"
     waiting, wait_gate = entry_fill_ready("buy", 101, 100, 102, 97, through_m1)
     assert not waiting and wait_gate == "inside_zone_waiting_m1_failure"
     outside, outside_gate = entry_fill_ready("buy", 103, 100, 102, 97, fail_m1)
     assert not outside and outside_gate == "favorable_outside"
+    # Optimal price gate: buy at zone low (100), sell at zone high (102)
+    # Buy at 100.3 with optimal=100, tolerance=0.5 → within tolerance → fill
+    buy_opt, buy_opt_gate = entry_fill_ready("buy", 100.3, 100, 102, 97, fail_m1, 100.0)
+    assert buy_opt and buy_opt_gate == "armed_m1_failure_at_optimal"
+    # Buy at 101.5 with optimal=100, tolerance=0.5 → too far from optimal → wait
+    buy_far, buy_far_gate = entry_fill_ready("buy", 101.5, 100, 102, 97, fail_m1, 100.0)
+    assert not buy_far and buy_far_gate == "inside_zone_waiting_optimal_buy_low"
+    # Sell at 101.8 with optimal=102, tolerance=0.5 → within tolerance → fill
+    sell_opt, sell_opt_gate = entry_fill_ready("sell", 101.8, 100, 102, 105, fail_m1, 102.0)
+    assert sell_opt and sell_opt_gate == "armed_m1_failure_at_optimal"
+    # Sell at 100.5 with optimal=102, tolerance=0.5 → too far from optimal → wait
+    sell_far, sell_far_gate = entry_fill_ready("sell", 100.5, 100, 102, 105, fail_m1, 102.0)
+    assert not sell_far and sell_far_gate == "inside_zone_waiting_optimal_sell_high"
     assert average_fill_price([{"price": 101, "volume": 0.5}]) == 101
     assert favorable_price_move(104, 101, "buy") == 3
     assert favorable_price_move(98, 101, "sell") == 3

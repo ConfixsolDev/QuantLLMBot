@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 ALLOWED_ACTIONS = {"hold", "protect", "close"}
+
 ALLOWED_THESIS_STATES = {"valid", "weakening", "invalidated", "target_response"}
 ALLOWED_CONFIRMATIONS = {
     "none",
@@ -36,6 +37,7 @@ ALLOWED_CONFIRMATIONS = {
     "always_in_flip_confirmed",
     "reward_risk_inverted",
     "time_stop_expired",
+    "protected_profit_exit",
 }
 
 
@@ -241,6 +243,10 @@ def regime_hint(facts: dict) -> str:
 
 
 def scalp_regime(facts: dict) -> bool:
+    ctx = facts.get("regime_context") or {}
+    state = str(ctx.get("regime_state") or "").strip().lower()
+    if state:
+        return state in {"range", "trending_range", "reversal_confirmed"}
     return regime_hint(facts) in {"range", "exhaustion"}
 
 
@@ -554,6 +560,11 @@ def validate_management_decision(
     required_close = safety_guard(facts)
     scalp_ok = scalp_regime(facts)
     if action == "close":
+        protected_profit_exit = (
+            confirmation == "protected_profit_exit"
+            and bool((facts.get("profit_protection") or {}).get("armed"))
+            and float((facts.get("position") or {}).get("gross_pnl") or 0.0) > 0.0
+        )
         if not close_confirmed:
             failures.append("management:unconfirmed_close")
         if confirmation == "none":
@@ -562,9 +573,9 @@ def validate_management_decision(
             failures.append("management:close_without_level")
         if latest_m1 not in cited:
             failures.append("management:close_without_latest_m1")
-        if len(set(cited)) < 2:
+        if not protected_profit_exit and len(set(cited)) < 2:
             failures.append("management:close_needs_two_closed_candles")
-        if not any(
+        if not protected_profit_exit and not any(
             supplied_candles[item].get("timeframe") == "M5"
             for item in cited
             if item in supplied_candles
@@ -585,7 +596,9 @@ def validate_management_decision(
             "momentum_reversal_confirmed",
         } and thesis_state not in {"weakening", "invalidated"}:
             failures.append("management:countermove_without_thesis_failure")
-        if level_ref in levels and latest_m1 in supplied_candles:
+        if protected_profit_exit and level_ref != "profit_protection_floor":
+            failures.append("management:protected_exit_without_floor")
+        if level_ref in levels and latest_m1 in supplied_candles and not protected_profit_exit:
             level_price = float(levels[level_ref]["price"])
             latest = supplied_candles[latest_m1]
             touched = any(
@@ -692,6 +705,20 @@ def decision_is_currently_applicable(
     level = float(reference["price"])
     side = facts.get("position", {}).get("side")
     if decision.get("action") == "close":
+        if decision.get("confirmation_type") == "protected_profit_exit":
+            # Qwen deliberately harvested an already protected whole-position
+            # profit. It remains actionable while the position is still green;
+            # the fast worker independently owns the protection-floor breach.
+            entry = float(facts.get("position", {}).get("entry") or 0.0)
+            return current_price > entry if side == "buy" else current_price < entry
+        # A hard invalidation remains actionable on the adverse side of the
+        # stop regardless of regime. Previously scalp_regime() ran first, so a
+        # range-labelled sell above its invalidation was incorrectly declared
+        # stale (the scalp target rule expects a sell to be below its level).
+        # That suppressed three deterministic close attempts on 2026-08-19 and
+        # left the broker stop to take the loss.
+        if level_ref == "planned_invalidation":
+            return current_price < level if side == "buy" else current_price > level
         # Rejection stays actionable on the adverse side of the level.
         # Range scalp stays actionable while price is still at/through the TP.
         if scalp_regime(facts):

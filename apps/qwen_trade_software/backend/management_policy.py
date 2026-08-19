@@ -1,34 +1,10 @@
 """Stage 4: in-trade management policy.
 
-Configuration decision (2026-08-10, operator choice)
-----------------------------------------------------
-Management runs with FULL DISCRETION in both directions: it may move the stop
-toward or away from price, and may move the target either way.
-
-The measured evidence does not support this, and that is recorded here so the
-question can be settled by data rather than by argument:
-
-    left alone until TP        n=3   avg +247.38
-    closed by model decision   n=8   avg  -20.22
-    stopped out at fixed $3    n=5   avg -161.60
-
-Because discretion is permitted, this module does two things instead of
-restricting it:
-
-1.  Imposes an absolute RISK CEILING. A widened stop may never let the position
-    exceed ``MAX_RISK_MULTIPLE`` times the risk that was accepted at entry.
-    This is not a limit on judgement -- it is a solvency limit. Without it a
-    stop can be walked away from indefinitely, which is the standard mechanism
-    by which a small loss becomes an account-ending one.
-
-2.  Instruments every adjustment. Each change records what moved, in which
-    direction, why, and what the position's open P&L was at the time, so
-    configuration_ledger.py (Stage 6) can measure whether discretion earns its
-    keep. If widening turns out to be profitable, the data will show it. If it
-    is destructive, the data will show that too, per configuration.
-
-Set ``STOP_POLICY`` / ``TARGET_POLICY`` to tighten-only variants at any time to
-change the regime without touching call sites.
+The entry invalidation is immutable after fill. Management may close early on
+confirmed invalidation or tighten the stop behind newly completed structure,
+but it may never increase the risk accepted at entry. Targets may be extended
+after confirmed continuation; reducing a target is expressed as a close
+decision instead of silently rewriting the original reward geometry.
 
 Pure functions only. No MT5, no model call, no I/O.
 """
@@ -50,9 +26,9 @@ TARGET_POLICY_FULL = "full_discretion"
 TARGET_POLICY_FIXED = "fixed_at_entry"
 TARGET_POLICY_EXTEND_ONLY = "extend_only"
 
-# Operator selection.
-STOP_POLICY = STOP_POLICY_FULL
-TARGET_POLICY = TARGET_POLICY_FULL
+# Live professional-capital-protection regime.
+STOP_POLICY = STOP_POLICY_TIGHTEN_ONLY
+TARGET_POLICY = TARGET_POLICY_EXTEND_ONLY
 
 # Solvency rail. Applies regardless of policy: the live stop may never place
 # more than this multiple of the originally accepted risk at stake.

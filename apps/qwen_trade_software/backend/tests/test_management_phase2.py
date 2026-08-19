@@ -105,6 +105,27 @@ def test_qwen_range_close_not_blocked_while_favorable():
     assert parsed["action"] == "close"
 
 
+def test_range_label_does_not_stale_a_sell_invalidation_close():
+    """Replay the 2026-08-19 failure: sell above stop must close immediately."""
+    facts = _base_facts()
+    decision = {
+        "action": "close",
+        "decision_level_ref": "planned_invalidation",
+    }
+    assert tm.decision_is_currently_applicable(decision, facts, 4401.0)
+    assert not tm.decision_is_currently_applicable(decision, facts, 4399.0)
+
+
+def test_range_label_does_not_stale_a_buy_invalidation_close():
+    facts = _base_facts(position={"side": "buy", "entry": 4401.0})
+    decision = {
+        "action": "close",
+        "decision_level_ref": "planned_invalidation",
+    }
+    assert tm.decision_is_currently_applicable(decision, facts, 4399.0)
+    assert not tm.decision_is_currently_applicable(decision, facts, 4401.0)
+
+
 def test_hold_is_not_forced_by_old_bounce_back_guard():
     facts = _base_facts(regime_context={"regime_hint": "trend"})
     hold = {

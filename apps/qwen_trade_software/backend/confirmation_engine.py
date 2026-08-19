@@ -1,7 +1,13 @@
-"""Mechanical CHoCH / BOS / FVG / liquidity-sweep labels on closed M1/M5.
+"""Mechanical CHoCH / BOS / FVG / liquidity-sweep labels on closed M5/M15.
 
 Python labels what printed. Qwen judges whether it matters at the mapped zone.
-These labels are never a fill gate — executor still uses M1 failure-at-zone.
+These labels are never a fill gate — executor uses M1 failure-at-zone after
+direction, zone and structural geometry are already validated.
+
+2026-08-18: M1 confirmations removed. In range markets M1 structure breaks
+are noise — false CHoCH/BOS signals that mislead the model. M5 is the minimum
+reliable timeframe for structural confirmation on XAUUSD; M15 is added for
+higher-quality signals that yield bigger trades.
 """
 
 from __future__ import annotations
@@ -180,7 +186,11 @@ def confirmations_for_bars(rows: list[dict], timeframe: str) -> dict[str, Any]:
 
 
 def snapshot_confirmations(symbol: str | None = None) -> dict[str, Any]:
-    """Cached M1/M5 labels. Never raises; never calls MT5."""
+    """Cached M5/M15 labels. Never raises; never calls MT5.
+
+    2026-08-18: M1 dropped — too noisy in range markets. M5 is the minimum
+    confirmation timeframe; M15 added for higher-conviction structure breaks.
+    """
     empty_tf = {
         "timeframe": "",
         "swing_pattern": "insufficient",
@@ -190,25 +200,28 @@ def snapshot_confirmations(symbol: str | None = None) -> dict[str, Any]:
         "fvg": [],
         "bars": 0,
     }
-    packet = {"m1": {**empty_tf, "timeframe": "M1"}, "m5": {**empty_tf, "timeframe": "M5"}}
+    packet = {
+        "m5": {**empty_tf, "timeframe": "M5"},
+        "m15": {**empty_tf, "timeframe": "M15"},
+    }
     try:
         from market_context_cache import get_cached_completed_bars
 
-        m1 = get_cached_completed_bars(symbol, "M1", 120)
         m5 = get_cached_completed_bars(symbol, "M5", 96)
-        if m1:
-            packet["m1"] = confirmations_for_bars(m1, "M1")
+        m15 = get_cached_completed_bars(symbol, "M15", 96)
         if m5:
             packet["m5"] = confirmations_for_bars(m5, "M5")
+        if m15:
+            packet["m15"] = confirmations_for_bars(m15, "M15")
     except Exception:
         pass
     return packet
 
 
 def compact_confirmation_log(packet: dict | None) -> str:
-    """One-line log token: m5_choch=bearish m1_sweep=sweep_high m5_fvg=1."""
+    """One-line log token: m5_choch=bearish m15_sweep=sweep_high m5_fvg=1."""
     parts = []
-    for tf in ("m1", "m5"):
+    for tf in ("m5", "m15"):
         row = (packet or {}).get(tf) or {}
         if row.get("bos"):
             parts.append(f"{tf}_bos={row['bos'].get('direction')}")

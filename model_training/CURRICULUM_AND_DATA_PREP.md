@@ -18,7 +18,7 @@ Last updated: 2026-08-17
 | Put **new model-job Python** only in `python_utilities_for_models/` (read folder first) | Scatter new `.py` under `model_training/` or invent satellite folders |
 | Leave live system code in `apps/qwen_trade_software/` and Colab train pipeline in repo `scripts/` | Mix system runtime code into model utilities |
 
-Architecture overview may still live in `SYSTEM_THREE_PARTS.md` / `AGENTS.md` (pointers only).  
+Architecture overview lives only in `XAUUSD_SYSTEM_ARCHITECTURE_V2.md`; `AGENTS.md` is a pointer.
 Live doctrine stays in `store/core_skill.md` + `store/sop.md`.  
 **Everything about how we collect data, mature curriculum, and train = this file only.**
 
@@ -46,7 +46,7 @@ store/                                 ← live LLM template (core_skill + sop)
 ## 0.1 Hard rules (strategy)
 
 1. **One doc** — this file is the process source of truth for training and data prep.
-2. **Three-part system** — tick archive grows forever; store stays lean; code stabilizes (`SYSTEM_THREE_PARTS.md`, `AGENTS.md`).
+2. **Three-part system** — tick archive grows forever; store stays lean; code stabilizes (`XAUUSD_SYSTEM_ARCHITECTURE_V2.md`, with `AGENTS.md` as pointer).
 3. **Code owns where** — levels, Floor/Fib pivots, session gates, news/shock cool-down.
 4. **Qwen owns what happens at the level** — auction_state → open|wait|skip; in-trade hold|protect|close.
 5. **Never invent** levels, fib anchors, news, or SMC narratives in training labels.
@@ -125,7 +125,7 @@ Every stage_04 row (open / wait / skip / management) must carry:
 
 Sample Prepared text (`scripts/utils.py`) must show both lines. Forming candles are never confirmation. Read distilled topics when enriching — do not invent SMC narratives. Enrich util: `python_utilities_for_models/enrich_trade_reasons_v004.py`.
 
-Aim for LoRA capability: **context/plan → hunt (at_entry_location) → arm (closed M5/M1) → side**, with explicit reasons — not price memorization.
+Aim for LoRA capability: **context/plan → hunt (at_entry_location) → arm (closed M1 failure; M5 optional strength) → side**, with explicit reasons — not price memorization.
 
 ### 1.2b Three-step trade finding (Context → Hunt → Arm)
 
@@ -135,7 +135,7 @@ Operator process (books: Elder Triple Screen, Brooks L2 / breakout-pullback, Mur
 |------|------|-----------------|
 | 1 | **Context / plan** | Direction + named hunt band + invalidation (from auction / trade_idea stack) |
 | 2 | **Hunt** | Price outside band → `wait`, `missing_fact=at_entry_location` (armed plan; do not relocate zone to the live extreme) |
-| 3 | **Arm** | In band → closed M5 (preferred) timing → invalidation check → `open` / ready |
+| 3 | **Arm** | In band → closed M1 probe-and-failure timing; M5 is optional strength evidence → invalidation check → `open` / ready |
 
 Live executor fills **only inside** the approved band (no approach-side fill below a sell hunt zone).  
 Util: `python_utilities_for_models/append_entry_location_hunt_v5.py`.
@@ -149,6 +149,11 @@ Gold is sideways/balance most of the time (Brooks/Dalton). Curriculum must teach
 | **Sideways** | Outer-third fades + failed breakouts; skip mid/barbwire | **HOLD** normal giveback/rotation inside the box; **CLOSE** only on accepted break against the entry edge |
 | **Trend** | With unfinished acceptance; do not fade local wicks | Losing the breakout level can invalidate (not “mid magnet”) |
 | **Reversal** | Prior trend + TL break + failed retest | Usually births a **new range**, not an instant opposite trend |
+
+Timeframes are relational rather than an alignment vote. The owning timeframe
+sets direction; counter-direction M15/M5/M1 movement may be the pullback into
+the hunt band. It becomes invalidation only through accepted failure of the
+named level on the timeframe that owns it.
 
 Operator gap this pack fixes: cutting sideways fades on temporary gold loss while price recovers to mid. Util: `python_utilities_for_models/append_sideways_regime_v004.py`.
 
@@ -521,7 +526,7 @@ Bump a row here when a pack lands. Do not create a second history doc.
 |------|------|
 | **This file** | Curriculum + data prep + train process |
 | `store/core_skill.md` / `store/sop.md` | Live LLM doctrine |
-| `SYSTEM_THREE_PARTS.md` / `AGENTS.md` | Architecture / agent pointers |
+| `XAUUSD_SYSTEM_ARCHITECTURE_V2.md` / `AGENTS.md` | Sole architecture / agent pointer |
 | `model_training/python_utilities_for_models/` | Model-job Python |
 | `scripts/` | Colab train/eval (system pipeline) |
 | `apps/.../tick_data_archive.py` | Live JSONL dual-write (system) |

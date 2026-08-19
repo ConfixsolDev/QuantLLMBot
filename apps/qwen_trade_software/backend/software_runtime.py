@@ -138,6 +138,7 @@ class QwenTradeSoftware:
             # its own knowledge base / skill path over time, separate from
             # entry-decision. See trade_management.py's module docstring.
             "trade_management": ("trade_management.py",),
+            "profit_protection": ("profit_protection.py",),
             # Steady-state cache ticks skip Qwen (--no-qwen) so they do not
             # hold the model lock. market_context_cache overrides that for one
             # cycle when the qualification certificate is missing or bound to
@@ -202,6 +203,7 @@ class QwenTradeSoftware:
         else:
             logging.info("Model residency sync: %s", (warm.stdout or "").strip()[-300:])
         self._start_child("trade_management", "trade_management.py")
+        self._start_child("profit_protection", "profit_protection.py")
         self._start_child(
             "context_cache",
             "market_context_cache.py",

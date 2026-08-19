@@ -56,6 +56,8 @@ def test_range_hint_on_mixed_swings_inside_band():
     assert ctx.range_detected is True
     assert ctx.m5_swing_pattern == "mixed"
     assert ctx.regime_hint == "range"
+    assert ctx.regime_state == "range"
+    assert ctx.volatility_state == "low"
 
 
 def test_trend_hint_on_hh_hl_with_expanding_atr():
@@ -71,6 +73,7 @@ def test_trend_hint_on_hh_hl_with_expanding_atr():
     )
     assert ctx.m5_swing_pattern == "hh_hl"
     assert ctx.regime_hint == "trend"
+    assert ctx.regime_state == "trend_strong"
 
 
 def test_breakout_when_compressed_then_displacement_through():
@@ -89,6 +92,7 @@ def test_breakout_when_compressed_then_displacement_through():
     )
     assert ctx.displacement_through is True
     assert ctx.regime_hint == "breakout"
+    assert ctx.regime_state == "breakout_confirmed"
     assert ctx.regime_transition is True
 
 
@@ -103,3 +107,4 @@ def test_unknown_without_atr():
         levels={},
     )
     assert ctx.regime_hint == "unknown"
+    assert ctx.regime_state == "unknown"

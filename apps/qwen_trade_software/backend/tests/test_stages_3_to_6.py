@@ -141,30 +141,34 @@ def test_tightening_is_accepted():
 
 
 def test_widening_is_permitted_under_full_discretion():
-    """Operator chose full discretion; this must actually work."""
+    """The research variant remains measurable when selected explicitly."""
     pos = position()
-    adj = mp.propose_stop(pos, 4344.0, price=4341.0, level_id="H1_PREVIOUS_HIGH")
+    adj = mp.propose_stop(pos, 4344.0, price=4341.0, level_id="H1_PREVIOUS_HIGH",
+                          policy=mp.STOP_POLICY_FULL)
     assert adj.accepted and adj.direction == "widen"
 
 
 def test_widening_blocked_beyond_the_risk_ceiling():
     """Solvency rail: applies regardless of the discretion policy."""
     pos = position()
-    adj = mp.propose_stop(pos, 4400.0, price=4341.0, level_id="D1_PREVIOUS_HIGH")
+    adj = mp.propose_stop(pos, 4400.0, price=4341.0, level_id="D1_PREVIOUS_HIGH",
+                          policy=mp.STOP_POLICY_FULL)
     assert not adj.accepted
     assert adj.reason_code == mp.AdjustReason.REJECTED_RISK_CEILING
 
 
 def test_widening_requires_a_named_level():
     pos = position()
-    adj = mp.propose_stop(pos, 4344.0, price=4341.0, level_id=None)
+    adj = mp.propose_stop(pos, 4344.0, price=4341.0, level_id=None,
+                          policy=mp.STOP_POLICY_FULL)
     assert not adj.accepted
     assert adj.reason_code == mp.AdjustReason.REJECTED_UNNAMED_LEVEL
 
 
 def test_widening_limited_per_position():
     pos = position(widenings=mp.MAX_WIDENINGS_PER_POSITION)
-    adj = mp.propose_stop(pos, 4344.0, price=4341.0, level_id="H1_PREVIOUS_HIGH")
+    adj = mp.propose_stop(pos, 4344.0, price=4341.0, level_id="H1_PREVIOUS_HIGH",
+                          policy=mp.STOP_POLICY_FULL)
     assert not adj.accepted
     assert adj.reason_code == mp.AdjustReason.REJECTED_WIDEN_LIMIT
 
@@ -177,6 +181,10 @@ def test_tighten_only_policy_blocks_widening():
     assert adj.reason_code == mp.AdjustReason.REJECTED_BY_POLICY
 
 
+def test_live_stop_policy_is_tighten_only():
+    assert mp.STOP_POLICY == mp.STOP_POLICY_TIGHTEN_ONLY
+
+
 def test_stop_already_through_price_rejected():
     pos = position()
     adj = mp.propose_stop(pos, 4330.0, price=4338.0, level_id="M15")
@@ -186,8 +194,10 @@ def test_stop_already_through_price_rejected():
 
 def test_target_moves_both_ways_under_full_discretion():
     pos = position()
-    extend = mp.propose_target(pos, 4330.0, price=4338.0, level_id="M30_LOW")
-    reduce = mp.propose_target(pos, 4337.0, price=4338.5, level_id="M15_LOW")
+    extend = mp.propose_target(pos, 4330.0, price=4338.0, level_id="M30_LOW",
+                               policy=mp.TARGET_POLICY_FULL)
+    reduce = mp.propose_target(pos, 4337.0, price=4338.5, level_id="M15_LOW",
+                               policy=mp.TARGET_POLICY_FULL)
     assert extend.accepted and extend.direction == "extend"
     assert reduce.accepted and reduce.direction == "reduce"
 
@@ -201,7 +211,8 @@ def test_fixed_target_policy_blocks_changes():
 
 def test_applying_a_widening_increments_the_counter():
     pos = position()
-    adj = mp.propose_stop(pos, 4344.0, price=4341.0, level_id="H1_PREVIOUS_HIGH")
+    adj = mp.propose_stop(pos, 4344.0, price=4341.0, level_id="H1_PREVIOUS_HIGH",
+                          policy=mp.STOP_POLICY_FULL)
     updated = mp.apply(pos, adj)
     assert updated.stop_loss == 4344.0
     assert updated.widenings == pos.widenings + 1

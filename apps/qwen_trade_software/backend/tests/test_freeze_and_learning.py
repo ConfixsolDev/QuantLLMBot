@@ -128,6 +128,18 @@ def test_proposal_id_format_is_joinable():
     assert pid.startswith("paper-") and len(pid.split("-")) == 3
 
 
+def test_runtime_never_manufactures_model_confidence():
+    """A zero-confidence ready plan must be refused, not promoted to 55."""
+    source = (BACKEND / "reviewer.py").read_text(encoding="utf-8")
+    assert "confidence_floor_override" not in source
+    assert "confidence_floor_applied" not in source
+
+
+def test_live_level_gates_are_fail_closed_by_default():
+    source = (BACKEND / "reviewer.py").read_text(encoding="utf-8")
+    assert 'os.environ.get("QWEN_LEVEL_ENTRY_GATES", "1") != "0"' in source
+
+
 def test_ids_are_unique():
     import reviewer
     assert len({reviewer.new_proposal_id() for _ in range(200)}) == 200
@@ -356,6 +368,31 @@ def test_a_winning_trade_now_cools_down_too():
 
     seconds, label = pr.cooldown_for({"net_pnl": 118.0})
     assert seconds == pr.WIN_COOLDOWN_SECONDS and label == "Win"
+
+
+def test_a_positive_protection_sl_has_no_cooldown():
+    """A tightened profit floor is successful management, not a loss pause."""
+    import paper_runner as pr
+
+    result = {
+        "reason": "managed_or_safety_sl",
+        "net_pnl": 31.25,
+        "pnl_is_complete": True,
+        "close_comments": ["[sl 4338.704]"],
+    }
+    assert pr.cooldown_for(result) == (0, "")
+
+
+def test_a_negative_sl_still_has_loss_cooldown():
+    import paper_runner as pr
+
+    result = {
+        "reason": "managed_or_safety_sl",
+        "net_pnl": -31.25,
+        "pnl_is_complete": True,
+        "close_comments": ["[sl 4344.667]"],
+    }
+    assert pr.cooldown_for(result) == (pr.LOSS_COOLDOWN_SECONDS, "Loss")
 
 
 def test_a_losing_trade_still_cools_down():

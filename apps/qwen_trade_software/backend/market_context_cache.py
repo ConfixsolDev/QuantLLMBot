@@ -29,6 +29,7 @@ from typing import Any, Iterable
 import MetaTrader5 as mt5
 
 import live_mapped_levels
+from runtime_config import ACTIVE_QWEN_MODEL
 
 
 SCHEMA_VERSION = 1
@@ -36,7 +37,7 @@ QUALIFICATION_VERSION = 2
 # Kept in lockstep with review_shared.MODEL -- both processes must talk to the
 # same model or the qualification certificate (keyed on model_digest) is
 # invalidated on every cycle. See CURRICULUM_AND_DATA_PREP.md 3.0.
-MODEL = os.environ.get("QWEN_MODEL", "qwen-trading-v005:latest")
+MODEL = ACTIVE_QWEN_MODEL
 OLLAMA_GENERATE = "http://127.0.0.1:11434/api/generate"
 OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
 OLLAMA_PS = "http://127.0.0.1:11434/api/ps"
@@ -3851,6 +3852,21 @@ def latest_entry_context(
             name: cache.object(name, symbol)
             for name in ("structural", "levels", "session", "playbooks", "minute")
         }
+        # The cache writer commits objects immediately before its readiness
+        # manifest. A reader landing between those commits used the new objects
+        # with the preceding manifest and reported a false epoch mismatch.
+        # Re-read once and use the newest ready manifest/object snapshot.
+        newest_manifest = cache.latest_manifest(symbol)
+        if (
+            newest_manifest
+            and newest_manifest.get("status") == "ready"
+            and newest_manifest.get("compatible_epochs") != manifest.get("compatible_epochs")
+        ):
+            manifest = newest_manifest
+            objects = {
+                name: cache.object(name, symbol)
+                for name in ("structural", "levels", "session", "playbooks", "minute")
+            }
         missing = [name for name, value in objects.items() if not value]
         if missing:
             return {

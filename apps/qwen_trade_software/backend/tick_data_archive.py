@@ -42,6 +42,8 @@ ARCHIVE_FILES: dict[str, str] = {
     "session-plans": "session-plans.jsonl",
     "hourly-updates": "hourly-updates.jsonl",
     "session-verdicts": "session-verdicts.jsonl",
+    "trade-steps": "trade-steps.jsonl",
+    "profit-protection": "profit-protection.jsonl",
 }
 
 _DAY_DIR_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")

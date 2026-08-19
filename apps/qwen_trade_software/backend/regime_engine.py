@@ -1,8 +1,4 @@
-"""Regime detection engine — combined ATR + displacement + swings + range.
-
-Python produces a hint. Qwen later judges whether the hint is right.
-Phase 1: compute and log only. Do not change entry or management behavior.
-"""
+"""Deterministic regime and volatility classification from closed market facts."""
 
 from __future__ import annotations
 
@@ -36,6 +32,10 @@ class RegimeContext:
     range_width_atr: float | None
     range_bounces: int
     regime_hint: str
+    regime_state: str
+    volatility_state: str
+    trend_direction: str | None
+    current_price: float
     prev_regime_hint: str | None
     regime_transition: bool
 
@@ -151,6 +151,53 @@ def _compute_hint(
     return "unknown"
 
 
+def _volatility_state(atr_ratio: float | None, prev_atr_ratio: float | None) -> str:
+    if atr_ratio is None:
+        return "unknown"
+    if prev_atr_ratio is not None and prev_atr_ratio <= 0.9 and atr_ratio > 1.2:
+        return "expansion"
+    if atr_ratio < 0.75:
+        return "contraction"
+    if atr_ratio < 0.9:
+        return "low"
+    if atr_ratio <= 1.2:
+        return "normal"
+    return "high"
+
+
+def _regime_state(
+    hint: str,
+    atr_ratio: float | None,
+    body_atr: float | None,
+    m5_pattern: str,
+    m15_pattern: str,
+    range_info: dict | None,
+    displacement_through: bool | None,
+    prev_regime: str | None,
+) -> str:
+    aligned = m5_pattern in ("hh_hl", "lh_ll")
+    same_direction = m5_pattern == m15_pattern and aligned
+    if hint == "breakout":
+        return "breakout_confirmed"
+    if hint == "exhaustion":
+        return "climax_exhaustion"
+    if prev_regime in ("trend", "breakout") and m5_pattern == "mixed":
+        return "reversal_attempt"
+    if displacement_through is True and prev_regime == "range":
+        return "breakout_attempt"
+    if aligned:
+        if same_direction and ((atr_ratio or 0) >= 1.1 or (body_atr or 0) >= 1.0):
+            return "trend_strong"
+        if same_direction:
+            return "trend_channel"
+        return "trending_range"
+    if hint == "range":
+        if (atr_ratio or 0) < 0.75 or (range_info and range_info["width_atr"] <= 3.0):
+            return "tight_range"
+        return "range"
+    return "unknown"
+
+
 def compute_regime(
     atr_m1_51: float | None,
     atr_m1_3: float | None,
@@ -193,6 +240,10 @@ def compute_regime(
         prev_regime,
     )
     transition = prev_regime is not None and hint != prev_regime
+    state = _regime_state(
+        hint, atr_ratio, m5_body_atr, m5_pattern, m15_pattern,
+        range_info, disp_through, prev_regime,
+    )
     return RegimeContext(
         atr_m1_51=atr_m1_51,
         atr_m1_3=atr_m1_3,
@@ -210,6 +261,10 @@ def compute_regime(
         range_width_atr=range_info["width_atr"] if range_info else None,
         range_bounces=range_info["bounces"] if range_info else 0,
         regime_hint=hint,
+        regime_state=state,
+        volatility_state=_volatility_state(atr_ratio, prev_atr_ratio),
+        trend_direction={"hh_hl": "buy", "lh_ll": "sell"}.get(m5_pattern),
+        current_price=round(float(current_price), 3),
         prev_regime_hint=prev_regime,
         regime_transition=transition,
     )

@@ -33,6 +33,7 @@ from decision_liveness import (
 import build_manifest
 import news_blackout
 import process_logging
+from trade_step_log import log_step
 from market_context_cache import (
     latest_entry_context,
     load_prompt_section,
@@ -73,6 +74,10 @@ from session_planner import (
 )
 from tick_data_archive import append_qwen_decision, append_tick_record
 from trade_geometry import TF_MIN_STOP, TF_MIN_TARGET, min_stop_for, min_target_for
+from approach_tracker import ApproachTracker
+from idea_lifecycle import IdeaManager
+from zone_scorer import score_zones, compact_score_log, ScoringConfig
+from market_structure import compute_structure_context
 
 
 # 2026-08-06: kept separate from trade_management.py's
@@ -83,6 +88,7 @@ from trade_geometry import TF_MIN_STOP, TF_MIN_TARGET, min_stop_for, min_target_
 # Defaults to the same 30s starting point either way.
 INTERVAL_SECONDS = int(os.environ.get("QWEN_ENTRY_INTERVAL_SECONDS", "30"))
 DAILY_PAPER_CAP = 100
+ENTRY_REGIME_MEMORY = {"hint": None, "atr_ratio": None}
 MIN_ENTRY_CONFIDENCE = 51
 QWEN_PLAN_GATING = os.environ.get("QWEN_PLAN_GATING", "0") == "1"
 QWEN_DECISION_LOCK = threading.Lock()
@@ -91,6 +97,66 @@ QWEN_DECISION_LOCK = threading.Lock()
 # with the market open, the cache ready and Qwen answering normally -- and
 # nothing alarmed.
 LIVENESS = DecisionLivenessMonitor()
+
+# ---------------------------------------------------------------------------
+# Trade idea lifecycle — persistent across cycles
+# ---------------------------------------------------------------------------
+from pathlib import Path as _Path
+
+LIFECYCLE_STATE_FILE = _Path(__file__).resolve().parent / "lifecycle-state.json"
+XAUUSD_SCORING_CONFIG = ScoringConfig()  # default tuning for gold
+
+_IDEA_MANAGER = IdeaManager()
+_APPROACH_TRACKER = ApproachTracker()
+LEGACY_DUAL_ASSESSMENT = "dual-direction assessment"
+
+
+def _has_legacy_dual_assessment(value) -> bool:
+    """Detect the retired dual-direction wording in persisted/model state."""
+    if isinstance(value, dict):
+        return any(_has_legacy_dual_assessment(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_has_legacy_dual_assessment(item) for item in value)
+    return LEGACY_DUAL_ASSESSMENT in str(value or "").lower()
+
+
+def _load_lifecycle_state() -> None:
+    """Restore IdeaManager and ApproachTracker from disk on startup."""
+    global _IDEA_MANAGER, _APPROACH_TRACKER
+    state = read_json_safe(LIFECYCLE_STATE_FILE, {})
+    if _has_legacy_dual_assessment(state.get("idea_manager")):
+        # The retired response was persisted as the active thesis and then fed
+        # back to Qwen on every call. Start a fresh directional observation;
+        # broker/trade logs remain untouched.
+        logging.warning("lifecycle:discarded_legacy_dual_assessment_state")
+        _IDEA_MANAGER = IdeaManager()
+        _APPROACH_TRACKER = ApproachTracker()
+        _save_lifecycle_state()
+        return
+    if state.get("idea_manager"):
+        try:
+            _IDEA_MANAGER = IdeaManager.from_state(state["idea_manager"])
+        except Exception:
+            logging.exception("lifecycle:idea_manager_restore_failed")
+            _IDEA_MANAGER = IdeaManager()
+    if state.get("approach_tracker"):
+        try:
+            _APPROACH_TRACKER = ApproachTracker.from_state(state["approach_tracker"])
+        except Exception:
+            logging.exception("lifecycle:approach_tracker_restore_failed")
+            _APPROACH_TRACKER = ApproachTracker()
+
+
+def _save_lifecycle_state() -> None:
+    """Persist IdeaManager and ApproachTracker to disk after each cycle."""
+    state = {
+        "idea_manager": _IDEA_MANAGER.to_state(),
+        "approach_tracker": _APPROACH_TRACKER.to_state(),
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    write_json_atomic(LIFECYCLE_STATE_FILE, state)
+
+
 # NOTE (2026-08-11): there was a QWEN_POLICY_V2 flag here. It was defined and
 # never read, so setting it to 1 did nothing at all while appearing to promise a
 # behaviour change. entry_policy.py stays -- its guards and MIN_ENTRY_CONFIDENCE
@@ -105,6 +171,48 @@ MIN_STOP_DISTANCE = FIXED_STOP_DISTANCE
 MIN_TARGET_DISTANCE = FIXED_TARGET_DISTANCE
 MAX_STRUCTURE_DISTANCE = 40.0
 STRUCTURE_TIMEFRAMES = ("H4", "H1", "M15", "M30", "D1")
+
+# A slow local-model response is still usable when price remains in the same
+# local auction. Beyond this ATR-aware displacement it is a stale snapshot and
+# must be reviewed again instead of becoming a late entry.
+MIN_DECISION_DRIFT_POINTS = 2.0
+MAX_DECISION_DRIFT_ATR_FRACTION = 0.75
+
+
+def decision_snapshot_freshness(
+    source_facts: dict,
+    current_cache: dict,
+) -> dict:
+    """Compare the Qwen prompt snapshot with market state after generation."""
+    source_quote = source_facts.get("quote") or {}
+    current_quote = ((current_cache.get("minute") or {}).get("quote") or {})
+    try:
+        source_price = float(source_quote.get("bid") or source_quote.get("ask"))
+        current_price = float(current_quote.get("bid") or current_quote.get("ask"))
+    except (TypeError, ValueError):
+        return {"fresh": False, "reason": "quote_unavailable_after_qwen"}
+    try:
+        atr = float((source_facts.get("regime_context") or {}).get("atr_m1_51") or 0)
+    except (TypeError, ValueError):
+        atr = 0.0
+    threshold = max(
+        MIN_DECISION_DRIFT_POINTS,
+        atr * MAX_DECISION_DRIFT_ATR_FRACTION,
+    )
+    drift = abs(current_price - source_price)
+    source_m1 = (source_facts.get("closed_m1") or {}).get("id")
+    current_m1 = ((current_cache.get("minute") or {}).get("closed_m1") or {}).get("id")
+    return {
+        "fresh": drift <= threshold,
+        "reason": None if drift <= threshold else "decision_snapshot_price_drift",
+        "source_price": source_price,
+        "current_price": current_price,
+        "price_drift": round(drift, 3),
+        "maximum_drift": round(threshold, 3),
+        "source_closed_m1": source_m1,
+        "current_closed_m1": current_m1,
+        "closed_m1_changed": bool(source_m1 and current_m1 and source_m1 != current_m1),
+    }
 
 
 def latest_paper_execution():
@@ -490,6 +598,17 @@ def append_paper_proposal(
         proposal["day_plan_id"] = planner_context.get("day_plan_id")
         proposal["session_plan_id"] = planner_context.get("session_plan_id")
     append_tick_record("paper-proposals", proposal)
+    plan = proposal["qwen"].get("execution_plan") or {}
+    quote = (snapshot.get("entry_cache", {}).get("minute", {}).get("quote", {}))
+    log_step(
+        "proposal_ready", plan.get("status", "wait"),
+        proposal_id=proposal["proposal_id"], symbol=proposal.get("symbol"),
+        price=quote.get("bid"), quote_age_ms=quote.get("age_ms"),
+        bias=proposal["qwen"].get("bias"), confidence=proposal["qwen"].get("confidence"),
+        side=plan.get("side"), entry_low=plan.get("entry_low"),
+        entry_high=plan.get("entry_high"), optimal_entry_price=plan.get("optimal_entry_price"),
+        detail=plan.get("reason"),
+    )
     logging.info("Paper proposal recorded: %s", proposal["proposal_id"])
     return proposal
 
@@ -600,6 +719,9 @@ def compact_entry_facts(
     decision_levels: dict,
     planner_context: dict,
     symbol: str,
+    *,
+    idea_manager: IdeaManager | None = None,
+    approach_tracker: ApproachTracker | None = None,
 ) -> dict:
     """Compress validated cache into trade-quality facts only.
 
@@ -753,7 +875,229 @@ def compact_entry_facts(
         "regime_context": {},
         "confirmation_context": {},
         "suggested_target_mode": None,
+        "prior_idea_context": {},
+        "active_idea_context": {},
+        "zone_scores": [],
+        "approach_context": {},
+        "zone_edge_context": {},
+        "market_structure": {},
     }
+
+    # -- Lifecycle context injection --
+    mgr = idea_manager or _IDEA_MANAGER
+    trk = approach_tracker or _APPROACH_TRACKER
+    # A closed M1 beyond the wrong side of the watched zone invalidates the
+    # directional idea before Qwen sees the packet. Previously the stale sell
+    # at 4347 remained active while M5 had already changed bullish, repeatedly
+    # anchoring the model to confidence=50 waits. Forming price/wicks never
+    # trigger this rule.
+    invalidated = mgr.invalidate_on_closed_acceptance(
+        closed_m1.get("close"),
+        closed_m1.get("id"),
+    )
+    if invalidated is not None:
+        trk.reset()
+        logging.info(
+            "lifecycle:closed_acceptance_invalidated idea=%s side=%s zone=[%.3f-%.3f] close=%s",
+            invalidated.idea_id,
+            invalidated.side,
+            invalidated.zone_low,
+            invalidated.zone_high,
+            closed_m1.get("close"),
+        )
+    current_level_ids = {
+        str(row.get("id")) for row in execution_levels if row.get("id")
+    }
+    recovered = mgr.recover_stale(
+        closed_m1.get("close"),
+        current_level_ids=current_level_ids,
+    )
+    if recovered is not None:
+        trk.reset()
+        logging.warning(
+            "STALE_RECOVERY component=active_idea action=resolved "
+            "idea=%s zone=%s side=%s outcome=%s reason=%s",
+            recovered.idea_id,
+            recovered.zone_id,
+            recovered.side,
+            recovered.outcome,
+            recovered.resolution_reason,
+        )
+        log_step(
+            "freshness_recovery", "recovered", symbol=symbol,
+            price=closed_m1.get("close"), detail=recovered.resolution_reason,
+            active_idea=recovered.zone_id,
+        )
+    packet["prior_idea_context"] = mgr.prior_idea_context()
+    packet["active_idea_context"] = mgr.active_idea_for_facts()
+    packet["freshness"] = {
+        "quote_age_ms": quote.get("age_ms"),
+        "validated_at_utc": entry_cache.get("validated_at_utc"),
+        "decision_time_utc": entry_cache.get("decision_time_utc"),
+        "active_idea_recovered": recovered is not None,
+        "recovery_reason": (
+            recovered.resolution_reason if recovered is not None else None
+        ),
+    }
+
+    # Zone scoring: score nearby levels as zones using recent M15 bars.
+    # nearby_levels use "pattern" (not "kind") and test_count may be None.
+    # recent_closed bars are in slim format {o,h,l,c} — expand for scorer.
+    try:
+        nearby = minute.get("nearby_levels") or []
+        raw_m15 = (entry_cache.get("recent_closed") or {}).get("M15") or []
+        # Expand slim bars to full-key format the scorer expects
+        full_m15 = []
+        for b in raw_m15:
+            full_m15.append({
+                "open": b.get("open") or b.get("o"),
+                "high": b.get("high") or b.get("h"),
+                "low": b.get("low") or b.get("l"),
+                "close": b.get("close") or b.get("c"),
+                "evidence_id": b.get("evidence_id") or b.get("id"),
+            })
+        if nearby and full_m15:
+            zone_dicts = []
+            for lvl in nearby[:15]:
+                price = float(lvl.get("price", 0))
+                half = float(lvl.get("zone_width", 1.5)) / 2.0
+                tc = lvl.get("test_count")
+                zone_dicts.append({
+                    "level_id": lvl.get("id", ""),
+                    "zone_low": price - half,
+                    "zone_high": price + half,
+                    "kind": lvl.get("pattern") or lvl.get("kind") or "",
+                    "test_count": int(tc) if tc is not None else 0,
+                })
+            scored = score_zones(
+                zone_dicts, full_m15,
+                live_price=mid, config=XAUUSD_SCORING_CONFIG,
+                min_grade="C",
+            )
+            packet["zone_scores"] = [s.to_dict() for s in scored[:5]]
+    except Exception:
+        logging.debug("lifecycle:zone_scoring_failed", exc_info=True)
+
+    # Approach tracking: update if there's an active idea.
+    # Expand slim M5 bars {o,h,l,c} to full keys for the tracker.
+    if mgr.has_active and mid > 0:
+        active = mgr.active_idea
+        raw_m5 = (entry_cache.get("recent_closed") or {}).get("M5") or []
+        full_m5 = []
+        for b in raw_m5:
+            full_m5.append({
+                "open": b.get("open") or b.get("o"),
+                "high": b.get("high") or b.get("h"),
+                "low": b.get("low") or b.get("l"),
+                "close": b.get("close") or b.get("c"),
+            })
+        try:
+            snap = trk.observe(
+                target_zone_id=active.zone_id,
+                target_zone_low=active.zone_low,
+                target_zone_high=active.zone_high,
+                target_side=active.side,
+                live_price=mid,
+                recent_bars=full_m5[-10:],
+                confirmations=packet.get("confirmation_context"),
+                timestamp=time.time(),
+            )
+            packet["approach_context"] = snap.to_dict()
+            mgr.update_approach(active.idea_id, snap.to_dict())
+        except Exception:
+            logging.debug("lifecycle:approach_tracking_failed", exc_info=True)
+
+        # Zone-edge entry context: optimal fill price and structural SL.
+        # Buy → enter at zone_low (lowest possible), SL just below.
+        # Sell → enter at zone_high (highest possible), SL just above.
+        # Structural SL buffer: spread + noise margin beyond zone boundary.
+        SL_BUFFER = 1.5  # points beyond zone edge (XAUUSD spread ~0.3 + slippage + noise)
+        if active.side == "buy":
+            optimal_entry = active.zone_low
+            structural_sl = active.zone_low - SL_BUFFER
+            sl_distance = optimal_entry - structural_sl
+        else:
+            optimal_entry = active.zone_high
+            structural_sl = active.zone_high + SL_BUFFER
+            sl_distance = structural_sl - optimal_entry
+
+        # Distance from current price to the optimal entry
+        distance_to_optimal = abs(mid - optimal_entry)
+
+        packet["zone_edge_context"] = {
+            "optimal_entry_price": round(optimal_entry, 3),
+            "structural_sl_price": round(structural_sl, 3),
+            "structural_sl_distance": round(sl_distance, 3),
+            "distance_to_optimal": round(distance_to_optimal, 3),
+            "zone_width": round(active.zone_high - active.zone_low, 3),
+            "side": active.side,
+            "note": (
+                f"{'Buy' if active.side == 'buy' else 'Sell'} at zone edge "
+                f"{optimal_entry:.1f}, SL {structural_sl:.1f} "
+                f"(risk {sl_distance:.1f}pts)"
+            ),
+        }
+
+    # -- Market structure context (ICT/SMC) --
+    try:
+        ms = compute_structure_context(symbol, mid)
+        if ms.get("status") == "ok":
+            packet["market_structure"] = ms
+            # Phase 2 must not depend on Qwen already saying "ready".  That
+            # created a circular deadlock: without a remembered zone there was
+            # no approach/response context, and without that context Qwen could
+            # never select a zone.  Seed one directional candidate when M5 and
+            # H1 agree; Qwen still owns the final entry decision.
+            trends = ms.get("trends") or {}
+            m5_trend = trends.get("M5")
+            h1_trend = trends.get("H1")
+            seed_side = (
+                "sell" if m5_trend == h1_trend == "bearish" else
+                "buy" if m5_trend == h1_trend == "bullish" else None
+            )
+            if not mgr.has_active and seed_side and mid > 0:
+                candidates = []
+                for level in execution_levels:
+                    lo = float(level.get("lo") or 0)
+                    hi = float(level.get("hi") or lo)
+                    if lo <= 0:
+                        continue
+                    correct_side = lo >= mid if seed_side == "sell" else hi <= mid
+                    if not correct_side:
+                        continue
+                    distance = lo - mid if seed_side == "sell" else mid - hi
+                    tf_rank = {"M15": 0, "M5": 1, "M1": 2, "H1": 3}.get(
+                        str(level.get("tf")), 4
+                    )
+                    candidates.append((distance, tf_rank, level))
+                if candidates:
+                    _, _, target = min(candidates, key=lambda row: (row[0], row[1]))
+                    zone_id = str(target["id"])
+                    lo = float(target.get("lo") or 0)
+                    hi = float(target.get("hi") or lo)
+                    if abs(hi - lo) < 1e-9:
+                        lo, hi = _zone_bounds_from_data(
+                            zone_id, lo, seed_side, packet
+                        )
+                    idea = mgr.create_idea(
+                        zone_id=zone_id,
+                        side=seed_side,
+                        zone_low=min(lo, hi),
+                        zone_high=max(lo, hi),
+                        thesis=(
+                            f"Deterministic {m5_trend} M5/H1 directional bias; "
+                            f"stalk nearest mapped {seed_side} zone"
+                        ),
+                    )
+                    packet["active_idea_context"] = mgr.active_idea_for_facts()
+                    logging.info(
+                        "lifecycle:idea_seeded_directional :: %s [%.3f-%.3f] "
+                        "side=%s idea=%s",
+                        zone_id, min(lo, hi), max(lo, hi), seed_side, idea.idea_id,
+                    )
+    except Exception:
+        logging.debug("lifecycle:market_structure_failed", exc_info=True)
+
     try:
         from regime_engine import snapshot_regime, suggested_target_mode
 
@@ -769,7 +1113,15 @@ def compact_entry_facts(
                 continue
             level_prices[str(level_id)] = (lo + hi) / 2.0
         if mid > 0:
-            packet["regime_context"] = snapshot_regime(symbol, mid, level_prices)
+            packet["regime_context"] = snapshot_regime(
+                symbol,
+                mid,
+                level_prices,
+                prev_regime=ENTRY_REGIME_MEMORY.get("hint"),
+                prev_atr_ratio=ENTRY_REGIME_MEMORY.get("atr_ratio"),
+            )
+            ENTRY_REGIME_MEMORY["hint"] = packet["regime_context"].get("regime_hint")
+            ENTRY_REGIME_MEMORY["atr_ratio"] = packet["regime_context"].get("atr_ratio_3_51")
         packet["suggested_target_mode"] = suggested_target_mode(
             packet["regime_context"].get("regime_hint")
         )
@@ -893,24 +1245,106 @@ def gpu_ready_for_entry() -> bool:
 
 
 def _stamp_regime_target_mode(review: dict, facts: dict) -> None:
-    """Attach Python regime hint and suggested target_mode; keep Qwen's if set."""
+    """Apply deterministic Brooks regime permissions and execution profile."""
     from regime_engine import suggested_target_mode
+    from regime_policy import execution_settings, range_entry_allowed
     from qualified_levels import remember_qualified_level_ids
 
     regime = (facts or {}).get("regime_context") or {}
     hint = regime.get("regime_hint")
-    suggested = (facts or {}).get("suggested_target_mode") or suggested_target_mode(hint)
+    explicit_state = bool(regime.get("regime_state"))
+    state = regime.get("regime_state") or regime.get("regime_hint") or "unknown"
+    # A BOS label alone is only a breakout attempt. Promote only when closed
+    # M5 and M15 structure agree and price is holding beyond the old range.
+    confirmation = (facts or {}).get("confirmation_context") or {}
+    m5 = confirmation.get("m5") or {}
+    m15 = confirmation.get("m15") or {}
+
+    def _event(frame: dict) -> dict:
+        return frame.get("mss") or frame.get("choch") or frame.get("bos") or {}
+
+    m5_event = _event(m5)
+    m15_event = _event(m15)
+    m5_direction = str(m5_event.get("direction") or m5_event.get("dir") or "").lower()
+    m15_direction = str(m15_event.get("direction") or m15_event.get("dir") or "").lower()
+    def _number(value) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    current_price = _number(regime.get("current_price"))
+    resistance = _number(regime.get("range_resistance"))
+    support = _number(regime.get("range_support"))
+    breakout_side = None
+    try:
+        bullish_boundary = max(
+            float(m5_event.get("broken") or 0),
+            float(m15_event.get("broken") or 0),
+            resistance,
+        )
+        bearish_boundary = min(
+            value for value in (
+                float(m5_event.get("broken") or 0),
+                float(m15_event.get("broken") or 0),
+                support,
+            ) if value > 0
+        )
+    except (TypeError, ValueError):
+        bullish_boundary = bearish_boundary = 0.0
+    if m5_direction == m15_direction == "bullish" and bullish_boundary and current_price > bullish_boundary:
+        breakout_side = "buy"
+    elif m5_direction == m15_direction == "bearish" and bearish_boundary and current_price < bearish_boundary:
+        breakout_side = "sell"
+    if breakout_side and state in {"range", "trending_range", "breakout_attempt"}:
+        state = "breakout_confirmed"
+        regime["regime_state"] = state
+        regime["trend_direction"] = breakout_side
+        logging.info(
+            "entry_regime_promoted state=breakout_confirmed side=%s evidence=m5+m15_closed_structure",
+            breakout_side,
+        )
+    settings = execution_settings(state)
+    suggested = settings.get("target_mode") or (facts or {}).get("suggested_target_mode") or suggested_target_mode(hint)
     plan = review.get("execution_plan")
     if not isinstance(plan, dict):
         plan = {}
         review["execution_plan"] = plan
     plan["regime_hint"] = hint
+    plan["regime_state"] = state
+    plan["volatility_state"] = regime.get("volatility_state")
+    plan["regime_policy"] = settings
+    plan["signal_ttl_seconds"] = settings["signal_ttl_seconds"]
+    plan["risk_budget"] = settings["risk_budget"]
     plan["suggested_target_mode"] = suggested
-    if plan.get("status") == "ready" and not plan.get("target_mode"):
+    if plan.get("status") == "ready" and suggested and (explicit_state or not plan.get("target_mode")):
         plan["target_mode"] = suggested
+    blocked_reason = settings.get("reason") if explicit_state and not settings.get("allow_new_entry") else None
+    if plan.get("status") == "ready" and explicit_state and settings.get("edge_only"):
+        try:
+            entry = float(plan.get("optimal_entry_price"))
+        except (TypeError, ValueError):
+            try:
+                entry = (float(plan["entry_low"]) + float(plan["entry_high"])) / 2.0
+            except (KeyError, TypeError, ValueError):
+                entry = None
+        if not range_entry_allowed(plan.get("side"), entry, regime):
+            blocked_reason = "range_middle_or_wrong_edge"
+    expected_side = regime.get("trend_direction")
+    if (
+        plan.get("status") == "ready"
+        and state in {"trend_strong", "trend_channel", "breakout_confirmed"}
+        and expected_side in ("buy", "sell")
+        and plan.get("side") != expected_side
+    ):
+        blocked_reason = f"plan_side_opposes_{state}_{expected_side}"
+    if plan.get("status") == "ready" and blocked_reason:
+        plan["status"] = "wait"
+        plan["reason"] = f"Regime policy blocked entry: {blocked_reason}."
+        logging.info("entry_regime_block state=%s reason=%s", state, blocked_reason)
     logging.info(
-        "entry_regime hint=%s suggested_target_mode=%s qwen_target_mode=%s",
-        hint,
+        "entry_regime hint=%s state=%s volatility=%s risk_budget=%s ttl=%s suggested_target_mode=%s qwen_target_mode=%s",
+        hint, state, regime.get("volatility_state"), settings["risk_budget"], settings["signal_ttl_seconds"],
         suggested,
         plan.get("target_mode"),
     )
@@ -989,6 +1423,55 @@ def build_entry_prompt(facts: dict) -> str:
     return contract + "\n\nENTRY FACTS:\n" + json.dumps(facts, separators=(",", ":"))
 
 
+def qwen_contract_correction_reason(review: dict) -> str | None:
+    """Return why one bounded model retry is required; never invent scores."""
+    plan = review.get("execution_plan") or {}
+    bias = str(review.get("bias") or "").lower()
+    try:
+        confidence = int(review.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    if bias in ("buy", "sell") and confidence == 0:
+        return "directional_bias_with_zero_confidence"
+    if str(plan.get("status") or "").lower() == "ready":
+        # Geometry omissions are repaired from validated mapped levels by
+        # normalize_execution_plan. Retrying Qwen made otherwise valid M1
+        # facts 20-35 seconds older without adding semantic judgment.
+        declared_side = str(plan.get("side") or "").lower()
+        if declared_side and bias in ("buy", "sell") and declared_side != bias:
+            return "ready_side_contradicts_bias"
+    return None
+
+
+def build_qwen_correction_prompt(facts: dict, review: dict, reason: str) -> str:
+    """Small retry packet: preserve evidence without re-sending ~20KB."""
+    compact = {
+        "quote": facts.get("quote"),
+        "session": facts.get("session"),
+        "epochs": facts.get("epochs"),
+        "active_idea": facts.get("active_idea_context"),
+        "approach": facts.get("approach_context"),
+        "zone_edge": facts.get("zone_edge_context"),
+        "closed_m1": facts.get("closed_m1"),
+        "recent_m1": (facts.get("recent_closed") or {}).get("M1"),
+        "confirmation": facts.get("confirmation_context"),
+        "structure": facts.get("market_structure"),
+        "execution_levels": (facts.get("execution_levels") or [])[:20],
+        "citeable_evidence_ids": (facts.get("citeable_evidence_ids") or [])[:30],
+        "previous_invalid_response": review,
+    }
+    return (
+        f"Correct one XAUUSD entry JSON contract violation: {reason}. "
+        "Return JSON only. Never claim the model is disabled. Confidence is "
+        "1-100 and must be calibrated even for wait. Ready requires bias and "
+        "side buy|sell plus entry_low_id, entry_high_id, stop_level_id, and "
+        "target_level_id copied from execution_levels. If the M1 trigger or "
+        "target is incomplete, return wait with the actual 1-50 confidence. "
+        "Copy epochs exactly and cite only supplied evidence IDs.\nCORRECTION FACTS:\n"
+        + json.dumps(compact, separators=(",", ":"))
+    )
+
+
 def entry_decision_schema(entry_cache: dict, decision_levels: dict, facts: dict | None = None) -> dict:
     if facts and facts.get("execution_levels"):
         level_ids = sorted({row["id"] for row in facts["execution_levels"]})
@@ -1007,8 +1490,11 @@ def entry_decision_schema(entry_cache: dict, decision_levels: dict, facts: dict 
     return {
         "type": "object",
         "properties": {
-            "bias": {"type": "string", "enum": ["buy", "sell", "conditional"]},
-            "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+            "bias": {"type": "string", "enum": ["buy", "sell", "wait"]},
+            # Every assessment must be calibrated. A value of 1 represents
+            # effectively no conviction; zero caused v004 to emit a learned
+            # disabled-mode placeholder instead of assessing supplied facts.
+            "confidence": {"type": "integer", "minimum": 1, "maximum": 100},
             "summary": {"type": "string", "maxLength": 120},
             "acknowledged_epochs": {
                 "type": "object",
@@ -1044,11 +1530,9 @@ def entry_decision_schema(entry_cache: dict, decision_levels: dict, facts: dict 
                     "volume_each": {"type": "number", "const": 0.5},
                     "reason": {"type": "string", "maxLength": 120},
                 },
-                "required": [
-                    "status", "side", "entry_low_id", "entry_high_id",
-                    "stop_level_id", "target_level_id", "target_mode",
-                    "volume_each", "reason",
-                ],
+                # Wait must not fabricate a side or geometry. Ready geometry is
+                # validated deterministically after the model response.
+                "required": ["status", "reason"],
                 "additionalProperties": False,
             },
         },
@@ -1615,6 +2099,7 @@ def normalize_execution_plan(
     entry_cache: dict,
     bias: str | None = None,
     confidence=None,
+    zone_edge_context: dict | None = None,
 ) -> dict:
     """Ready gate = confidence + named S/R entry zone; broker SL/TP = $3/$5.
 
@@ -1653,6 +2138,14 @@ def normalize_execution_plan(
         for levels in decision_levels.values()
         for level in levels
     }
+    level_bounds = {
+        str(level["id"]): (
+            min(float(level["price"]), float(level.get("zone_high", level["price"]))),
+            max(float(level["price"]), float(level.get("zone_high", level["price"]))),
+        )
+        for levels in decision_levels.values()
+        for level in levels
+    }
     quote = float(
         entry_cache.get("minute", {}).get("quote", {}).get(
             "ask" if side == "buy" else "bid",
@@ -1667,17 +2160,11 @@ def normalize_execution_plan(
     qwen_target_id = str(value.get("target_level_id") or "")
     geometry_source = "qwen_sr_zone_fixed_3_5"
 
-    if entry_low_id in level_map and entry_high_id in level_map:
-        entry_points = sorted(
-            (
-                (entry_low_id, level_map[entry_low_id]),
-                (entry_high_id, level_map[entry_high_id]),
-            ),
-            key=lambda item: item[1],
-        )
-        entry_low_id, entry_low = entry_points[0]
-        entry_high_id, entry_high = entry_points[1]
-        if entry_low_id == entry_high_id or abs(entry_low - entry_high) < 1e-9:
+    if entry_low_id in level_bounds and entry_high_id in level_bounds:
+        selected = (level_bounds[entry_low_id], level_bounds[entry_high_id])
+        entry_low = min(bound[0] for bound in selected)
+        entry_high = max(bound[1] for bound in selected)
+        if abs(entry_low - entry_high) < 1e-9:
             band = 0.4
             entry_low = round(entry_low - band, 3)
             entry_high = round(entry_high + band, 3)
@@ -1743,7 +2230,9 @@ def normalize_execution_plan(
     # qwen_cached_entry hard traps). Softened for a two-day observation
     # window: log the condition but do not block ready->execution. Set
     # QWEN_LEVEL_ENTRY_GATES=1 to restore hard waits.
-    level_gates_on = os.environ.get("QWEN_LEVEL_ENTRY_GATES", "0") == "1"
+    # Safety gates are fail-closed in live operation. Explicitly setting 0 is
+    # retained only for controlled research replays.
+    level_gates_on = os.environ.get("QWEN_LEVEL_ENTRY_GATES", "1") != "0"
     acceptance_pad = 1.0
     if quote > 0:
         if side == "sell" and quote > entry_high + acceptance_pad:
@@ -1806,6 +2295,24 @@ def normalize_execution_plan(
             return wait(msg)
         logging.info("level gate soft-pass (not blocking): %s", msg)
 
+    # ── Optimal entry price from zone-edge analysis ────────────────────
+    # Buy → enter at zone low (lowest possible price).
+    # Sell → enter at zone high (highest possible price).
+    # Falls back to zone edge if lifecycle modules didn't compute it.
+    zec = zone_edge_context or {}
+    optimal_entry = zec.get("optimal_entry_price")
+    if optimal_entry is None:
+        # Fallback: use the zone edge for the side.
+        optimal_entry = entry_low if side == "buy" else entry_high
+    optimal_entry = float(optimal_entry)
+    if not entry_low <= optimal_entry <= entry_high:
+        supplied = optimal_entry
+        optimal_entry = entry_low if side == "buy" else entry_high
+        logging.warning(
+            "zone geometry repaired: optimal %.3f outside [%.3f, %.3f]; using %.3f",
+            supplied, entry_low, entry_high, optimal_entry,
+        )
+
     return {
         "status": "ready",
         "side": side,
@@ -1823,6 +2330,8 @@ def normalize_execution_plan(
         "structural_stop_loss": float(structural_stop),
         "structural_take_profit": float(structural_target),
         "stop_price_distance": FIXED_STOP_DISTANCE,
+        "optimal_entry_price": optimal_entry,
+        "zone_edge_context": zec,
         "buckets": 1,
         "volume_each": 0.5,
         "decision_confidence": confidence_score,
@@ -1863,6 +2372,269 @@ def build_snapshot() -> dict:
     return snapshot
 
 
+# ---------------------------------------------------------------------------
+# Idea lifecycle state machine — driven by Qwen response
+# ---------------------------------------------------------------------------
+
+# Minimum zone half-width when no data is available (XAUUSD default).
+_FALLBACK_ZONE_HALF = 1.5
+
+
+def _zone_bounds_from_data(
+    zone_id: str,
+    center: float,
+    side: str,
+    facts: dict,
+) -> tuple[float, float]:
+    """Derive zone lo/hi from real market data.
+
+    Priority:
+        1. execution_levels — fractal cluster zones already have zone_low /
+           zone_high computed from the candles that formed the level.
+        2. Average wick of candles that touched the level area — the wick
+           tells you how far price pokes past a level before reversing.
+           Only candles at that area count, not all candles.
+        3. Fixed ±1.5 fallback.
+
+    For sell (resistance): zone is centered at the level, expanded by the
+    average upper wick of candles that reached up to that area.
+    For buy (support): expanded by the average lower wick of candles that
+    reached down to that area.
+    """
+    # 1. Try execution_levels — they carry real cluster bounds
+    for lvl in facts.get("execution_levels") or []:
+        if lvl.get("id") == zone_id:
+            try:
+                z_lo = float(lvl.get("lo") or lvl.get("zone_low") or 0)
+                z_hi = float(lvl.get("hi") or lvl.get("zone_high") or 0)
+                if z_hi - z_lo >= 0.5:
+                    # Real zone width from fractal clustering
+                    return z_lo, z_hi
+            except (TypeError, ValueError):
+                pass
+            break
+
+    # 2. Compute from candle wicks at the level area.
+    #    Extract the timeframe from zone_id prefix (e.g. "H4_LIVE_H_..." → H4)
+    tf_prefix = zone_id.split("_")[0] if "_" in zone_id else ""
+    # Map level TF to the bars we have in recent_closed (slim format)
+    tf_bar_key = {
+        "M1": "M1", "M5": "M5", "M15": "M15", "M30": "M30",
+        "H1": "M15", "H4": "M15",  # for HTF levels, use M15 bars
+        "D1": "M15",
+    }.get(tf_prefix, "M5")
+    bars = (facts.get("recent_closed") or {}).get(tf_bar_key) or []
+
+    if bars:
+        TOUCH_PROXIMITY = 5.0  # candle must come within 5pts of the level
+        wicks: list[float] = []
+        for bar in bars:
+            h = float(bar.get("h") or bar.get("high") or 0)
+            l = float(bar.get("l") or bar.get("low") or 0)
+            o = float(bar.get("o") or bar.get("open") or 0)
+            c = float(bar.get("c") or bar.get("close") or 0)
+            if h == 0 or l == 0:
+                continue
+
+            if side == "sell":
+                # Resistance zone: candles that reached up near the level
+                if h >= center - TOUCH_PROXIMITY:
+                    upper_wick = h - max(o, c)
+                    if upper_wick > 0:
+                        wicks.append(upper_wick)
+            else:
+                # Support zone: candles that reached down near the level
+                if l <= center + TOUCH_PROXIMITY:
+                    lower_wick = min(o, c) - l
+                    if lower_wick > 0:
+                        wicks.append(lower_wick)
+
+        if wicks:
+            avg_wick = sum(wicks) / len(wicks)
+            # Zone extends by average wick on the rejection side,
+            # small buffer on the other side
+            half = max(avg_wick, 0.5)
+            return center - half, center + half
+
+    # 3. Fixed fallback
+    return center - _FALLBACK_ZONE_HALF, center + _FALLBACK_ZONE_HALF
+
+
+def _update_idea_lifecycle(review: dict, facts: dict) -> None:
+    """Update trade idea state machine based on the Qwen entry response.
+
+    Called after every model-produced entry decision. Drives the lifecycle
+    through STALKING → AT_ZONE → ARMED → RESOLVED based on the model's
+    execution_plan and the approach tracker's assessment.
+
+    Rules:
+        - status="ready" with a zone → create or transition idea to ARMED
+        - status="wait" with identified zones → STALKING (approach tracking)
+        - Active idea invalidated by model (price broke zone) → RESOLVED
+        - Active idea superseded by new zone target → auto-resolved
+
+    All mutations are on the module-level _IDEA_MANAGER / _APPROACH_TRACKER.
+    """
+    plan = review.get("execution_plan") or {}
+    status = str(plan.get("status", "wait")).strip().lower()
+    side = plan.get("side")
+    confidence = int(review.get("confidence") or 0)
+
+    # Extract the *target zone* from Qwen's response — NOT the full bracket.
+    # For a sell the model is targeting resistance (entry_high level).
+    # For a buy the model is targeting support (entry_low level).
+    # The entry bracket (entry_low to entry_high) spans the whole range and
+    # is too wide for approach tracking (often 30-40 pts on XAUUSD).
+    entry_low_price = plan.get("entry_low") or plan.get("entry_low_price")
+    entry_high_price = plan.get("entry_high") or plan.get("entry_high_price")
+    entry_low_id = plan.get("entry_low_id", "")
+    entry_high_id = plan.get("entry_high_id", "")
+
+    # Pick the side-appropriate level as the tight target zone.
+    # For sell → resistance level (entry_high). For buy → support (entry_low).
+    if side == "sell" and entry_high_id:
+        zone_id = entry_high_id
+        try:
+            center = float(entry_high_price or 0)
+        except (TypeError, ValueError):
+            center = 0.0
+    elif side == "buy" and entry_low_id:
+        zone_id = entry_low_id
+        try:
+            center = float(entry_low_price or 0)
+        except (TypeError, ValueError):
+            center = 0.0
+    else:
+        zone_id = ""
+        center = 0.0
+
+    # Get approach assessment from facts
+    approach = facts.get("approach_context") or {}
+    zone_scores = facts.get("zone_scores") or []
+
+    if status == "ready" and side and zone_id and center > 0:
+        # Derive zone bounds from real data:
+        # 1. execution_levels already carry zone_low/zone_high from fractal
+        #    clustering — use those when the level has real width.
+        # 2. For point levels (width=0), compute average wick of candles
+        #    that touched that area — the wick IS the rejection zone.
+        lo, hi = _zone_bounds_from_data(
+            zone_id, center, side, facts,
+        )
+
+        # Find zone score for this zone if available
+        matched_score = {}
+        for zs in zone_scores:
+            if zs.get("zone_id") in (zone_id, entry_low_id, entry_high_id):
+                matched_score = zs
+                break
+
+        active = _IDEA_MANAGER.active_idea
+        if active and active.zone_id == zone_id and active.state.value != "armed":
+            # Same zone, transition forward
+            _IDEA_MANAGER.transition(
+                active.idea_id, "armed",
+                reason=f"model_ready_conf={confidence}",
+            )
+            logging.info(
+                "lifecycle:idea_armed :: %s [%.1f-%.1f] side=%s conf=%d",
+                zone_id, lo, hi, side, confidence,
+            )
+        elif not active or active.zone_id != zone_id:
+            # New zone — create new idea (auto-supersedes old)
+            idea = _IDEA_MANAGER.create_idea(
+                zone_id=zone_id, side=side,
+                zone_low=lo, zone_high=hi,
+                # Lead with runtime-owned geometry. Qwen sometimes repeats an
+                # older price in its summary; that prose must never make a new
+                # mapped zone look like a position at the stale price.
+                thesis=(
+                    f"{side.title()} watch {zone_id} [{lo:.3f}-{hi:.3f}]. "
+                    f"{str(review.get('summary', ''))[:100]}"
+                ),
+                zone_score=matched_score,
+            )
+            # Jump straight to ARMED since model said ready
+            _IDEA_MANAGER.transition(
+                idea.idea_id, "at_zone",
+                reason="model_identified_zone",
+            )
+            _IDEA_MANAGER.transition(
+                idea.idea_id, "armed",
+                reason=f"model_ready_conf={confidence}",
+            )
+            logging.info(
+                "lifecycle:idea_created_armed :: %s [%.1f-%.1f] side=%s conf=%d",
+                zone_id, lo, hi, side, confidence,
+            )
+
+    elif status == "wait" and _IDEA_MANAGER.has_active:
+        # Model says wait — check if we should maintain or invalidate idea
+        active = _IDEA_MANAGER.active_idea
+        reason_text = str(plan.get("reason", "")).lower()
+
+        if "broke" in reason_text or "invalidat" in reason_text:
+            # Zone broke — resolve the idea
+            _IDEA_MANAGER.resolve(
+                active.idea_id,
+                outcome="invalidated",
+                reason=f"model_wait:{reason_text[:80]}",
+            )
+            _APPROACH_TRACKER.reset()
+            logging.info(
+                "lifecycle:idea_invalidated :: %s reason=%s",
+                active.zone_id, reason_text[:60],
+            )
+        elif approach.get("distance_trend") == "retreating" and approach.get("observation_count", 0) >= 3:
+            # Price retreating from zone for multiple observations — expire
+            _IDEA_MANAGER.resolve(
+                active.idea_id,
+                outcome="expired",
+                reason="price_retreating_from_zone",
+            )
+            _APPROACH_TRACKER.reset()
+            logging.info(
+                "lifecycle:idea_expired :: %s retreating",
+                active.zone_id,
+            )
+        else:
+            # Still tracking — approach data was already updated in compact_entry_facts
+            if active.state.value == "armed":
+                # Was armed but model now says wait — downgrade back to at_zone
+                _IDEA_MANAGER.transition(
+                    active.idea_id, "at_zone",
+                    reason=f"model_wait:{reason_text[:40]}",
+                )
+            logging.debug(
+                "lifecycle:idea_stalking :: %s approach=%s",
+                active.zone_id,
+                approach.get("assessment", "unknown"),
+            )
+
+    elif status == "wait" and not _IDEA_MANAGER.has_active:
+        # No active idea and model says wait — check if planner has zones to stalk
+        planner_zones = (facts.get("planner") or {}).get("entry_zones") or []
+        # side may be None on a wait plan — fall back to bias
+        stalk_side = side or (
+            review.get("bias") if review.get("bias") in ("buy", "sell") else None
+        )
+        if planner_zones and stalk_side:
+            zone = planner_zones[0]
+            try:
+                lo = float(zone.get("lo") or zone.get("low") or zone.get("entry_low") or 0)
+                hi = float(zone.get("hi") or zone.get("high") or zone.get("entry_high") or 0)
+                z_id = str(zone.get("id") or zone.get("zone_id") or f"plan_{entry_low_id}")
+            except (TypeError, ValueError):
+                lo, hi, z_id = 0.0, 0.0, ""
+            if lo > 0 and hi > 0 and z_id:
+                _IDEA_MANAGER.create_idea(
+                    zone_id=z_id, side=stalk_side,
+                    zone_low=lo, zone_high=hi,
+                    thesis=f"Session plan zone: {z_id}",
+                )
+                logging.info("lifecycle:idea_stalking_plan_zone :: %s", z_id)
+
+
 def generate_dashboard_deal_sheet() -> dict:
     snapshot = read_json_safe(MANAGEMENT_STATE_FILE, DEFAULT_MANAGEMENT_STATE)
     symbol = str(snapshot.get("symbol") or "XAUUSDr")
@@ -1888,7 +2660,7 @@ def generate_dashboard_deal_sheet() -> dict:
 
     if not market.get("open"):
         review = {
-            "bias": "conditional",
+            "bias": "wait",
             "confidence": 0,
             "summary": "Gold market closed; Qwen is unloaded until quotes resume.",
             "acknowledged_epochs": {},
@@ -1904,7 +2676,7 @@ def generate_dashboard_deal_sheet() -> dict:
         raw_response = json.dumps(review, separators=(",", ":"))
     elif entry_cache.get("status") != "ready":
         review = {
-            "bias": "conditional",
+            "bias": "wait",
             "confidence": 0,
             "summary": "Validated entry cache is unavailable.",
             "acknowledged_epochs": {},
@@ -1918,7 +2690,7 @@ def generate_dashboard_deal_sheet() -> dict:
         raw_response = json.dumps(review, separators=(",", ":"))
     elif not entry_cache.get("session", {}).get("trade_permitted", False):
         review = {
-            "bias": "conditional",
+            "bias": "wait",
             "confidence": 0,
             "summary": "Current session prohibits a new entry.",
             "acknowledged_epochs": dict(entry_cache["epochs"]),
@@ -1929,7 +2701,17 @@ def generate_dashboard_deal_sheet() -> dict:
         raw_response = json.dumps(review, separators=(",", ":"))
     else:
         facts = compact_entry_facts(
-            entry_cache, decision_levels, planner_context, symbol
+            entry_cache, decision_levels, planner_context, symbol,
+            idea_manager=_IDEA_MANAGER,
+            approach_tracker=_APPROACH_TRACKER,
+        )
+        log_step(
+            "context_ready", "passed", symbol=symbol,
+            price=(facts.get("quote") or {}).get("bid"),
+            quote_age_ms=(facts.get("quote") or {}).get("age_ms"),
+            cache_epochs=facts.get("epochs"),
+            active_idea=(facts.get("active_idea_context") or {}).get("watching_zone"),
+            approach=(facts.get("approach_context") or {}).get("assessment"),
         )
         prompt = build_entry_prompt(facts)
         prompt_text = prompt
@@ -1956,7 +2738,10 @@ def generate_dashboard_deal_sheet() -> dict:
             # reason. This is an upper bound, not a target: well-formed answers
             # stop early on their own.
             num_predict=768,
-            num_ctx=4096,
+            # ENTRY FACTS are ~20KB. 4096 tokens can truncate the contract at
+            # the beginning, which produced confidence=0 / malformed ready
+            # responses because Qwen never saw the governing instructions.
+            num_ctx=8192,
             format_schema=entry_decision_schema(
                 entry_cache, decision_levels, facts
             ),
@@ -1972,8 +2757,48 @@ def generate_dashboard_deal_sheet() -> dict:
         )
         raw_response = result.get("response", "{}")
         review = json.loads(raw_response)
+        correction_reason = qwen_contract_correction_reason(review)
+        if correction_reason:
+            correction_prompt = build_qwen_correction_prompt(
+                facts, review, correction_reason
+            )
+            logging.warning("Qwen contract correction requested: %s", correction_reason)
+            correction = ollama_generate(
+                correction_prompt, timeout=None, num_predict=768, num_ctx=4096,
+                format_schema=entry_decision_schema(entry_cache, decision_levels, facts),
+            )
+            decision_duration_ns = int(decision_duration_ns or 0) + int(
+                correction.get("total_duration") or 0
+            )
+            prompt_text = correction_prompt
+            raw_response = correction.get("response", "{}")
+            review = json.loads(raw_response)
+            log_step(
+                "qwen_contract_correction", "completed", symbol=symbol,
+                price=(facts.get("quote") or {}).get("bid"),
+                quote_age_ms=(facts.get("quote") or {}).get("age_ms"),
+                detail=correction_reason, bias=review.get("bias"),
+                confidence=review.get("confidence"),
+                plan_status=(review.get("execution_plan") or {}).get("status"),
+            )
+        log_step(
+            "qwen_response", "received", symbol=symbol,
+            price=(facts.get("quote") or {}).get("bid"),
+            quote_age_ms=(facts.get("quote") or {}).get("age_ms"),
+            bias=review.get("bias"), confidence=review.get("confidence"),
+            plan_status=(review.get("execution_plan") or {}).get("status"),
+            detail=(review.get("execution_plan") or {}).get("reason"),
+        )
+        if _has_legacy_dual_assessment(review.get("summary")):
+            # v004 may reproduce wording learned by an older contract. Never
+            # persist or recycle it as a thesis under the directional contract.
+            review["summary"] = "Directional bias unresolved."
         provenance_failures = validate_entry_provenance(review, entry_cache)
         snapshot["qwen_evidence_ids"] = list(review.get("evidence_ids") or [])
+
+        # Confidence is an observed model output, not permission that runtime
+        # may manufacture. Keep the raw value: the contradiction guard below
+        # turns ready+zero into a wait instead of promoting it into a trade.
 
         # 2026-08-10 guard: contract v1.9 made the model emit status="ready"
         # alongside confidence=0 and a directional bias. That contradiction
@@ -2030,6 +2855,7 @@ def generate_dashboard_deal_sheet() -> dict:
                 entry_cache,
                 bias=review.get("bias"),
                 confidence=review.get("confidence"),
+                zone_edge_context=facts.get("zone_edge_context"),
             )
             plan_failures = validate_entry_against_plan(
                 review["execution_plan"], planner_context
@@ -2040,8 +2866,49 @@ def generate_dashboard_deal_sheet() -> dict:
                     "reason": "Session plan gating rejected entry geometry.",
                 }
                 provenance_failures.extend(plan_failures)
+        # Qwen can take more than a minute locally. Re-read the cache after the
+        # answer and prevent a READY decision from trading a materially moved
+        # market. WAIT assessments remain useful observations and are not
+        # rewritten merely because another M1 candle closed.
+        post_qwen_cache = latest_entry_context(symbol)
+        snapshot_freshness = decision_snapshot_freshness(facts, post_qwen_cache)
+        review["decision_freshness"] = snapshot_freshness
+        if (
+            review["execution_plan"].get("status") == "ready"
+            and not snapshot_freshness.get("fresh", False)
+        ):
+            stale_ready = dict(review["execution_plan"])
+            review["execution_plan"] = {
+                "status": "wait",
+                "reason": "stale_decision_snapshot; refresh current zone and response",
+                "reason_code": "entry:stale_decision_snapshot",
+            }
+            provenance_failures.append("entry:stale_decision_snapshot")
+            logging.warning(
+                "STALE_RECOVERY component=qwen_decision action=ready_to_wait "
+                "side=%s drift=%s max=%s source_m1=%s current_m1=%s",
+                stale_ready.get("side"),
+                snapshot_freshness.get("price_drift"),
+                snapshot_freshness.get("maximum_drift"),
+                snapshot_freshness.get("source_closed_m1"),
+                snapshot_freshness.get("current_closed_m1"),
+            )
+            log_step(
+                "freshness_recovery", "recovered", symbol=symbol,
+                price=snapshot_freshness.get("current_price"),
+                detail="entry:stale_decision_snapshot",
+                source_price=snapshot_freshness.get("source_price"),
+                price_drift=snapshot_freshness.get("price_drift"),
+            )
         review["entry_validation_failures"] = provenance_failures
         _stamp_regime_target_mode(review, facts)
+
+        # -- Trade idea lifecycle update from Qwen response --
+        try:
+            _update_idea_lifecycle(review, facts)
+        except Exception:
+            logging.debug("lifecycle:update_failed", exc_info=True)
+
     if (
         review["execution_plan"].get("status") == "ready"
         and review.get("invalidation") is None
@@ -2150,6 +3017,10 @@ def generate_dashboard_deal_sheet() -> dict:
         "wait_deduped": skip_wait_audit,
     }
     write_json_atomic(ENTRY_STATE_FILE, entry_state)
+    try:
+        _save_lifecycle_state()
+    except Exception:
+        logging.debug("lifecycle:save_failed", exc_info=True)
     return build_snapshot()
 
 
@@ -2249,6 +3120,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     limit=max(1, min(limit, 1000)),
                 )
             ).encode("utf-8")
+            self._headers()
+            self.wfile.write(payload)
+            return
+        if path == "/lifecycle":
+            payload = json.dumps({
+                "active_idea": _IDEA_MANAGER.active_idea_for_facts(),
+                "prior_context": _IDEA_MANAGER.prior_idea_context(),
+                "history": [h.to_dict() for h in _IDEA_MANAGER.history[-5:]],
+                "approach": (
+                    _APPROACH_TRACKER.snapshot().to_dict()
+                    if _APPROACH_TRACKER.active else {}
+                ),
+            }).encode("utf-8")
             self._headers()
             self.wfile.write(payload)
             return
@@ -2467,7 +3351,9 @@ def self_test_entry_prompt() -> None:
     assert "ENTRY FACTS" in prompt
     assert "execution_levels" in facts
     assert "forming" in facts and "H4" not in facts["forming"]
-    assert prompt_bytes < 6000, prompt_bytes
+    # Lifecycle fields (prior_idea_context, zone_scores, approach_context)
+    # add ~1600 bytes worst case. num_ctx=4096 tokens ≈ 8KB at 2 chars/token.
+    assert prompt_bytes < 8000, prompt_bytes
     schema = entry_decision_schema(entry_cache, decision_levels, facts)
     assert "H1_RES_1" in schema["properties"]["execution_plan"]["properties"]["entry_low_id"]["enum"]
     wait_review = {
@@ -2498,6 +3384,18 @@ def main() -> None:
         return
 
     logging.info("Qwen entry-decision process starting; interval=%ds", INTERVAL_SECONDS)
+    # Restore trade idea lifecycle state from disk
+    try:
+        _load_lifecycle_state()
+        if _IDEA_MANAGER.has_active:
+            logging.info(
+                "lifecycle:restored active_idea=%s state=%s",
+                _IDEA_MANAGER.active_idea.zone_id,
+                _IDEA_MANAGER.active_idea.state,
+            )
+        logging.info("lifecycle:restored history_count=%d", len(_IDEA_MANAGER.history))
+    except Exception:
+        logging.exception("lifecycle:restore_failed")
     # Evict any previous qwen-trading-* left pinned in VRAM. warm_model() pins
     # with keep_alive=-1, so a model switch otherwise leaves BOTH resident and
     # Ollama starts returning HTTP 500 on every call (2026-08-10 incident).

@@ -158,8 +158,8 @@ source hash, evidence IDs, producer version, and expiry/invalidation state.
 Replacing context creates a new epoch; it does not mutate the evidence identity
 used by an older decision.
 
-The full implementation and gate definitions are in
-`CACHE_CONTEXT_ARCHITECTURE.md`.
+The governing implementation and gate definitions are in the sole active
+architecture, `../XAUUSD_SYSTEM_ARCHITECTURE_V2.md`.
 
 ## Stage 3: context warm-up and qualification
 

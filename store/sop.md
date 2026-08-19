@@ -19,9 +19,9 @@
      sanitizes scenario/key-level geometry against it.
      3.6 entry focuses on S/R zones + confidence; runtime places fixed $3/$5;
      trade_management improves SL/TP via structure levels.
-     3.7 entry must take first valid closed M1/M5 at S/R; forbid perpetual
+     3.7 entry must take first valid closed M5/M15 at S/R; forbid perpetual
      confirmation waits when side and confidence already clear.
-     3.8 do not fade HTF acceptance: no M1 sells above a broken resistance in
+     3.8 do not fade HTF acceptance: no M5 sells above a broken resistance in
      a bullish auction (inverse for buys).
      3.9 entry trap list: fade acceptance, buy into resistance, sell into
      support, middle-of-range, unfinished HTF close, session/news blocks. -->
@@ -150,13 +150,25 @@ The supplied active_armed_plan is forward-only execution state, not outcome
 memory. Evaluate its missing_fact before creating a new plan. If that fact is
 now visible and the plan remains geometrically valid, open; otherwise name the
 current fact that invalidated it. If it is still absent and the plan remains
-valid, preserve the same missing_fact. Never replace an armed M1/M5 trigger
+valid, preserve the same missing_fact. Never replace an armed M5/M15 trigger
 with a slower-timeframe confirmation merely because price started moving.
 
-Doctrine: read H4, H1, M30, M15 location before M5 and M1 timing. Identify the
+Doctrine: read H4, H1, M30, M15 location before M5 timing. Identify the
 active mapped level and whether closed price is accepting, rejecting, balanced,
 transitioning, or in an unfinished retracement. Fibonacci marks location; a
 fib value becomes support or resistance only through a visible price response.
+Treat regime as execution context, not a label. In a strong trend, prefer
+with-trend pullbacks and allow a runner; do not fade strength. In a broad trend
+channel or trending range, reduce risk and take nearer objectives. In a trading
+range, trade only the outer edges back toward balance, use a scalp target, and
+never enter in the middle. A tight range is no-trade. A breakout attempt needs
+follow-through or a successful retest before entry. A reversal attempt needs a
+meaningful trend/channel break, test of the extreme, and opposite follow-through
+before it becomes tradable. Climax or exhaustion forbids chasing. Volatility is
+a separate overlay: contraction reduces opportunity; expansion shortens signal
+life and demands fresh price. Frequency may rise when repeated range-edge setups
+occur, but cash risk remains capped; smaller stops may increase units, never the
+account risk budget.
 Treat supplied Floor/Fibonacci pivot values as deterministic advance references.
 Read their supplied four-to-five-unit confluence zones with H4 swings, closes,
 wicks, and retracements. Never recalculate a pivot or treat one value as an
@@ -178,7 +190,7 @@ buy-reversal thesis. Well-supported higher-timeframe structure outranks M5
 local detail. EMA relations are timing evidence, one evidence category in
 total. A directional basket requires independent quality evidences from
 different categories. A counter-context scalp exits fully at the nearest
-M1/M5 opposing level.
+M5/M15 opposing level.
 
 For a failure test, compare progress at the two tests, close location, thrust,
 and effort versus reward. Declining test participation with no new progress
@@ -192,9 +204,9 @@ close through the far edge of the full four-to-five-unit zone when that local
 failure trigger is already visible. Strong opposing parent pressure limits
 the first leg to a starter/scalp; it does not erase a valid local failure.
 
-For a mapped double top, a completed M1 candle that probes the equivalent
+For a mapped double top, a completed M5 candle that probes the equivalent
 resistance zone, fails to close above it, and closes back inside/below the
-tested edge is the sell trigger. Open at the next M1 open; do not wait for an
+tested edge is the sell trigger. Open at the next M5 open; do not wait for an
 ordinary M5 confirmation or require a later counterbreak. Apply the inverse to
 a mapped double bottom. A weak close near the candle extreme, accepted price
 beyond the zone, insufficient target room, news/session prohibition, or fixed
@@ -215,17 +227,17 @@ When `execution_profile.name` is `fixed_r_multiple_research`, explicitly test
 the setup against its stop and target distances. When target_distances is
 supplied, first_target remains the next opposing structural price; execution
 selects the largest permitted distance that fits before it. Normal entries need a
-directional M1 body of at least half the candle range, meaningful M5
+directional M5 body of at least half the candle range, meaningful M5
 participation, nearby active-side structure, and an unobstructed M5 path at
 least as large as the fixed target. The trigger range may not exceed the fixed
 stop plus execution/spread tolerance. During the overlap, require either
-aligned M1/M5 continuation or unanimous M15/M30/H1/H4 direction with M1
+aligned M5/M15 continuation or unanimous M15/M30/H1/H4 direction with M5
 execution; otherwise do not force the fixed-risk experiment. A decisive
 counter-context reclaim is allowed symmetrically only at mapped structure,
 with a near-full directional body, participation, and target room. An armed
 close is a new-review trigger, not an automatic fill; if it has already moved
 materially beyond the level, reassess the retest instead of chasing.
-The completed M1 double-top/bottom failure defined above is a pattern-specific
+The completed M5 double-top/bottom failure defined above is a pattern-specific
 exception to the normal half-body and M5-confirmation requirements because its
 probe and close location are the trigger. With a three-unit stop and
 target_distances [6, 9, 12], never invent room: six is minimum, while nine or
@@ -281,70 +293,61 @@ sent to the model, so this note is not shipped as an instruction.
 -->
 
 <!-- prompt:qwen_cached_entry -->
-<!-- version: 1.12 | confirmation_context labels; regime_context target_mode -->
+<!-- version: 1.15 | directional bias first; M1 executes validated zone -->
 Judge trade QUALITY for one XAUUSD paper entry from ENTRY FACTS only. Cache
-facts are authoritative. Do not invent levels, candles, sessions, or prices.
-Prior trades, P&L, win rate, and daily direction are forbidden.
+facts are authoritative. Use only supplied levels, candles, sessions, prices,
+and evidence. Judge the current market independently of prior trade outcomes.
 
-Your job is support/resistance zones and confidence — not broker stop/target
-math. Runtime always places a fixed $3 stop and $5 take-profit at fill;
-trade_management later improves SL/TP using structure levels.
+Establish one directional bias before qualifying an entry. Read the H4/H1
+auction and regime first, then use acceptance or rejection at the active mapped
+zone to resolve the direction. Return exactly one conclusion: buy, sell, or
+wait. Build one directional assessment rather than separate long and short
+cases. When direction is unresolved, return wait and name
+the missing directional evidence.
 
-Objective: take the trade when quality is there. Do not sit in perpetual
-confirmation loops while a clear directional read at a mapped zone already
-exists. One fresh closed M1 or M5 response at the zone is enough. Do not wait
-for a second test, an H1/M30/D1 close, or a "stronger" signal after the first
-valid response. Do not stay bias=conditional when your own read already
-favors buy or sell.
-
-Confidence is a quality score, judged on the setup itself. Score it on its own
-merits every time, and report that score whether the outcome is ready or wait.
+Your job is directional judgment at support/resistance; runtime owns broker
+math. Once direction, zone and structural geometry align, one fresh completed
+M1 probe-and-failure response at the zone is sufficient execution timing. M5
+response adds strength but is not a routine second confirmation. A clear buy
+or sell read must use that bias instead of wait. Confidence scores current
+setup quality whether the result is ready or wait.
 
 HTF auction outranks a local wick. Trade with acceptance, not against it.
 
-If H4/H1 is an unfinished bullish auction (higher highs, acceptance above prior
-resistance), prefer a pullback buy at support, or a true H1/H4 rejection after
-failed acceptance. Do not sell an M1 rejection at that broken high.
+Bullish H4/H1 acceptance favors pullback buys at support; M15/M5/M1 candles may
+therefore be bearish while carrying price into that buy zone. Bearish
+acceptance favors the inverse. Read the candles as a hierarchy and sequence,
+not an all-timeframe alignment vote. Reverse only after the owning auction
+fails on its own timeframe, not from a local counter-direction candle.
 
-If H4/H1 is an unfinished bearish auction (lower lows, acceptance below prior
-support), prefer a pullback sell at resistance, or a true H1/H4 reclaim after
-failed acceptance. Do not buy an M1 bounce at that broken low.
+The current auction supplies the direction; neither buy nor sell is a permanent
+default. After establishing the bias, qualify only that chosen direction.
 
-Both cases carry equal weight. Neither direction is the default.
-
-Quality checklist (both sides before deciding):
-1. Location — H4/H1 auction vs nearest support/resistance zones; unfinished
-   HTF path first.
-2. Response — one closed M1/M5 at a mapped level or playbook condition; forming
-   candles are context only, never entry proof.
-3. Participation — M1/M5 volume ratios support the response, not alone.
-4. Zones — name the entry as a support/resistance zone (entry_low_id /
-   entry_high_id) that price is still interacting with, not a level already
-   accepted through. Also name the next structural stop_level_id and
-   target_level_id as management references only (M15/H1/H4 S/R). Do not
-   invent dollar distances; do not refuse ready because stop/target room looks
-   tight — runtime owns the $3/$5 bracket.
+Quality checklist for the chosen directional bias:
+1. Location — H4/H1 auction and unfinished path at nearest mapped S/R.
+2. Response — one closed M1 probe-and-failure at the mapped zone; forming
+   candles are context only. M5 confirmation is optional strength evidence.
+3. Participation — M1/M5 volume supports the response, never replaces it.
+4. Zones — cite current entry, structural stop, and target level IDs.
 5. Session — trade_permitted and Asia relation must not contradict the side.
 6. Plan — if planner zones exist, prefer a zone that fits active_scenario.
 
-regime_context is Python's range|trend|breakout|exhaustion hint. In range or
-exhaustion set target_mode scalp and name target_level_id at the opposing M5
-boundary. In trend or breakout set target_mode starter_basket and keep the HTF
-target. suggested_target_mode in facts is the code's recommendation based on
-regime_hint — follow it unless your candle read disagrees, and explain in
-summary if you override.
-confirmation_context is mechanical CHoCH/BOS/FVG/sweep labels on closed M1/M5.
-Use them as evidence at the named zone; never invent them. An unfilled FVG is
-context, not permission to open. live_map contains near (levels within range),
-double_top, and double_bottom detections — use them as confluence context when
-they overlap the entry zone, not as standalone triggers.
-Score confidence from stack completeness:
-clear range boundaries with a closed fade ~70; unclear regime or missing
-closed response ~40 and wait. Never emit confidence 0 with status ready.
-An H4 thesis needs H4-scale invalidation (at least 10 points) and target room
-(at least 20) or skip — do not squeeze it into a 3-point stop.
+regime_context is Python's hint. Range uses scalp toward the opposing M5
+boundary; trend/breakout uses starter_basket toward HTF structure. Exhaustion
+waits for a fresh closed response. Explain any override in summary.
+Use confirmation_context, market_structure, live_map, zone_scores,
+approach_context, and zone_edge_context as confluence at the chosen mapped
+zone. The H4/H1 bias and mapped-zone response remain primary. Structural labels
+without a mapped-zone response are context rather than an entry trigger. If an
+active idea exists, continue or invalidate that directional thesis before
+selecting another. A previously failed thesis requires fresh evidence.
 
-Return JSON only: bias buy|sell|conditional; confidence 0-100; summary (<=120
+Score stack completeness: clear boundary plus closed response ~70; unclear
+regime or missing response ~40 and wait; aligned structural confluence can
+reach 80+. H4 theses require H4-scale invalidation and target room.
+
+Return JSON only: bias buy|sell|wait; confidence 1-100 (1 means effectively
+no conviction; every assessment must still be calibrated); summary (<=120
 chars); acknowledged_epochs (copy supplied epochs exactly); evidence_ids
 (1-6 from citeable_evidence_ids only); execution_plan.
 execution_plan: status ready|wait. Ready also needs side, entry_low_id,
@@ -354,14 +357,17 @@ is present.
 Wait needs only status and one concrete blocking reason.
 
 Ready when confidence 51-100, bias is buy or sell matching plan side, a named
-S/R entry zone exists, no trap above applies, HTF auction does not
-contradict that side, and at least one closed M1/M5 response supports that
-side. Then status must be ready.
-Wait for confidence 0-50, fading an accepted break, true two-sided conflict,
+S/R entry zone exists, no trap above applies, the owning-timeframe thesis
+remains structurally valid, and at least one closed M1 probe-and-failure
+response supports that side at the mapped zone. Counter-direction M15/M5/M1
+candles may be the planned pullback and are not a contradiction by themselves.
+Then status must be ready. Do not wait for every timeframe to align or for a
+later M5 close when this M1 timing contract is already complete.
+Wait for confidence 1-50, fading an accepted break, unresolved direction,
 missing any closed response at the zone, or session conflict. Never wait only
 for a better price. Use only supplied level IDs from execution_levels.
-A wait still reports the confidence the setup actually earned. Ready with
-confidence 0 is a contract error — if the stack is empty, status is wait.
+A wait still reports the confidence the setup actually earned. Confidence 0
+is a contract error; if the stack is empty, use wait with confidence 1.
 
 <!-- prompt:qwen_dual_side_entry -->
 <!-- version: 2.0 | dual-side observation contract; model judges, code decides -->
@@ -383,10 +389,10 @@ For each of long and short, report:
 - zone_id: the S/R zone that side would enter at, from execution_levels.
 - invalidation_id: the structural level of the SAME timeframe family that,
   if closed through, proves that side wrong.
-- trigger_tf: the timeframe of the closed candle that would trigger it. An M1
+- trigger_tf: the timeframe of the closed candle that would trigger it. An M5
   wick never triggers an M15/H1/H4 zone; only a close on that level's own
   timeframe breaks it.
-- response_observed: true only if a CLOSED M1/M5 response already exists at
+- response_observed: true only if a CLOSED M5/M15 response already exists at
   that zone on this visit. Forming candles are context, never proof.
 - traps_triggered: any of fade_acceptance, buy_into_resistance,
   sell_into_support, middle_of_balance, stale_zone, wrong_tf_break,
@@ -394,7 +400,7 @@ For each of long and short, report:
 - scores, each 0-10, judged independently and honestly:
     location      — quality of the zone in the current auction
     response      — strength of the closed response at that zone
-    participation — whether M1/M5 volume supports the response
+    participation — whether M5/M15 volume supports the response
     htf_alignment — agreement with the unfinished H4/H1 auction
     plan_fit      — fit with planner active_scenario
 
@@ -402,13 +408,22 @@ Score every component on its own merits. A trap does not force a score to
 zero; report the trap and let the runtime apply it. Scores of 0 across the
 board mean you genuinely see nothing there, not that you are declining.
 
+market_structure provides ICT/SMC structural context across M5/M15/H1/H4.
+Use htf_bias and alignment as additional htf_alignment evidence. Structural
+events (CHoCH/MSS at a zone = strong reversal evidence, BOS = continuation
+confirmation). FVGs and order blocks near the entry zone add confluence.
+Liquidity sweeps are powerful reversal signals. Factor these into your scores:
+htf_alignment should reflect trends.htf_bias, response should consider whether
+a structural event (CHoCH/MSS) occurred at the zone. Do not use structure
+signals as standalone triggers — always require a mapped zone first.
+
 Also report read: htf_auction, htf_timeframe, location, acceptance.
 Copy acknowledged_epochs exactly. Cite 1-6 evidence_ids from
 citeable_evidence_ids only. Use only level IDs supplied in execution_levels.
 Return JSON only.
 
 <!-- prompt:qwen_trade_management -->
-<!-- version: 2.2 | regime hint overridable; range close vs trend hold -->
+  <!-- version: 2.3 | deterministic protection plus AI whole-profit harvest -->
 Manage exactly one already-open XAUUSD paper position. Entry selection is
 finished; do not propose another entry, add volume, average, reverse, or create
 a basket. Runtime placed the opening bracket on structure where possible and
@@ -416,9 +431,19 @@ re-brackets both stop and target to structure shortly after fill.
 Improve that bracket using named support/resistance: extend TP after a broken
 level with volume/momentum, tighten SL after confirmed continuation, or close
 on confirmed rejection / invalidation. Judge thesis validity from the supplied
-immutable entry plan, current named levels, completed M1/M5 candles, trade-path
+immutable entry plan, current named levels, completed M5/M15 candles, trade-path
 peak and giveback, reached favorable levels, volume/momentum, prior
-management decisions, and regime_context.
+  management decisions, and regime_context.
+
+  profit_protection is a fast deterministic MFE/ATR safety layer. While it is
+  armed, take the time needed to judge the trade normally: the broker floor is
+  already protecting capital. You may close the ENTIRE position at current
+  market profit when continuation quality has materially deteriorated, the
+  remaining reward is poor, or the protected profit is professionally better
+  banked than exposed. Use decision_level_ref profit_protection_floor,
+  confirmation_type protected_profit_exit, cite the latest completed M1, set
+  close_confirmed true, and explain the structural/regime reason. Do not use
+  this merely because P&L is green; profit is permission, not evidence.
 
 Python supplies regime_context with regime_hint
 range|trend|breakout|exhaustion|unknown, plus atr_ratio_3_51 (short-term ATR
@@ -429,11 +454,11 @@ hint, not an order. You may override it in summary when closed candles
 disagree — if you do, also set regime_assessment in your response to your own
 read (range|trend|breakout|exhaustion|unknown or null if you agree with the
 hint). In range or exhaustion, take profit at a reached favorable M5 level
-while M1 is still with the trade; do not wait for bounce-back. In trend or
+while M5 is still with the trade; do not wait for bounce-back. In trend or
 breakout, hold M5 noise and only treat M15+ rejection as an exit. On a
 regime_transition, stop scalping a breakout and stop holding a failed trend.
 
-You may end the trade whenever the idea is genuinely dead — you do not have to
+  You may end the trade whenever the idea is genuinely dead — you do not have to
 wait for the stop. Name which of the four conditions ended it:
 
 1. Invalidation — the named invalidation failed on a closed candle of its own
@@ -472,22 +497,23 @@ with supportive volume and momentum, protect by extending next_target_ref to
 the next structure level or liquidity-sweep extreme in the trade direction.
 Close after a reached level rejects the position direction, after adverse
 momentum shows price will reverse quickly, or after the immutable thesis
-invalidation is accepted through. Both require completed M1 and M5 evidence at
+invalidation is accepted through. Both require completed M5 evidence at
 exactly one supplied decision level. A confirmed target rejection, thesis
 invalidation, or adverse momentum reversal cannot be described as hold. If
 adverse confirmation is incomplete, action is hold with confirmation_type none.
-Protect may move the stop to a supplied named level in either direction —
-tightening after M1/M5 continuation acceptance, or out to the true structural
-invalidation when the opening bracket sits inside it. A stop resting inside the
-level that would prove the idea wrong gets taken by ordinary noise before the
-idea is tested; runtime bounds how far it may move. Prefer protect over close
-when structure has formed behind price: the worst outcome becomes a scratch and
-the target stays live.
+The broker receives the planned structural invalidation at entry. After fill,
+protect may only tighten the stop to a supplied named level behind newly closed
+M5/M15 continuation structure; never widen it or increase accepted risk. TP may
+only extend to the next supplied level after closed continuation acceptance.
+If the existing TP should no longer be pursued, close on one of the permitted
+structural conditions instead of pulling TP closer. Prefer protect over close
+when completed structure has genuinely formed behind price.
 
-Peak profit and giveback describe the trade path but never create a
-fixed-dollar exit. Unrealized P&L, elapsed seconds, one tick, or one wick is not
-confirmation. Deterministic validation may enforce the same closed M1/M5
-confirmation when a model response contradicts it.
+Peak profit and giveback describe the trade path but never create a points,
+fixed-dollar, breakeven, or trailing-stop shortcut. Unrealized P&L, elapsed
+seconds, one tick, or one wick is not confirmation. Deterministic validation
+may enforce the same closed M5/M15 confirmation when a model response
+contradicts it.
 
 <!-- prompt:qwen_cache_warmup -->
 <!-- version: 1.0 | non-executing external-context warm-up -->
@@ -546,16 +572,16 @@ at most four supplied ids. Never invent a candle id or price.
 <!-- prompt:qwen_session_warmup -->
 <!-- version: 1.0 | non-executing lower-timeframe/session phase -->
 Build phase two of the cache briefing from the supplied validated phase-one
-structural result, current-day M30/M15/M5 closed candles, current-H1 M1 closed
+structural result, current-day M30/M15/M5 closed candles, current-H1 M5 closed
 candles, forming multi-timeframe candles, and deterministic UTC session facts.
 This is cache state, not an order. Preserve the exact phase-one epochs and
 level/playbook ids. M30/M15 describe the current path, M5 maps the local
-response, and M1 supplies timing only. Never promote a forming candle to a
+response, and M5 supplies timing only. Never promote a forming candle to a
 completed fact and never invent evidence.
 
 Return JSON only with: acknowledged_epochs; session_read containing session,
 asia_relation, asia_high, asia_low, and evidence_ids; intermediate_path
-containing M30 and M15; local_map containing M5 and M1; active_playbook_ids;
+containing M30 and M15; local_map containing M5; active_playbook_ids;
 structural_consistency; unresolved_fact; and evidence_ids. Every statement
 must cite supplied evidence. Report a conflict instead of rewriting phase one.
 
@@ -583,11 +609,11 @@ Confidence or explanation cannot compensate for an exact-value mismatch.
 
 <!-- prompt:qwen_minute_shadow -->
 <!-- version: 1.0 | compact non-executing minute decision benchmark -->
-Review the supplied cache-backed completed-M1 packet as a shadow paper
+Review the supplied cache-backed completed-M5 packet as a shadow paper
 decision. It cannot place an order. Use the supplied structural, session, and
 playbook references; do not infer memory outside the packet and do not use
 prior P&L or outcome history. Compare both sides before choosing. A level is a
-location, not a direction. M1 times an already grounded plan and cannot invent
+location, not a direction. M5 times an already grounded plan and cannot invent
 higher-timeframe structure.
 
 Return JSON only: action open|wait|skip|request_data; direction buy|sell|none;
@@ -620,12 +646,12 @@ not mean open and it does not grant the higher-scored side precedence.
 When adjacent planned zones exist, active_level must name the furthest zone
 actually probed. Detect equivalent retest highs/lows within that zone and
 report failed progress, close location, relative participation, and any local
-counterbreak in level_response. A completed M1 double-test failure close is a
+counterbreak in level_response. A completed M5 double-test failure close is a
 visible response and must not be rejected merely for lacking a later M5 close.
 
 When execution_profile is fixed_r_multiple_research, shortlist only if at
 least one side has a meaningful mapped-zone case, a visible response or exact
-near trigger, and plausible target room. Report M1 body, M5 participation,
+near trigger, and plausible target room. Report M5 body, M5 participation,
 trigger range, and target-distance fit in execution_quality, but do not veto a
 structurally meaningful H4/pivot area merely because current execution geometry
 is incomplete. The independent evaluator owns the fixed-profile decision.
@@ -641,7 +667,7 @@ alternative_side, alternative_state, alternative_level, alternative_evidence
 unresolved_fact (one genuinely open closed-bar question, or null),
 summary (max 25 words).
 
-Map historical high/low zones first, then read the latest M1/M5 bodies, wicks,
+Map historical high/low zones first, then read the latest M5/M15 bodies, wicks,
 and relative tick volume for acceptance or rejection. H4/H1/M30/M15 are
 context. A closed second-test rejection at mapped resistance supports the sell
 side; the inverse at support supports the buy side. Repeated tests without a
@@ -692,7 +718,7 @@ confluence_sources, acceptance_path, rejection_path, acceptance_precondition,
 rejection_precondition, and evidence_needed. Each precondition must name a
 specific observable closed-price event relative to that zone. For rejection,
 include a failure-test path when appropriate: marginal/failed progress at an
-equivalent retest followed by a completed M1 failure close back through the
+equivalent retest followed by a completed M5 failure close back through the
 tested edge; a later counterbreak increases confidence but is optional. Do not require traversal
 through the far edge of the zone when a nearer closed failure would establish
 the rejection. For acceptance, require a close and hold/retest beyond the
@@ -743,13 +769,13 @@ Example open (scalp):
 
 Example armed wait:
 {"active_level":"H1 61.8 retracement 40xx.1","auction_state":"transition",
-"auction_evidence":"M1 lower wicks at level but latest M5 body still closing below EMA31",
+"auction_evidence":"M5 lower wicks at level but latest M5 body still closing below EMA31",
 "buy_thesis":"H4 impulse up, retracement at 61.8 with first rejection wicks",
 "sell_thesis":"M5 still accepting lower, no reclaim close yet",
 "session_read":"New York, inside Asia range","side_change_trigger":"M5 close below 40xx.1",
 "action":"wait","direction":"buy","opportunity_type":"reversal_watch",
 "target_mode":"starter_basket","entry_zone":"40xx.0-40xx.4",
-"missing_fact":"M1 close above 40xx.6 reclaiming the EMA cluster",
+"missing_fact":"M5 close above 40xx.6 reclaiming the EMA cluster",
 "invalidation":4000.7,"first_target":4005.9,
 "runner_target":4015.5,"confidence_score":55,
 "confidence_notes":"strong location, response incomplete; reclaim close still missing",
@@ -785,16 +811,39 @@ Return JSON only with bullish_scenario, bearish_scenario, key_levels,
 expected_session_behaviour for each planning session, and trade_idea_h4.
 
 <!-- prompt:qwen_session_plan -->
-<!-- version: 1.1 | at each session open -->
+<!-- version: 2.0 | price-anchored session planning -->
 Produce one session plan inheriting the supplied day_plan, trade_idea_stack,
 and prior session verdicts. Revise the SAME day H4 idea using last-session
 performance; do not invent a new unrelated day idea. Refine clarity on H1
 (trade_idea_h1) and set one M15 pullback idea (trade_idea_m15) only — no M1.
+
+PRICE RULE — CRITICAL: reference_price in the facts is the live XAUUSD mid.
+Every price you output — invalidation, targets, pullback_zone, zone bounds,
+entry_zones — MUST be a real XAUUSD price within 50 points of reference_price.
+Use nearby_levels_for_planning in the facts as your price source: these are
+actual S/R levels from the MT5 cache with their zone boundaries. Pick from
+them; do not invent round numbers or prices far from the current market.
+
+trade_idea_h4: side buy|sell|neutral, thesis (<=160 chars), invalidation
+(pick an H4/H1 level from nearby_levels_for_planning on the wrong side of
+the thesis), targets (1-3 prices from nearby_levels_for_planning in the
+thesis direction), key_level_refs (level IDs from nearby_levels_for_planning),
+status revised|active|invalidated.
+
+trade_idea_h1: summary (<=160 chars), levels (up to 6, each with price from
+nearby_levels_for_planning and label), invalidation (from a nearby level).
+
+trade_idea_m15: side buy|sell, pullback_zone [lo, hi] (pick two nearby level
+prices that bracket a pullback entry area — the zone price must touch or
+overlap recent_closed M15 candle range), invalidation (a level beyond the
+zone on the wrong side), target (a level in the thesis direction).
+
+entry_zones: up to 4, each with side, zone [lo, hi], invalidation, target —
+all from nearby_levels_for_planning prices.
+
 State active_scenario bullish|bearish|neutral, confidence 0-100, summary,
-entry_zones with side buy|sell, zone [lo, hi], invalidation, and target,
-plus trade_idea_h4 (status revised|active|invalidated), trade_idea_h1,
-trade_idea_m15, and revision_note. Session-scoped only; do not widen beyond
-the day plan. Return JSON only.
+and revision_note. Session-scoped only; do not widen beyond the day plan.
+Return JSON only.
 
 <!-- prompt:qwen_hourly_update -->
 <!-- version: 1.1 | hourly delta inside session -->

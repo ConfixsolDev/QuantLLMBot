@@ -1,0 +1,111 @@
+{
+  "symbol": "XAUUSDr",
+  "mapped_at_utc": "2026-08-13T15:20:00Z",
+  "source": "operator_chart_2026-08-13 + MT5 H4(5000)/M15(5000) swing clusters near live",
+  "notes": [
+    "Chart marks from NY dump: 4369.276, 4364.141, 4354.964, dashed 4376 / 4382.",
+    "M15 cluster n9 at 4364-4369 is the active reaction shelf under London/NY.",
+    "H4 12 Aug low 4382.197 and 13 Aug lows 4368.918 / 4364.052 anchor the shelf."
+  ],
+  "levels": [
+    {
+      "level_id": "M15_MAPPED_4349",
+      "timeframe": "M15",
+      "zone_low": 4348.892,
+      "zone_high": 4350.402,
+      "role": "mapped_important",
+      "label": "m15_support_cluster",
+      "calculation_method": "operator_mapped"
+    },
+    {
+      "level_id": "M15_MAPPED_4354",
+      "timeframe": "M15",
+      "zone_low": 4354.964,
+      "zone_high": 4354.964,
+      "role": "mapped_important",
+      "label": "chart_support_red_lower",
+      "calculation_method": "operator_mapped"
+    },
+    {
+      "level_id": "M15_MAPPED_4357",
+      "timeframe": "M15",
+      "zone_low": 4356.707,
+      "zone_high": 4358.587,
+      "role": "mapped_important",
+      "label": "session_low_cluster",
+      "calculation_method": "operator_mapped"
+    },
+    {
+      "level_id": "M15_MAPPED_4361",
+      "timeframe": "M15",
+      "zone_low": 4360.025,
+      "zone_high": 4362.469,
+      "role": "mapped_important",
+      "label": "m15_support_cluster",
+      "calculation_method": "operator_mapped"
+    },
+    {
+      "level_id": "M15_MAPPED_4364",
+      "timeframe": "M15",
+      "zone_low": 4364.141,
+      "zone_high": 4364.141,
+      "role": "mapped_important",
+      "label": "chart_support_red_upper",
+      "calculation_method": "operator_mapped"
+    },
+    {
+      "level_id": "M15_MAPPED_4366_SHELF",
+      "timeframe": "M15",
+      "zone_low": 4364.052,
+      "zone_high": 4369.142,
+      "role": "mapped_important",
+      "label": "ny_reaction_shelf",
+      "calculation_method": "operator_mapped"
+    },
+    {
+      "level_id": "M15_MAPPED_4369",
+      "timeframe": "M15",
+      "zone_low": 4369.276,
+      "zone_high": 4369.276,
+      "role": "mapped_important",
+      "label": "chart_yellow_magnet",
+      "calculation_method": "operator_mapped"
+    },
+    {
+      "level_id": "H4_MAPPED_4376",
+      "timeframe": "H4",
+      "zone_low": 4376.0,
+      "zone_high": 4376.0,
+      "role": "mapped_important",
+      "label": "chart_dashed_mid",
+      "calculation_method": "operator_mapped"
+    },
+    {
+      "level_id": "H4_MAPPED_4382",
+      "timeframe": "H4",
+      "zone_low": 4380.66,
+      "zone_high": 4383.848,
+      "role": "mapped_important",
+      "label": "chart_dashed_plus_h4_low",
+      "calculation_method": "operator_mapped"
+    },
+    {
+      "level_id": "M15_MAPPED_4395",
+      "timeframe": "M15",
+      "zone_low": 4393.05,
+      "zone_high": 4396.768,
+      "role": "mapped_important",
+      "label": "m15_resistance_cluster",
+      "calculation_method": "operator_mapped"
+    },
+    {
+      "level_id": "H4_MAPPED_4407",
+      "timeframe": "H4",
+      "zone_low": 4406.446,
+      "zone_high": 4408.455,
+      "role": "mapped_important",
+      "label": "d1_pivot_shelf",
+      "calculation_method": "operator_mapped"
+    }
+  ]
+}

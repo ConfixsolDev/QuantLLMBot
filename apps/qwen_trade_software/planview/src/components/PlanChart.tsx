@@ -17,6 +17,7 @@ import type {
   SessionPlan,
   TradeIdea,
   TradeIdeaStack,
+  Snapshot,
 } from "@/lib/types";
 import { SessionRibbon } from "@/components/SessionRibbon";
 import { describeLayerStatus } from "@/lib/translate";
@@ -33,6 +34,7 @@ interface PlanChartProps {
   dayPlan: DayPlan | null;
   sessionPlan: SessionPlan | null;
   tradeIdea: TradeIdea | null;
+  profitProtection?: Snapshot["profit_protection"];
   tradeIdeaStack: TradeIdeaStack | null;
   hourlyUpdates: HourlyUpdate[];
   selectedHourlyId: string | null;
@@ -51,6 +53,7 @@ export function PlanChart({
   dayPlan,
   sessionPlan,
   tradeIdea,
+  profitProtection,
   tradeIdeaStack,
   hourlyUpdates,
   selectedHourlyId,
@@ -253,6 +256,25 @@ export function PlanChart({
     addIdeaLine(plan.take_profit, "Paper TP", "#22c55e", LineStyle.Dashed);
   }, [tradeIdea, timeframe]);
 
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+    const lines: IPriceLine[] = [];
+    const add = (price: number | null | undefined, title: string, color: string) => {
+      if (typeof price !== "number" || !Number.isFinite(price)) return;
+      lines.push(series.createPriceLine({
+        price, title, color, lineWidth: 2, lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+      }));
+    };
+    if (profitProtection?.ticket) {
+      add(profitProtection.entry, "Open entry", "#38bdf8");
+      add(profitProtection.peak, "MFE peak", "#a78bfa");
+      add(profitProtection.candidate_stop, "Protected floor", "#f59e0b");
+    }
+    return () => { for (const line of lines) series.removePriceLine(line); };
+  }, [profitProtection]);
+
   const h4 = tradeIdeaStack?.h4;
   const lv = tradeIdeaStack?.layer_validation;
   const selectedHour = hourlyUpdates.find((u) => u.hourly_id === selectedHourlyId);
@@ -273,6 +295,11 @@ export function PlanChart({
           <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">
             Chart · {timeframe}
           </h2>
+          {profitProtection?.ticket ? (
+            <span className="rounded border border-amber-700 bg-amber-950/30 px-2 py-0.5 text-xs font-semibold text-amber-200">
+              Protection {profitProtection.state || "watching"} · {Number(profitProtection.progress_r || 0).toFixed(2)}R · locked ${Number(profitProtection.locked_cash || 0).toFixed(2)}
+            </span>
+          ) : null}
           <span className={`rounded border px-2 py-0.5 text-xs font-semibold ${deviceTone}`}>
             Model on {device}
           </span>

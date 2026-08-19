@@ -32,26 +32,26 @@ from pathlib import Path
 import MetaTrader5 as mt5
 
 from market_context_cache import DEFAULT_STORE_ROOT, model_generation_lock
+from runtime_config import ACTIVE_QWEN_MODEL, DEFAULT_QWEN_MODEL
 
 
 # Model version. See model_training/CURRICULUM_AND_DATA_PREP.md 3.0.
 #
-# v005 is the 2026-08-17 retrain on curriculum v9 + Phase 4 regime pack (789
-# aligned rows). It replaces v004, which emitted confidence=0 on every live
-# ready. Holdout: direction 100%, action 90%; live still needs 51+ to fill.
+# v004 is the active rollback target. v005's live behavior was not acceptable:
+# it emitted zero confidence and required an unsafe runtime floor to trade.
 #
 # Switching model invalidates the qualification certificate (keyed on
 # model_digest). The cache child still starts with --no-qwen, but it now
 # flushes the stale certificate and runs one qualifying cycle automatically.
 # Manual fallback if that cycle fails repeatedly:
 #
-#     ollama list | grep qwen-trading-v005
+#     ollama list | grep qwen-trading-v004
 #     py -3 market_context_cache.py --once
 #
-# QWEN_MODEL overrides without a code edit; market_context_cache.py reads the
-# same variable and the two MUST match or the digest check fails every cycle.
-DEFAULT_MODEL = "qwen-trading-v005:latest"
-MODEL = os.environ.get("QWEN_MODEL", DEFAULT_MODEL)
+# runtime_config is the single source of truth. The cache and all model callers
+# import the same resolved value, so promotion requires one constant change.
+DEFAULT_MODEL = DEFAULT_QWEN_MODEL  # compatibility for existing imports
+MODEL = ACTIVE_QWEN_MODEL
 OLLAMA_GENERATE = "http://127.0.0.1:11434/api/generate"
 OLLAMA_PS = "http://127.0.0.1:11434/api/ps"
 
@@ -108,6 +108,7 @@ DEFAULT_TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 # /snapshot shape the GoldFlow Plan View frontend already expects.
 ENTRY_STATE_FILE = APP_DIR / "entry-dashboard-state.json"
 MANAGEMENT_STATE_FILE = APP_DIR / "management-dashboard-state.json"
+PROTECTION_STATE_FILE = APP_DIR / "profit-protection-state.json"
 PLANNER_STATE_FILE = APP_DIR / "planner-state.json"
 
 DEFAULT_ENTRY_QWEN_STATE = {
@@ -459,6 +460,12 @@ def mt5_quote_is_fresh(
     if not initialized:
         return False, f"mt5_unavailable:{mt5.last_error()}"
     try:
+        # A newly attached process can receive the terminal's last cached tick
+        # for a symbol that is not selected, even while the cache process has
+        # a live subscription.  Explicit selection requests a current stream
+        # before freshness is judged.
+        if not mt5.symbol_select(symbol, True):
+            return False, f"mt5_symbol_select_failed:{mt5.last_error()}"
         tick = mt5.symbol_info_tick(symbol)
         if tick is None or int(getattr(tick, "time_msc", 0) or 0) <= 0:
             return False, "mt5_no_tick"

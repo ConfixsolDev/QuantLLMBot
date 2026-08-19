@@ -58,6 +58,10 @@ DECISION_MODULES = (
     "paper_runner.py",
     "reviewer.py",
     "trade_management.py",
+    "profit_protection.py",
+      "profit_protection_policy.py",
+      "regime_engine.py",
+      "regime_policy.py",
     "session_planner.py",
     "plan_ladder.py",
     "plan_branches.py",
@@ -216,7 +220,11 @@ def compute() -> dict:
         import review_shared
         model = getattr(review_shared, "MODEL", None) or "unresolved"
     except Exception:
-        model = os.environ.get("QWEN_MODEL") or "unresolved:import_failed"
+        try:
+            from runtime_config import ACTIVE_QWEN_MODEL
+            model = ACTIVE_QWEN_MODEL
+        except Exception:
+            model = "unresolved:import_failed"
 
     try:
         import market_context_cache

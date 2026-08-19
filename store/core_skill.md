@@ -61,6 +61,13 @@ higher-timeframe candle, a fast move can be that candle completing rather than
 a new trend — judge the response after the close, from location plus one
 independent evidence, never one M1 wick.
 
+Do not require candle-direction alignment across every timeframe. A lower
+timeframe moving against the owning timeframe is often the pullback that brings
+price into the planned zone. Read the relationship: the owning timeframe sets
+the thesis, intermediate candles describe continuation versus pullback, and M1
+times where that pullback fails. Lower-timeframe disagreement becomes a veto
+only after accepted failure of the named invalidation on its owning timeframe.
+
 ## [SR-rules] Support, resistance, freshness
 
 Map H4/H1/M30/M15/M5/M1 historical highs, lows and wick zones; levels are
@@ -191,7 +198,8 @@ Trade finding is three steps (not context→open):
 2. Hunt — while price is outside the hunt band, wait with
    missing_fact=at_entry_location. Do not sell the structure low or buy the
    high because side is correct. Optional challenger may only force wait/revise.
-3. Arm — price inside the band, then closed M5 (preferred) / M1 timing, then
+3. Arm — price inside the band, then closed M1 failure timing; M5 response is
+   optional strength evidence, then
    invalidation still valid → ready. Otherwise keep waiting.
 
 ## [entry-buy] Buy entry

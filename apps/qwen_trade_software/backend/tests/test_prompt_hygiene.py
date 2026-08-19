@@ -90,6 +90,13 @@ def test_version_marker_is_still_parseable_from_raw():
     assert re.search(r"<!--\s*version:\s*[0-9]+\.[0-9]+", raw)
 
 
+def test_live_entry_contract_uses_one_direction_not_dual_assessment():
+    body = load_section("qwen_cached_entry").lower()
+    assert "return exactly one conclusion: buy, sell, or\nwait" in body
+    assert "both sides before deciding" not in body
+    assert "build one directional assessment rather than separate long and short" in body
+
+
 def test_live_entry_contract_has_no_prohibition_wall():
     """v1.9's nine-item prohibition list zeroed the confidence distribution.
 

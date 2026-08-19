@@ -47,6 +47,7 @@ from review_shared import (
     DEFAULT_MANAGEMENT_STATE,
     LOG_DIR,
     MANAGEMENT_STATE_FILE,
+    PROTECTION_STATE_FILE,
     MODEL,
     QWEN_MAGIC,
     STORE_ROOT,
@@ -106,6 +107,17 @@ EXECUTION_MONITOR_BY_ID: dict[str, dict] = {}
 # file changes at midnight, which naturally resets the offset to 0 for the
 # new day's file.
 PAPER_EXECUTION_TAIL_STATE = {"path": None, "offset": 0}
+
+# ── Mechanical trailing stop (30s management cycle) ─────────────────────
+# Mirrors paper_executor.py's tick-level trailing stop but runs on the 30s
+# management cadence.  This is the ONLY profit protection for the entire
+# lifetime of the position after the executor's monitor loop exits.
+#
+# The thresholds match paper_executor.py so there is a single, consistent
+# profit-protection policy across both phases.
+
+# Peak favorable price move tracked per ticket across management cycles.
+# Cleared by reconcile_position_state when the position closes.
 
 _LOG_HANDLER = process_logging.configure(
     LOG_DIR / "trade-management.log", owner="trade_management"
@@ -462,7 +474,7 @@ def today_basket_summary(now: datetime) -> dict:
     }
 
 
-def update_dashboard(positions, levels_by_symbol, today, review=None) -> None:
+def update_dashboard(positions, levels_by_symbol, today, review=None, protection=None) -> None:
     """Write this process's own dashboard-state file.
 
     Reads the file back first (rather than starting from
@@ -509,6 +521,7 @@ def update_dashboard(positions, levels_by_symbol, today, review=None) -> None:
                 "win_rate": today["win_rate"],
             },
             "context_cache": latest_readiness(symbol),
+            "profit_protection": protection or read_json_safe(PROTECTION_STATE_FILE, {}),
         }
     )
     if review:
@@ -952,7 +965,8 @@ def rebracket_if_needed(position, levels_by_symbol: dict) -> None:
         is_buy = position.type == mt5.POSITION_TYPE_BUY
         stop_px = stop_px - buffer_amount if is_buy else stop_px + buffer_amount
 
-    # 2026-08-10 INCIDENT -- this correction may only ADD room, never remove it.
+    # The executor now places the immutable planned invalidation at the broker
+    # before the position exists. Once filled, this path must never add risk.
     #
     # Observed live within minutes of wiring Stage 3:
     #   19:02:42  entry bracket stop 4316.369, beyond H1_PREVIOUS_LOW, 8.84 away
@@ -977,11 +991,11 @@ def rebracket_if_needed(position, levels_by_symbol: dict) -> None:
     # target supplied) every 30s until it closed.
     stop_already_adequate = False
     target_already_adequate = False
-    if stop_px is not None and current_sl:
-        # Room = distance from entry to stop. Keep whichever is larger.
-        if abs(float(position.price_open) - stop_px) <= abs(float(position.price_open) - current_sl):
-            stop_px = None  # existing stop already has at least as much room
-            stop_already_adequate = True
+    if current_sl:
+        # A live SL is the accepted entry invalidation. The initial correction
+        # may add a missing SL, but may never replace one with a wider stop.
+        stop_px = None
+        stop_already_adequate = True
     if target_px is not None and current_tp:
         # Never pull the target closer than the one the entry was built on.
         if is_buy and target_px <= current_tp:
@@ -1180,6 +1194,7 @@ def review_positions() -> None:
         rebracket_if_needed(positions[0], levels_by_symbol)
     except Exception:
         logging.exception("rebracket:failed")
+
     position = positions[0]
     entry = active_entry_context(position)
     if not entry or entry["plan"].get("status") != "ready":
@@ -1220,6 +1235,17 @@ def review_positions() -> None:
         prior_management=recent_management_history(int(position.ticket)),
         regime_context=regime,
     )
+    protection = read_json_safe(PROTECTION_STATE_FILE, {})
+    if int(protection.get("ticket") or 0) != int(position.ticket):
+        protection = {}
+    facts["profit_protection"] = protection
+    candidate_stop = protection.get("candidate_stop")
+    if protection.get("armed") and candidate_stop is not None:
+        facts["level_references"]["profit_protection_floor"] = {
+            "level_id": "PROFIT_PROTECTION_FLOOR",
+            "price": float(candidate_stop),
+            "source": "deterministic_mfe_atr_worker",
+        }
     latest_management_candle = facts.get("latest_completed_m1")
     if not latest_management_candle:
         raise RuntimeError("No completed M1 candle is available for management.")
@@ -1335,7 +1361,7 @@ def review_positions() -> None:
             )
     except Exception:
         logging.exception("qualified_levels:remember_failed")
-    update_dashboard(positions, levels_by_symbol, today, parsed_review)
+    update_dashboard(positions, levels_by_symbol, today, parsed_review, protection)
     applications = []
     response_age_seconds = time.monotonic() - cycle_started
     close_results = []

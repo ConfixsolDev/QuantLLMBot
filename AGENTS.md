@@ -15,6 +15,8 @@
 
 4. **Live doctrine** → `store/core_skill.md` + `store/sop.md` (improve, don’t inflate).
 
-## Three-part system
+## Sole architecture authority
 
-See [`SYSTEM_THREE_PARTS.md`](SYSTEM_THREE_PARTS.md): tick data · skill (store) · code.
+Use only [`XAUUSD_SYSTEM_ARCHITECTURE_V2.md`](XAUUSD_SYSTEM_ARCHITECTURE_V2.md).
+It is the protected V2 architecture and must be improved in place, never
+replaced by another architecture document.

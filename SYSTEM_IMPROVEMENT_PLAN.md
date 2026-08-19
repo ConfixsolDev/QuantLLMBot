@@ -326,7 +326,7 @@
 
 ## Sequencing (Revised 2026-08-17 — regime detection is the foundation)
 
-**Why revised:** Dry run of today's 9 trades proved Piece 2 (thesis-timeframe matching) would have made things WORSE in a ranging market (-$1,117 vs guard's -$21). The market was ranging for trades 1-5, transitioning for trades 6-7, and trending up for trades 8-9. The system needs regime detection BEFORE guard changes. See REGIME_AWARE_ARCHITECTURE.md for full design.
+**Why revised:** Dry run of today's 9 trades proved Piece 2 (thesis-timeframe matching) would have made things WORSE in a ranging market (-$1,117 vs guard's -$21). The market was ranging for trades 1-5, transitioning for trades 6-7, and trending up for trades 8-9. The system needs regime detection BEFORE guard changes. See `XAUUSD_SYSTEM_ARCHITECTURE_V2.md`, the sole active architecture, for the governing design.
 
 ```
 FOUNDATION (Week 1, Aug 17-20):

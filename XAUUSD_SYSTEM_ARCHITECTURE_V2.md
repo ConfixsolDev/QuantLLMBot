@@ -1,7 +1,83 @@
 # XAUUSD Quantitative Trading System — Complete Architecture V2
-**Date:** 2026-08-17 | **Branch:** `feat/decision-layer-stage1-2`  
-**Model:** qwen-trading-v005 (Qwen 7B fine-tuned) on Ollama, GPU inference ~17s  
+
+> **SOLE ACTIVE ARCHITECTURE DOCUMENT — DO NOT OVERRIDE OR REPLACE.**
+> Improve this file in place, preserve its V2 identity, and record material
+> revisions in version control. Any other design, audit, research, or flow
+> document is supporting evidence only and cannot redefine the live architecture.
+
+**Architecture authority:** V2
+
+**Original date:** 2026-08-17 | **Confirmed active:** 2026-08-19
+
+**Model selection:** the single `DEFAULT_QWEN_MODEL` constant in `apps/qwen_trade_software/backend/runtime_config.py`
+
 **Broker:** MetaTrader 5 demo account | **Instrument:** XAUUSD (Gold)
+
+---
+
+## Authority and System Ownership
+
+This is the only active system-architecture document. The system has three
+owned parts:
+
+1. **Evidence:** immutable observations under `model_training/tick_data/`.
+2. **Trading doctrine:** the lean live prompt sources `store/core_skill.md` and
+   `store/sop.md`; they define trading judgment but do not redefine component
+   ownership or runtime flow.
+3. **Live code:** `apps/qwen_trade_software/`; code owns validation, risk,
+   execution, reconciliation, and safety invariants.
+
+Training and curriculum process remains governed exclusively by
+`model_training/CURRICULUM_AND_DATA_PREP.md`. Research reports and audits may
+challenge this architecture with evidence, but a proposed change becomes active
+only when this V2 document and the corresponding tested code are revised
+together.
+
+### Directional-bias invariant
+
+The strategy maintains one directional conclusion for each opportunity:
+`buy`, `sell`, or `wait`. The model may inspect evidence on both sides to avoid
+confirmation bias, but it must not output a dual-direction trade assessment.
+Only the committed directional bias can produce an execution plan. `wait` is a
+valid conclusion when location or closed-candle validation is absent.
+
+Directional bias is hierarchical, not a vote requiring identical candle
+direction on every timeframe. The owning timeframe defines the thesis;
+counter-direction movement on M15/M5/M1 may be the pullback into its planned
+zone. That pullback becomes contradiction only after accepted failure of the
+named invalidation on its owning timeframe.
+
+### Canonical four-phase trading lifecycle
+
+These phases are sequential and have distinct owners. A later phase may not
+silently redo an earlier phase's job.
+
+1. **Build and cache context.** A fresh Qwen session reads the immutable
+   D1/H4/H1 evidence, locates the parent auction, and produces one directional
+   conclusion: `buy`, `sell`, or `wait`. The resulting context is cached for
+   the session and refreshed only when its evidence epoch changes.
+2. **Map and remember the target zone.** The reviewer converts the committed
+   bias into one structurally identified zone and the runtime persists its
+   lifecycle. A zone is a location to observe, never an order by itself.
+3. **Qualify the entry at the zone.** Code requires price inside the zone, a
+   completed M1 probe-and-failure response in the planned direction, and price
+   at the plan's optimal zone edge. Direction, zone, target and structural
+   invalidation must already be fixed before M1 can trigger. M5 is the local
+   map and optional strength evidence, not a routine second confirmation that
+   delays entry until the move is exhausted. BOS/CHoCH, liquidity sweep, FVG
+   and Fibonacci/OTE location remain supporting confluence, not standalone
+   triggers. Only then may the executor submit the order.
+4. **Protect the accepted trade.** Entry uses the planned structural
+   invalidation as the broker SL and sizes volume from the configured risk
+   budget. After fill, the trade reviewer manages level-to-level using closed
+   M5/M15 evidence: close immediately when the immutable idea is confirmed
+   invalid, tighten SL only behind newly formed structure, and extend TP only
+   after confirmed continuation. It must never widen the stop, increase entry
+   risk, average, reverse, or use profit/points as an exit shortcut.
+
+The runtime, rather than the model, enforces every safety invariant in phases
+3 and 4. Qwen supplies contextual judgment and named-level decisions; broker
+state and deterministic validation remain authoritative.
 
 ---
 
@@ -129,9 +205,10 @@ except (TimeoutError, OllamaError):
 ### P11 — No LTF Structural Confirmation Before Entry
 **Component:** `paper_executor.py` → entry fill logic  
 **Severity:** MEDIUM — entries fill on first tick inside zone  
+**Status:** RESOLVED — 2026-08-19
 **Evidence:** Once Qwen says "ready" and price enters `inside_zone`, the executor fills immediately. No requirement for a rejection candle, CHoCH, or any structural proof that the zone is holding.  
-**Root cause:** The entry flow is: Qwen direction → inside_zone price → fill. The "Arm" step in core_skill.md describes "closed M5 (preferred) / M1 timing" but this is expressed as doctrine for Qwen to reason about, not enforced in code. `m1_failure_at_zone()` exists in `live_mapped_levels.py` but isn't wired into the entry gate.  
-**Fix path:** Wire `m1_failure_at_zone()` as an entry gate. After Qwen says ready and price is inside_zone, require a completed M1 that probed the zone and failed to close beyond it.
+**Root cause:** The entry flow was Qwen direction → inside_zone price → fill; the doctrine's lower-timeframe failure test was not enforced in code.
+**Resolution:** `m1_failure_at_zone()` is now a deterministic entry gate. After Qwen says ready and price reaches the optimal edge inside the approved zone, the executor requires a completed M1 probe that failed to close through the zone. M5 remains local-map and optional strength evidence rather than a routine delay.
 
 ---
 

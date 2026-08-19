@@ -15,15 +15,22 @@ import build_manifest
 import process_logging
 import paper_executor
 import trade_geometry
+from trade_step_log import log_step
 from market_context_cache import latest_entry_context
 
 
 APP_DIR = Path(__file__).resolve().parent
 LOG_DIR = APP_DIR / "logs"
 LOG_FILE = LOG_DIR / "paper-runner.log"
-DAILY_PAPER_CAP = 100
+DAILY_PAPER_CAP = 25
 MIN_ENTRY_CONFIDENCE = 51
 MAX_PROPOSAL_AGE_SECONDS = 60
+# ── Daily loss cap ───────────────────────────────────────────────────────
+# 2026-08-18: Aug 10 lost $1,034 across 43 trades. A daily loss limit
+# stops the bleeding before one bad session destroys a week of gains.
+# When cumulative realized P&L for the day crosses this threshold,
+# all new entries are blocked until the next trading day.
+DAILY_LOSS_CAP_DOLLARS = -2000.0
 PROPOSAL_POLL_SECONDS = 0.25
 # Cool down after EVERY completed trade, win or loss.
 #
@@ -138,6 +145,33 @@ def broker_filled_today() -> int:
         mt5.shutdown()
 
 
+def daily_realized_pnl() -> float:
+    """Sum of net_pnl from today's closed trades in paper-executions log."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    total = 0.0
+    for path in _dated_log_files("paper-executions"):
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("event") != "mt5_execution_closed":
+                    continue
+                created = str(event.get("created_at_utc", ""))[:10]
+                if created != today:
+                    continue
+                pnl = event.get("net_pnl") or event.get("gross_pnl")
+                if pnl is not None:
+                    try:
+                        total += float(pnl)
+                    except (TypeError, ValueError):
+                        pass
+        except Exception:
+            pass
+    return total
+
+
 def latest_ready_proposal():
     files = _dated_log_files("paper-proposals")
     if not files:
@@ -154,13 +188,17 @@ def latest_ready_proposal():
             except (KeyError, TypeError, ValueError):
                 continue
             age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
-            if age_seconds < 0 or age_seconds > MAX_PROPOSAL_AGE_SECONDS:
+            plan = proposal.get("qwen", {}).get("execution_plan", {})
+            try:
+                ttl = min(MAX_PROPOSAL_AGE_SECONDS, max(5, int(plan.get("signal_ttl_seconds") or MAX_PROPOSAL_AGE_SECONDS)))
+            except (TypeError, ValueError):
+                ttl = MAX_PROPOSAL_AGE_SECONDS
+            if age_seconds < 0 or age_seconds > ttl:
                 # Proposals are read newest-first within a file; once one is
                 # too old, everything earlier in this file is too, but a
                 # second (older) file may still hold nothing usable either,
                 # so just move on rather than stopping the whole search.
                 continue
-            plan = proposal.get("qwen", {}).get("execution_plan", {})
             if plan.get("status") == "ready" and proposal.get("proposal_id") not in done:
                 return proposal
     return None
@@ -182,6 +220,18 @@ def arguments_for(proposal: dict) -> Namespace:
         )
     except (TypeError, ValueError):
         manage_tp = float(plan["take_profit"])
+    # Optimal entry price from zone-edge analysis. Buy = zone low, sell =
+    # zone high. The executor uses this as a price gate: it won't fill until
+    # price reaches within tolerance of this level.
+    try:
+        optimal_entry = float(plan["optimal_entry_price"])
+    except (KeyError, TypeError, ValueError):
+        # Fallback: use zone edge for the side.
+        optimal_entry = (
+            float(plan["entry_low"]) if plan["side"] == "buy"
+            else float(plan["entry_high"])
+        )
+
     return Namespace(
         proposal_id=proposal["proposal_id"],
         symbol=proposal["symbol"],
@@ -192,9 +242,13 @@ def arguments_for(proposal: dict) -> Namespace:
         take_profit=float(plan["take_profit"]),
         management_reference_sl=manage_sl,
         management_reference_tp=manage_tp,
+        optimal_entry_price=optimal_entry,
         buckets=1,
         volume=float(plan["volume_each"]),
-        signal_ttl_seconds=MAX_PROPOSAL_AGE_SECONDS,
+        signal_ttl_seconds=int(plan.get("signal_ttl_seconds") or MAX_PROPOSAL_AGE_SECONDS),
+        risk_budget=float(plan.get("risk_budget") or 150.0),
+        regime_state=plan.get("regime_state"),
+        volatility_state=plan.get("volatility_state"),
         maximum_tick_age_ms=3000,
         poll_ms=250,
         stop_price_distance=float(plan.get("stop_price_distance") or 3.0),
@@ -289,6 +343,16 @@ def cooldown_for(result: dict) -> tuple[int, str]:
     try:
         net = float(net)
     except (TypeError, ValueError):
+        return 0, ""
+    # A broker SL is also the execution mechanism for the deterministic
+    # profit-protection floor.  When that tightened stop closes above net
+    # break-even it is a successful protected exit, not a loss and not a
+    # reason to suppress the next independent zone opportunity.
+    close_comments = result.get("close_comments") or []
+    positive_sl = net > 0 and any(
+        "[sl" in str(comment).lower() for comment in close_comments
+    )
+    if positive_sl:
         return 0, ""
     if net < 0:
         return LOSS_COOLDOWN_SECONDS, "Loss"
@@ -427,6 +491,19 @@ def run_loop() -> None:
             )
             time.sleep(60)
             continue
+        # Daily loss circuit breaker: stop trading when cumulative losses
+        # exceed the cap. Prevents catastrophic days like Aug 10 (-$1,034).
+        try:
+            day_pnl = daily_realized_pnl()
+            if day_pnl <= DAILY_LOSS_CAP_DOLLARS:
+                logging.warning(
+                    "DAILY LOSS CAP hit: $%.2f <= $%.2f — blocking all new entries",
+                    day_pnl, DAILY_LOSS_CAP_DOLLARS,
+                )
+                time.sleep(300)  # re-check every 5 minutes
+                continue
+        except Exception:
+            logging.debug("daily_realized_pnl check failed", exc_info=True)
         proposal = latest_ready_proposal()
         if proposal is None:
             time.sleep(PROPOSAL_POLL_SECONDS)
@@ -439,6 +516,8 @@ def run_loop() -> None:
                 "entry_runtime_validation_failed",
                 failures=runtime_failures,
             )
+            log_step("runtime_validation", "blocked", proposal_id=proposal_id,
+                     detail=runtime_failures)
             logging.info(
                 "Skipped proposal %s runtime_failures=%s",
                 proposal_id,
@@ -446,6 +525,7 @@ def run_loop() -> None:
             )
             time.sleep(PROPOSAL_POLL_SECONDS)
             continue
+        log_step("runtime_validation", "passed", proposal_id=proposal["proposal_id"])
         if has_open_qwen_position():
             logging.info("Single-position gate blocked a new proposal")
             time.sleep(1)

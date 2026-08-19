@@ -57,7 +57,7 @@ QUALIFICATION_PROMPTS = (
 
 # The hash every certificate currently on disk is bound to.
 KNOWN_CERTIFICATE_HASH = (
-    "sha256:aa0f5f0c2d5fdabc5fcd6f8ec944dcd00610e851eeb52e5c65dd9d2a1e302f35"
+    "sha256:eace52ec9a2d8e69bdf86a29a3cd249e07f9e38b41e0081307bda826c7d0d3ba"
 )
 
 

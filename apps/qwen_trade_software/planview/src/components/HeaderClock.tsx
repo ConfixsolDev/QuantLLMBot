@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { Clock, RuntimeStatus } from "@/lib/types";
 import { SESSION_LABELS } from "@/lib/types";
+import { useHideLowConfidence } from "@/lib/hideLowConfidence";
 
 function countdown(nextBoundaryUtc: string): string {
   const target = new Date(nextBoundaryUtc).getTime();
@@ -68,6 +69,7 @@ export function HeaderClock({
     return () => clearInterval(timer);
   }, [clock.next_boundary_utc]);
 
+  const { hideLowConfidence, setHideLowConfidence } = useHideLowConfidence();
   const device = runtime?.model_device || "unloaded";
   const modelOk =
     runtime == null ? null : Boolean(runtime.model_resident || runtime.model_installed);
@@ -101,11 +103,19 @@ export function HeaderClock({
           label="Planner"
           detail={plannerStatus}
         />
+        <label className="ml-auto flex items-center gap-2 text-xs text-slate-300">
+          <input
+            type="checkbox"
+            checked={hideLowConfidence}
+            onChange={(e) => setHideLowConfidence(e.target.checked)}
+          />
+          Hide low confidence (≤50%)
+        </label>
         <Link
           href="/ideas/"
           className="rounded bg-gold px-2.5 py-0.5 text-xs font-semibold text-ink hover:brightness-110"
         >
-          Trade ideas &gt;50%
+          Trade ideas
         </Link>
       </div>
 
