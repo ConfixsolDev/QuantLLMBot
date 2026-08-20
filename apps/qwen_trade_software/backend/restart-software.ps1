@@ -32,7 +32,7 @@ $backendRoot = "E:\QuantLLMBot\apps\qwen_trade_software\backend"
 $starter = Join-Path $backendRoot "start-reviewer.ps1"
 $dashboardHealth = "http://127.0.0.1:48632/snapshot"
 
-$pyPattern = "software_runtime\.py|reviewer\.py|trade_management\.py|profit_protection\.py|market_context_cache\.py|paper_runner\.py|session_planner\.py"
+$pyPattern = "software_runtime\.py|reviewer\.py|trade_management\.py|profit_protection\.py|market_context_cache\.py|market_memory_worker\.py|paper_runner\.py|session_planner\.py"
 
 function Stop-MatchingProcesses {
     param([string]$Label, [scriptblock]$Filter)

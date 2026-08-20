@@ -349,6 +349,10 @@ export interface MarketIntelligence {
   dxy?: { broker_symbol?: string | null; states?: Record<string, { status?: string; direction?: string }> };
   relationship?: { state?: string; gold_pressure?: string; doctrine?: string };
   recent_retrievals?: RetrievalAudit[];
+  worker_health?: {
+    status?: string; updated_at_epoch?: number; replayed_events?: number;
+    inserted_total?: number; dxy_broker_symbol?: string | null;
+  };
 }
 
 export interface QwenTrace {

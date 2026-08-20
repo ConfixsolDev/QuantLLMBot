@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -84,6 +85,32 @@ class MarketIntelligenceService:
         return {"status": snap.get("status", "starting"), "hierarchy": hierarchy,
                 "dxy": snap.get("dxy", {}), "relationship": snap.get("relationship", {}),
                 "recent_transitions": (snap.get("recent_transitions") or [])[-4:]}
+
+    def refresh_snapshot(self, symbol: str) -> dict:
+        """Load worker-owned projections without collecting any market data."""
+        hierarchy = self.store.projections(symbol)
+        dxy_states = self.store.projections("DXY")
+        relation = relationship_state(
+            hierarchy.get("H1") or {}, dxy_states.get("H1") or {}
+        )
+        worker_health = {}
+        health_path = self.store.path.parent / "market-memory-health.json"
+        try:
+            worker_health = json.loads(health_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            worker_health = {"status": "unavailable"}
+        self.last_snapshot = {
+            "status": "ready" if hierarchy else "starting",
+            "symbol": symbol,
+            "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "hierarchy": hierarchy,
+            "dxy": {"states": dxy_states},
+            "relationship": relation,
+            "recent_transitions": self.store.events(symbol, limit=6),
+            "recent_retrievals": self.store.recent_retrievals(6),
+            "worker_health": worker_health,
+        }
+        return self.compact_snapshot()
 
     def retrieve(self, symbol: str, requests: list[dict]) -> list[dict]:
         results = self.retrieval.execute(symbol, requests)

@@ -74,6 +74,8 @@ DECISION_MODULES = (
     "market_intelligence/cross_market.py",
     "market_intelligence/retrieval.py",
     "market_intelligence/service.py",
+    "market_intelligence/collector.py",
+    "market_memory_worker.py",
     "instrument_config.py",
     "market_runtime.py",
     "prompt_composer.py",

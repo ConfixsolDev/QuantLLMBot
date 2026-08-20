@@ -26,6 +26,8 @@ class IntelligenceStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA busy_timeout=5000")
         self.lock = threading.RLock()
         self._schema()
 
@@ -135,6 +137,13 @@ class IntelligenceStore:
         ).fetchall()
         return {row["timeframe"]: self.projection(symbol, row["timeframe"]) for row in rows}
 
+    def last_event_id(self, symbol: str, timeframe: str) -> str | None:
+        row = self.db.execute(
+            "SELECT last_event_id FROM structure_projections WHERE symbol=? AND timeframe=?",
+            (symbol, timeframe),
+        ).fetchone()
+        return str(row["last_event_id"]) if row and row["last_event_id"] else None
+
     def record_retrieval(self, request_id: str, symbol: str, request: dict, result: dict, status: str) -> None:
         with self.lock, self.db:
             self.db.execute(
@@ -156,7 +165,11 @@ class IntelligenceStore:
     def rebuild(self, reducer) -> int:
         with self.lock, self.db:
             self.db.execute("DELETE FROM structure_projections")
-            rows = self.db.execute("SELECT * FROM intelligence_events ORDER BY sequence").fetchall()
+            # Backfill can discover an older candle after a newer one was
+            # already recorded. Replay must follow market time, not arrival time.
+            rows = self.db.execute(
+                "SELECT * FROM intelligence_events ORDER BY event_time_utc,sequence"
+            ).fetchall()
             states: dict[tuple[str, str], dict] = {}
             for row in rows:
                 event = {"event_id": row["event_id"], "symbol": row["symbol"],

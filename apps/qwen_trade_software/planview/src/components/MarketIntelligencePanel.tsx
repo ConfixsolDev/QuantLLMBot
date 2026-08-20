@@ -22,7 +22,7 @@ export function MarketIntelligencePanel({
           <p className="text-xs text-slate-400">Persistent structure, DXY context, evidence retrieval and model trace</p>
         </div>
         <span className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300">
-          {value(intelligence?.relationship?.state)}
+          Collector {value(intelligence?.worker_health?.status)} · {value(intelligence?.relationship?.state)}
         </span>
       </div>
 

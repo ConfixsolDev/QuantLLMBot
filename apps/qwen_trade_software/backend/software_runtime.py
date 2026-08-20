@@ -150,6 +150,7 @@ class QwenTradeSoftware:
                 "--interval",
                 "30",
             ),
+            "market_memory": ("market_memory_worker.py", "--interval", "2"),
             "paper_runner": ("paper_runner.py",),
             "session_planner": ("session_planner.py",),
         }
@@ -212,6 +213,7 @@ class QwenTradeSoftware:
             "--interval",
             "30",
         )
+        self._start_child("market_memory", "market_memory_worker.py", "--interval", "2")
         self._start_child("paper_runner", "paper_runner.py")
         self._start_child("session_planner", "session_planner.py")
         logging.info("Complete software chain is ready")

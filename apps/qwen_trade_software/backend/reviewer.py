@@ -118,6 +118,7 @@ def _intelligence_candles(symbol: str, timeframe: str, count: int) -> list[dict]
 
 
 MARKET_INTELLIGENCE = MarketIntelligenceService(INTELLIGENCE_DB, _intelligence_candles)
+MARKET_INTELLIGENCE.refresh_snapshot(PRIMARY_MARKET_SYMBOL)
 _PRIMARY_RUNTIME = _MARKET_RUNTIMES.get(PRIMARY_MARKET_SYMBOL)
 # Compatibility aliases for diagnostics/tests. Live paths resolve by symbol.
 _IDEA_MANAGER = _PRIMARY_RUNTIME.idea_manager
@@ -1074,7 +1075,10 @@ def compact_entry_facts(
         if ms.get("status") == "ok":
             packet["market_structure"] = ms
             try:
-                packet["persistent_market_memory"] = MARKET_INTELLIGENCE.observe(symbol, ms)
+                # Collection is owned by market_memory_worker.py. Qwen/reviewer
+                # only reads the durable projections and can never delay candle
+                # ingestion while inference is running.
+                packet["persistent_market_memory"] = MARKET_INTELLIGENCE.refresh_snapshot(symbol)
             except Exception:
                 logging.exception("market_intelligence:observe_failed")
                 packet["persistent_market_memory"] = {"status": "error"}
@@ -2490,7 +2494,14 @@ def build_snapshot() -> dict:
         snapshot["qwen"] = management_state["qwen_management"]
     else:
         snapshot["qwen"] = entry_state.get("qwen", dict(DEFAULT_ENTRY_QWEN_STATE))
-    snapshot["market_intelligence"] = entry_state.get("market_intelligence", {})
+    try:
+        # Dashboard memory health must remain live even while entry inference is
+        # idle or the market is closed; this is a read-only projection refresh.
+        MARKET_INTELLIGENCE.refresh_snapshot(PRIMARY_MARKET_SYMBOL)
+        snapshot["market_intelligence"] = MARKET_INTELLIGENCE.observability()
+    except Exception:
+        logging.exception("market_intelligence:snapshot_refresh_failed")
+        snapshot["market_intelligence"] = entry_state.get("market_intelligence", {})
     snapshot["qwen_trace"] = entry_state.get("qwen_trace", {})
     snapshot.pop("qwen_management", None)
     primary_symbol = str(snapshot.get("symbol") or "XAUUSDr")

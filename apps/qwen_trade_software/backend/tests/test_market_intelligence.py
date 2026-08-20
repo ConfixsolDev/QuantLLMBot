@@ -3,6 +3,7 @@ from pathlib import Path
 from market_intelligence.projection import reduce_event, relationship_state
 from market_intelligence.retrieval import RetrievalBroker
 from market_intelligence.store import IntelligenceStore
+from market_intelligence.collector import ingest_bars
 
 
 def event(symbol="XAUUSDr", timeframe="H1", direction="bullish", suffix="1"):
@@ -53,3 +54,34 @@ def test_retrieval_is_allowlisted_bounded_and_audited(tmp_path: Path):
     assert results[0]["row_count"] == 80
     assert results[1]["status"] == "rejected"
     assert len(store.recent_retrievals()) == 2
+
+
+def test_independent_collector_backfills_every_unseen_candle_in_order(tmp_path: Path):
+    store = IntelligenceStore(tmp_path / "memory.sqlite3")
+    bars = [
+        {"evidence_id": f"M1_{minute}", "open_time_utc": f"2026-08-20T10:0{minute}:00Z",
+         "close_time_utc": f"2026-08-20T10:0{minute + 1}:00Z",
+         "open": 100 + minute, "high": 102 + minute, "low": 99 + minute,
+         "close": 101 + minute, "tick_volume": 10}
+        for minute in range(4)
+    ]
+    assert ingest_bars(store, "XAUUSDr", "M1", bars) == 4
+    assert ingest_bars(store, "XAUUSDr", "M1", bars) == 0
+    events = store.events("XAUUSDr", "M1", 20)
+    assert [row["evidence_id"] for row in events] == ["M1_0", "M1_1", "M1_2", "M1_3"]
+    assert store.projection("XAUUSDr", "M1")["latest_evidence_id"] == "M1_3"
+
+
+def test_late_historical_backfill_does_not_roll_projection_backward(tmp_path: Path):
+    store = IntelligenceStore(tmp_path / "memory.sqlite3")
+    newest = [{"evidence_id": "new", "open_time_utc": "2026-08-20T10:10:00Z",
+               "close_time_utc": "2026-08-20T10:11:00Z", "open": 2, "high": 3,
+               "low": 1, "close": 2.5, "tick_volume": 10}]
+    older = [{"evidence_id": "old", "open_time_utc": "2026-08-20T10:00:00Z",
+              "close_time_utc": "2026-08-20T10:01:00Z", "open": 1, "high": 2,
+              "low": 0, "close": 1.5, "tick_volume": 10}]
+    ingest_bars(store, "XAUUSDr", "M1", newest)
+    ingest_bars(store, "XAUUSDr", "M1", older)
+    assert store.projection("XAUUSDr", "M1")["latest_evidence_id"] == "new"
+    store.rebuild(reduce_event)
+    assert store.projection("XAUUSDr", "M1")["latest_evidence_id"] == "new"
