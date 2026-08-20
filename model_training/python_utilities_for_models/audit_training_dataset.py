@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Read-only audit of stage_01–04 training curriculum."""
+"""Read-only audit of stage_01–05 curriculum and deployed-contract alignment."""
 
 from __future__ import annotations
 
 import json
 import re
+import sys
 from collections import Counter
 from pathlib import Path
 
@@ -36,9 +37,13 @@ def main() -> None:
     s2 = load("stage_02_structured_data.jsonl")
     s3 = load("stage_03_detector_definitions.jsonl")
     s4 = load("stage_04_decision_contract.jsonl")
+    s5 = load("stage_05_live_contract.jsonl")
 
     print("=== COUNTS ===")
-    print(f"principles={len(s1)} examples={len(s2)} detectors={len(s3)} contracts={len(s4)}")
+    print(
+        f"principles={len(s1)} examples={len(s2)} detectors={len(s3)} "
+        f"contracts={len(s4)} live_contracts={len(s5)}"
+    )
     print(f"topics={dict(Counter(r['topic'] for r in s2))}")
 
     sides = Counter(side(r.get("trade_decision", "")) for r in s4)
@@ -122,10 +127,13 @@ def main() -> None:
     print(f"sell_total={len(sell_ids)} weak_confirmation_language={len(weak_sell)}")
     print("weak_sell_sample=", weak_sell[:20])
 
-    readiness(s4)
+    failures = readiness(s4) + live_contract_readiness(s2, s4, s5)
+    print(f"\n  FINAL VERDICT: {'READY TO RETRAIN' if not failures else f'{len(failures)} GATE(S) FAILING'}")
+    if failures:
+        raise SystemExit(1)
 
 
-def readiness(s4: list[dict]) -> None:
+def readiness(s4: list[dict]) -> list[str]:
     """Retrain-readiness gates derived from measured live failures.
 
     Each check corresponds to a production problem, so a PASS here means the
@@ -241,7 +249,120 @@ def readiness(s4: list[dict]) -> None:
     for name, passed, detail in checks:
         print(f"  [{'PASS' if passed else 'FAIL'}] {name:34} {detail}")
     failed = [c for c in checks if not c[1]]
-    print(f"\n  VERDICT: {'READY TO RETRAIN' if not failed else f'{len(failed)} GATE(S) FAILING'}")
+    return [c[0] for c in failed]
+
+
+def live_contract_readiness(s2: list[dict], s4: list[dict], s5: list[dict]) -> list[str]:
+    """Validate stage_05 against current reviewer/manager schemas and clock facts."""
+    print("\n=== LIVE CONTRACT READINESS ===")
+    checks: list[tuple[str, bool, str]] = []
+    source_ids = [r["example_id"] for r in s4]
+    s5_source_ids = [r.get("source_example_id") for r in s5]
+    checks.append((
+        "one live row per decision row",
+        len(s2) == len(s4) == len(s5) and source_ids == s5_source_ids,
+        f"stage02={len(s2)} stage04={len(s4)} stage05={len(s5)} ordered={source_ids == s5_source_ids}",
+    ))
+
+    entry = [r for r in s5 if r.get("role") == "live_contract"]
+    management = [r for r in s5 if r.get("role") == "management"]
+    checks.append((
+        "current prompt contract versions",
+        bool(entry) and bool(management)
+        and all(r.get("contract_version") == "qwen_cached_entry:1.20" for r in entry)
+        and all(r.get("contract_version") == "qwen_trade_management:2.5" for r in management),
+        f"entry={len(entry)} management={len(management)}",
+    ))
+
+    entry_keys = {"bias", "confidence", "summary", "acknowledged_epochs", "evidence_ids", "execution_plan"}
+    plan_ready = {
+        "status", "side", "entry_low_id", "entry_high_id", "stop_level_id",
+        "target_level_id", "target_mode", "volume_each", "reason",
+    }
+    plan_wait = {"status", "reason"}
+    bad_entry = []
+    for row in entry:
+        out = row.get("expected_response") or {}
+        plan = out.get("execution_plan") or {}
+        expected_plan_keys = plan_ready if plan.get("status") == "ready" else plan_wait
+        facts = row.get("prompt_facts") or {}
+        level_ids = {x.get("id") for x in facts.get("execution_levels", [])}
+        evidence_enum = set(facts.get("citeable_evidence_ids") or ["__no_evidence__"])
+        valid_geometry = all(plan.get(k) in level_ids for k in (
+            "entry_low_id", "entry_high_id", "stop_level_id", "target_level_id"
+        )) if plan.get("status") == "ready" else True
+        requests = out.get("data_requests") or []
+        request_ok = len(requests) <= 2 and all(
+            set(req) == {"tool", "symbol", "timeframe", "count", "missing_fact", "why_needed"}
+            and req["tool"] in {"get_completed_candles", "get_structure_state", "get_structure_events", "get_dxy_state"}
+            and 1 <= req["count"] <= 80 for req in requests
+        )
+        if not (
+            frozenset(out) in {frozenset(entry_keys), frozenset(entry_keys | {"data_requests"})}
+            and out.get("bias") in {"buy", "sell", "wait"}
+            and isinstance(out.get("confidence"), int) and 1 <= out["confidence"] <= 100
+            and 1 <= len(out.get("evidence_ids") or []) <= 6
+            and set(out.get("evidence_ids") or []) <= evidence_enum
+            and set(plan) == expected_plan_keys
+            and plan.get("status") in {"ready", "wait"}
+            and (plan.get("target_mode") in {"scalp", "starter_basket", "directional_basket"}
+                 if plan.get("status") == "ready" else True)
+            and valid_geometry
+            and request_ok
+            and (not requests or plan.get("status") == "wait")
+        ):
+            bad_entry.append(row.get("example_id"))
+    checks.append(("entry schema exact", not bad_entry, f"{len(bad_entry)} offenders {bad_entry[:5]}"))
+
+    mgmt_keys = {
+        "action", "thesis_state", "decision_level_ref", "next_target_ref",
+        "confirmation_type", "confirmation_evidence_ids", "close_confirmed",
+        "regime_assessment", "summary",
+    }
+    confirmations = {
+        "none", "target_rejection_confirmed", "thesis_invalidation_confirmed",
+        "momentum_reversal_confirmed", "continuation_acceptance_confirmed",
+        "always_in_flip_confirmed", "reward_risk_inverted", "time_stop_expired",
+        "protected_profit_exit",
+    }
+    bad_mgmt = []
+    for row in management:
+        out = row.get("expected_response") or {}
+        refs = set((row.get("prompt_facts") or {}).get("level_references") or {})
+        nullable_refs_ok = all(out.get(k) is None or out.get(k) in refs for k in ("decision_level_ref", "next_target_ref"))
+        if not (
+            set(out) == mgmt_keys
+            and out.get("action") in {"hold", "protect", "close"}
+            and out.get("thesis_state") in {"valid", "weakening", "invalidated", "target_response"}
+            and out.get("confirmation_type") in confirmations
+            and out.get("regime_assessment") in {None, "range", "trend", "breakout", "exhaustion", "unknown"}
+            and nullable_refs_ok
+        ):
+            bad_mgmt.append(row.get("example_id"))
+    checks.append(("management schema exact", not bad_mgmt, f"{len(bad_mgmt)} offenders {bad_mgmt[:5]}"))
+
+    bad_clock = []
+    expected_frames = {"M15", "M30", "H1", "H4"}
+    for row in s5:
+        clock = (row.get("prompt_facts") or {}).get("candle_clock") or {}
+        frames = clock.get("frames") or {}
+        arithmetic_ok = all(
+            isinstance(v.get("elapsed_seconds"), int)
+            and isinstance(v.get("remaining_seconds"), int)
+            and v["elapsed_seconds"] + v["remaining_seconds"] == {"M15": 900, "M30": 1800, "H1": 3600, "H4": 14400}[tf]
+            and v.get("phase") in {"opening_transition", "middle", "closing_transition"}
+            for tf, v in frames.items() if tf in expected_frames
+        )
+        if not (
+            set(frames) == expected_frames and arithmetic_ok
+            and clock.get("close_hierarchy") == "M15 builds M30; M30 builds H1; H1 builds H4"
+        ):
+            bad_clock.append(row.get("example_id"))
+    checks.append(("nested candle clock exact", not bad_clock, f"{len(bad_clock)} offenders {bad_clock[:5]}"))
+
+    for name, passed, detail in checks:
+        print(f"  [{'PASS' if passed else 'FAIL'}] {name:34} {detail}")
+    return [name for name, passed, _ in checks if not passed]
 
 
 if __name__ == "__main__":

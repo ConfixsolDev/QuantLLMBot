@@ -8,7 +8,6 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
-from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -73,16 +72,21 @@ def format_principle_context(principles: List[Dict[str, Any]], topic: Optional[s
     """
     if topic is not None:
         subset = [p for p in principles if p.get("topic") == topic]
-        if subset:
-            principles = subset
+        # Never fall back to all principles when a newer topic has no stage_01
+        # row. That previously made every topic-10 example ~12.5k tokens and
+        # truncated the answer out of a 4096-token training sequence.
+        principles = subset
 
-    lines = ["# Foundational Principles for Trading Decisions\n"]
+    lines = [
+        "# Foundational Principles for Trading Decisions\n",
+        "Use named levels and completed price evidence. A closed M1 probe/failure is the execution trigger; M5 confirmation is optional strength.",
+        "Candle time is risk context: M15 builds M30, M30 builds H1, and H1 builds H4. Do not treat a forming-bar clock as confirmation.",
+    ]
     for p in principles:
         lines.append(f"## {p.get('principle_name', 'Unknown')}")
         lines.append(f"Topic: {p.get('topic', 'N/A')}")
         lines.append(f"Core Concept: {p.get('core_concept', 'N/A')}")
         lines.append(f"Foundational Rule: {p.get('foundational_rule', 'N/A')}")
-        lines.append(f"Why It Matters: {p.get('why_matters', 'N/A')}")
         lines.append("")
 
     return "\n".join(lines)
@@ -117,7 +121,7 @@ Setup: {example.get('setup', 'N/A')}
 </trade_setup>
 
 Based on the principles above and the trade setup, decide using this contract:
-Entry role: Action open|wait|skip; Direction buy|sell|none; Confidence 0-100;
+Entry role: Action open|wait|skip; Direction buy|sell|none; Confidence 1-100;
 Auction State; Skip Reason Code when skip; Target Mode; Missing Fact when wait;
 named Key Levels; Entry/SL/TP when open; Trade Reason (concept + why this side);
 Confirmation Reason (which closed candle proves the direction).
@@ -179,7 +183,7 @@ Session permission and closed-bar acceptance override pattern names."""
     conf = contract.get("confidence")
     if conf is None:
         conv = float(contract.get("conviction_score", 0.5) or 0.5)
-        conf = int(round(max(0, min(100, conv * 100))))
+        conf = int(round(max(1, min(100, conv * 100))))
         if action in ("wait", "skip"):
             conf = min(int(conf), 50)
         elif action == "open" and conf < 51:
@@ -221,7 +225,7 @@ with conditions '{summary}' → management_action={mgmt} (never average/reverse)
         is_no_trade = action in ("wait", "skip") or entry in (0, 0.0, None)
         skip_line = f"Skip Reason Code: {skip_code}" if action == "skip" and skip_code else "Skip Reason Code: none"
         miss_line = f"Missing Fact: {missing_fact}" if action == "wait" and missing_fact else "Missing Fact: none"
-        trigger_tf = contract.get("trigger_tf") or "M5"
+        trigger_tf = contract.get("trigger_tf") or "M1"
         trigger_line = f"Trigger TF: {trigger_tf}"
         side_ideas = contract.get("side_ideas")
         if isinstance(side_ideas, dict):
@@ -235,7 +239,8 @@ with conditions '{summary}' → management_action={mgmt} (never average/reverse)
             side_ideas_line = "Side Ideas: none"
         reason_line = trade_reason or summary or "Concept + location decide; entries alone do not."
         confirm_line = confirmation_reason or (
-            "Closed M5 response at the mapped zone required; M1 pins are context only."
+            "A closed M1 probe/failure at the mapped zone is the execution trigger; "
+            "closed M5 confirmation adds strength but is not mandatory."
         )
         if is_no_trade:
             trade_mgmt = f"""Key Levels: {key_levels}
@@ -338,6 +343,37 @@ def prepare_training_data(
     return training_pairs
 
 
+def prepare_live_contract_data(
+    stage_05_data: List[Dict[str, Any]],
+    start_idx: int = 0,
+    end_idx: Optional[int] = None,
+) -> List[Dict[str, str]]:
+    """Create exact JSON imitation pairs for the deployed Qwen contracts."""
+    if end_idx is None:
+        end_idx = len(stage_05_data)
+    pairs = []
+    for row in stage_05_data[start_idx:min(end_idx, len(stage_05_data))]:
+        facts = row["prompt_facts"]
+        role = row["role"]
+        instruction = (
+            f"Return only valid JSON for {row['contract_version']}. "
+            "Use only supplied IDs and facts. Candle time is risk context, not closed-price evidence. "
+            "M15 builds M30; M30 builds H1; H1 builds H4. Near a boundary, do not chase a late "
+            "move; require completed-candle confirmation and protect an open trade when its named "
+            "management condition is confirmed.\n\n"
+            + json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
+        )
+        pairs.append({
+            "instruction": instruction,
+            "response": json.dumps(row["expected_response"], ensure_ascii=False, separators=(",", ":")),
+            "example_id": row["example_id"],
+            "topic": "live_entry_contract" if role == "live_contract" else "live_management_contract",
+            "bucket": "A",
+        })
+    logger.info(f"Created {len(pairs)} exact live-contract pairs")
+    return pairs
+
+
 # ============================================================================
 # METRICS & EVALUATION
 # ============================================================================
@@ -366,7 +402,7 @@ def compute_decision_agreement(predicted: List[str], reference: List[str]) -> fl
 def extract_conviction_score(response_text: str) -> Optional[float]:
     """
     Extract conviction as 0–1 float.
-    Prefers Confidence: 0-100 (live bridge), falls back to Conviction Score.
+    Prefers Confidence: 1-100 (live bridge), falls back to Conviction Score.
     """
     try:
         if "Confidence:" in response_text:

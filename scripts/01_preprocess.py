@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 QuantLLMBot Phase 4: Preprocessing
-Load stages 01/02/04, create instruction-response pairs for training.
+Load stages 01/02/04/05, including exact deployed-contract response pairs.
 Usage: python 01_preprocess.py
 """
 
@@ -13,11 +13,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
-    STAGE_01_PATH, STAGE_02_PATH, STAGE_04_PATH, PROCESSED_DATA_PATH,
+    STAGE_01_PATH, STAGE_02_PATH, STAGE_04_PATH, STAGE_05_PATH, PROCESSED_DATA_PATH,
     pipeline_config
 )
 from utils import (
-    load_jsonl, save_jsonl, prepare_training_data, setup_logging
+    load_jsonl, save_jsonl, prepare_training_data, prepare_live_contract_data, setup_logging
 )
 
 logger = logging.getLogger(__name__)
@@ -33,11 +33,11 @@ def main():
     # STEP 1: Verify data files exist
     # ========================================================================
     logger.info("\n[STEP 1] Verifying data files...")
-    for path in [STAGE_01_PATH, STAGE_02_PATH, STAGE_04_PATH]:
+    for path in [STAGE_01_PATH, STAGE_02_PATH, STAGE_04_PATH, STAGE_05_PATH]:
         if not path.exists():
             logger.error(f"Missing required data file: {path}")
             sys.exit(1)
-        logger.info(f"  ✓ Found: {path.name}")
+        logger.info(f"  OK Found: {path.name}")
 
     # ========================================================================
     # STEP 2: Load all stages
@@ -51,6 +51,8 @@ def main():
 
     logger.info(f"  Loading stage 04 (contracts) from {STAGE_04_PATH.name}...")
     stage_04_data = load_jsonl(STAGE_04_PATH)
+    logger.info(f"  Loading stage 05 (live contracts) from {STAGE_05_PATH.name}...")
+    stage_05_data = load_jsonl(STAGE_05_PATH)
 
     # ========================================================================
     # STEP 3: Validate data alignment
@@ -62,7 +64,12 @@ def main():
             f"Will use min({len(stage_02_data)}, {len(stage_04_data)})"
         )
     aligned_count = min(len(stage_02_data), len(stage_04_data))
-    logger.info(f"  ✓ Aligned {aligned_count} records")
+    logger.info(f"  OK Aligned {aligned_count} records")
+    if len(stage_05_data) != aligned_count:
+        logger.error(
+            f"Stage 05 has {len(stage_05_data)} records; expected one per aligned stage 02/04 row ({aligned_count})."
+        )
+        sys.exit(1)
 
     # ========================================================================
     # STEP 4: Create instruction-response pairs (training data only)
@@ -73,13 +80,19 @@ def main():
         f"(Bucket A/B training data only)"
     )
 
-    training_pairs = prepare_training_data(
+    judgement_pairs = prepare_training_data(
         stage_02_data,
         stage_01_data,
         stage_04_data,
         start_idx=pipeline_config.training_lines_start,
         end_idx=pipeline_config.training_lines_end
     )
+    live_contract_pairs = prepare_live_contract_data(
+        stage_05_data,
+        start_idx=pipeline_config.training_lines_start,
+        end_idx=pipeline_config.training_lines_end,
+    )
+    training_pairs = judgement_pairs + live_contract_pairs
 
     if not training_pairs:
         logger.error("No training pairs created!")
@@ -99,7 +112,10 @@ def main():
     logger.info("PREPROCESSING COMPLETE")
     logger.info("=" * 80)
     logger.info(f"Input:  {len(stage_02_data)} total examples in stage 02")
-    logger.info(f"Output: {len(training_pairs)} instruction-response pairs")
+    logger.info(
+        f"Output: {len(training_pairs)} pairs "
+        f"({len(judgement_pairs)} judgement + {len(live_contract_pairs)} exact live-contract)"
+    )
     logger.info(f"Saved to: {PROCESSED_DATA_PATH}")
     logger.info(f"Each pair includes: instruction, response, example_id, topic, bucket")
     logger.info("\nNext step: Run 02_finetune.py to begin training")

@@ -74,6 +74,7 @@ store/_quarantine/
 # Model training large artifacts (keep scripts + docs in git)
 model_training/adapters/
 model_training/exports/
+model_training/outputs/
 model_training/datasets/*
 !model_training/datasets/README.md
 model_training/sources/books/*

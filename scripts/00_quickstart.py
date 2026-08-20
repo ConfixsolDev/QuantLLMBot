@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
-    PROJECT_ROOT, STAGE_01_PATH, STAGE_02_PATH, STAGE_04_PATH,
+    PROJECT_ROOT, STAGE_01_PATH, STAGE_02_PATH, STAGE_04_PATH, STAGE_05_PATH,
     PROCESSED_DATA_PATH, LORA_WEIGHTS_DIR, EVAL_RESULTS_PATH
 )
 from utils import setup_logging
@@ -63,6 +63,7 @@ def check_data_files():
         "Stage 01 (Principles)": STAGE_01_PATH,
         "Stage 02 (Examples)": STAGE_02_PATH,
         "Stage 04 (Contracts)": STAGE_04_PATH,
+        "Stage 05 (Exact live contracts)": STAGE_05_PATH,
     }
 
     all_exist = True

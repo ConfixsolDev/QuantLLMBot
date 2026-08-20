@@ -160,7 +160,7 @@ def s4(
         "role": role or ("entry" if is_open else action),
         "missing_fact": missing_fact,
         "structure_timeframe": frame,
-        "trigger_tf": trigger_tf or ("M5" if is_open else "M5"),
+        "trigger_tf": trigger_tf or "M1",
         "trade_reason": trade_reason,
         "confirmation_reason": confirmation_reason,
         **atr,

@@ -271,7 +271,7 @@ Skip when evidence, session permission, geometry, or risk is not acceptable.
 <!--
 MAINTAINER NOTE (outside every prompt body on purpose).
 
-2026-08-10 incident. v1.9 replaced the five-line "never fade acceptance"
+2026-08-10 correction. v1.9 replaced the five-line "never fade acceptance"
 paragraph with a nine-item prohibition list. From 06:21:50 UTC the model
 returned a zeroed confidence on every decision while still emitting a
 directional read, and trading stopped for 2h20m with no error logged.
@@ -293,7 +293,7 @@ sent to the model, so this note is not shipped as an instruction.
 -->
 
 <!-- prompt:qwen_cached_entry -->
-<!-- version: 1.17 | persistent zone lifecycle; fresh closed-M1 trigger -->
+<!-- version: 1.20 | persistent structure, DXY context, bounded retrieval -->
 Judge trade QUALITY for one paper entry in the supplied instrument from ENTRY
 FACTS only. Cache
 facts are authoritative. Use only supplied levels, candles, sessions, prices,
@@ -339,6 +339,13 @@ Quality checklist for the chosen directional bias:
 4. Zones — cite current entry, structural stop, and target level IDs.
 5. Session — trade_permitted and Asia relation must not contradict the side.
 6. Plan — if planner zones exist, prefer a zone that fits active_scenario.
+7. Candle clock — read M15/M30/H1/H4 elapsed and remaining time. Near a closing
+   transition, do not assume the forming bar will retain its current shape.
+   If entry waits into the final boundary window, require the trigger to remain
+   fresh. After rollover, reassess the first closed M1 before treating the old
+   bar's direction as continuing.
+   Respect the nesting: M15 builds M30, M30 builds H1, and H1 builds H4.
+   Simultaneous closes increase review importance, not evidence count.
 
 regime_context is Python's hint. Range uses scalp toward the opposing M5
 boundary; trend/breakout uses starter_basket toward HTF structure. Exhaustion
@@ -354,6 +361,19 @@ Score stack completeness: clear boundary plus closed response ~70; unclear
 regime or missing response ~40 and wait; aligned structural confluence can
 reach 80+. H4 theses require H4-scale invalidation and target room.
 
+persistent_market_memory is the replayable candle-to-candle state. Preserve its
+parent thesis until the owning timeframe confirms invalidation. DXY is a
+cross-market pressure input: it may strengthen, weaken, lead, conflict, or
+decouple from gold, but never overrides XAUUSD structure, location, or its
+closed execution trigger.
+
+If a precise missing fact prevents judgment, return wait plus data_requests
+with at most two allowlisted read-only requests. Each request names tool,
+symbol, timeframe, count, missing_fact, and why_needed. Request only evidence
+that could change the conclusion. The retrieval pass is final: decide from the
+returned evidence or remain wait. Never request arbitrary SQL, forming candles,
+broker mutations, or data already supplied.
+
 Return JSON only: bias buy|sell|wait; confidence 1-100 (1 means effectively
 no conviction; every assessment must still be calibrated); summary (<=120
 chars); acknowledged_epochs (copy supplied epochs exactly); evidence_ids
@@ -362,7 +382,8 @@ execution_plan: status ready|wait. Ready also needs side, entry_low_id,
 entry_high_id, stop_level_id, target_level_id, volume_each 0.5, reason,
 and target_mode scalp|starter_basket|directional_basket when regime_context
 is present.
-Wait needs only status and one concrete blocking reason.
+Wait needs only status and one concrete blocking reason. data_requests is
+optional and belongs only to a wait response.
 
 Ready when confidence 51-100, bias is buy or sell matching plan side, a named
 S/R entry zone exists, no trap above applies, the owning-timeframe thesis
@@ -440,7 +461,7 @@ citeable_evidence_ids only. Use only level IDs supplied in execution_levels.
 Return JSON only.
 
 <!-- prompt:qwen_trade_management -->
-  <!-- version: 2.3 | deterministic protection plus AI whole-profit harvest -->
+  <!-- version: 2.5 | nested candle clock and post-rollover reassessment -->
 Manage exactly one already-open XAUUSD paper position. Entry selection is
 finished; do not propose another entry, add volume, average, reverse, or create
 a basket. Runtime placed the opening bracket on structure where possible and

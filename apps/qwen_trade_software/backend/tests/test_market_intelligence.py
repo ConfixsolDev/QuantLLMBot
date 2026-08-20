@@ -1,0 +1,55 @@
+from pathlib import Path
+
+from market_intelligence.projection import reduce_event, relationship_state
+from market_intelligence.retrieval import RetrievalBroker
+from market_intelligence.store import IntelligenceStore
+
+
+def event(symbol="XAUUSDr", timeframe="H1", direction="bullish", suffix="1"):
+    return {
+        "event_id": f"{symbol}:{timeframe}:{suffix}", "symbol": symbol,
+        "timeframe": timeframe, "event_type": "candle_closed",
+        "event_time_utc": f"2026-08-20T0{suffix}:00:00Z",
+        "evidence_id": f"{timeframe}_{suffix}",
+        "payload": {"direction": direction, "close": 4400 + int(suffix)},
+    }
+
+
+def test_event_ledger_is_idempotent_and_projection_replays(tmp_path: Path):
+    store = IntelligenceStore(tmp_path / "memory.sqlite3")
+    first, second = event(suffix="1"), event(direction="bearish", suffix="2")
+    assert store.append_event(first)
+    assert not store.append_event(first)
+    state = reduce_event(None, first)
+    store.put_projection("XAUUSDr", "H1", state, first["event_id"])
+    assert store.append_event(second)
+    state = reduce_event(state, second)
+    before = store.put_projection("XAUUSDr", "H1", state, second["event_id"])
+    assert store.rebuild(reduce_event) == 2
+    after = store.projection("XAUUSDr", "H1")
+    assert after["direction"] == "bearish"
+    assert after["structure_epoch"] == before["structure_epoch"]
+
+
+def test_relationship_never_grants_dxy_execution_authority():
+    relation = relationship_state({"direction": "bullish"}, {"direction": "bearish"})
+    assert relation["state"] == "inverse_aligned"
+    assert "XAUUSD" in relation["doctrine"]
+
+
+def test_retrieval_is_allowlisted_bounded_and_audited(tmp_path: Path):
+    store = IntelligenceStore(tmp_path / "memory.sqlite3")
+    broker = RetrievalBroker(
+        store,
+        lambda symbol, tf, count: [{"evidence_id": f"{tf}_1"}] * count,
+        lambda tf, count: ("DXY", [{"evidence_id": f"DXY_{tf}_1"}]),
+    )
+    results = broker.execute("XAUUSDr", [
+        {"tool": "get_completed_candles", "symbol": "XAUUSDr", "timeframe": "H1", "count": 500},
+        {"tool": "arbitrary_sql", "symbol": "XAUUSDr", "timeframe": "H1", "count": 1},
+        {"tool": "get_dxy_state", "symbol": "DXY", "timeframe": "H4", "count": 10},
+    ])
+    assert len(results) == 2
+    assert results[0]["row_count"] == 80
+    assert results[1]["status"] == "rejected"
+    assert len(store.recent_retrievals()) == 2

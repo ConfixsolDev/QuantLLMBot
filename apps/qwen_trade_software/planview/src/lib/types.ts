@@ -328,6 +328,34 @@ export interface Snapshot {
     fills?: unknown[];
     proposal_id?: string;
   } | null;
+  market_intelligence?: MarketIntelligence;
+  qwen_trace?: QwenTrace;
+}
+
+export interface StructureMemoryState {
+  state?: string; direction?: string; active_leg?: string; transition?: string | null;
+  invalidation_level_id?: string | null; latest_evidence_id?: string;
+  structure_epoch?: string; unresolved_condition?: string;
+}
+
+export interface RetrievalAudit {
+  request_id: string; status: string; requested_at_utc?: string;
+  request?: Record<string, unknown>; result?: { row_count?: number; [key: string]: unknown };
+}
+
+export interface MarketIntelligence {
+  status?: string; updated_at_utc?: string;
+  hierarchy?: Record<string, StructureMemoryState>;
+  dxy?: { broker_symbol?: string | null; states?: Record<string, { status?: string; direction?: string }> };
+  relationship?: { state?: string; gold_pressure?: string; doctrine?: string };
+  recent_retrievals?: RetrievalAudit[];
+}
+
+export interface QwenTrace {
+  model?: string; contract_version?: string; prompt_bytes?: number;
+  decision_wall_seconds?: number | null; retrieval_requests?: Record<string, unknown>[];
+  retrieval_results?: Record<string, unknown>[]; evidence_ids?: string[];
+  acknowledged_epochs?: Record<string, string>; raw_response?: string;
 }
 
 export interface Candle {

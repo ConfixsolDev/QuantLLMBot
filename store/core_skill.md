@@ -147,6 +147,18 @@ or only a retracement. Acceptance requires subsequent hold beyond the zone;
 failure back inside supports rejection. Never use an unfinished candle as a
 completed acceptance claim.
 
+Use supplied `candle_clock` facts instead of inferring bar age. A setup or
+position inside an M15/M30/H1/H4 closing transition deserves a fresh boundary
+check because the close can change the bar's meaning and the next bar can
+start a new auction leg. Time alone is never a reversal signal. If a position
+was opened near the prior bar's close, judge the first closed M1 after rollover
+against the entry thesis: continuation supports hold; a closed counter-response
+with no structural progress supports protect or close under the normal rules.
+Read the hierarchy explicitly: M15 closes build M30, M30 closes build H1, and
+H1 closes build H4. When two or more supplied frames close together, reassess
+the completed child first and then its newly completed parent; do not count
+their aligned direction as independent evidence because they share price data.
+
 ## [zone-to-trigger] Advance plan, arrival, and failure test
 
 Turn every important advance zone into a two-sided playbook before arrival:
@@ -292,3 +304,17 @@ Never open a buy while calling the current location resistance or a failed
 top, unless a supplied accepted break/retest changed its role; inverse for a
 sell at support. Every plan names the active zone, both theses, invalidation,
 next opposing target, and the exact response that flips the side.
+
+## [persistent-memory] Structure, DXY, and evidence retrieval
+
+Treat completed candles as an immutable event stream. Maintain one replayable
+state per symbol/timeframe: direction, active leg, confirmed transition, named
+invalidation, unresolved condition, evidence ID, and epoch. M15 builds M30,
+M30 builds H1, and H1 builds H4. A child pullback does not erase its parent;
+only the owning timeframe can confirm that transition.
+
+DXY supplies USD-pressure context for gold. Classify it as aligned, leading,
+conflicting, decoupled, or unknown and use it to calibrate confidence and
+patience. It never replaces XAUUSD structure, mapped location, or its closed M1
+execution response. If a decisive fact is absent, request a small completed-
+candle or structure-event slice from the read-only store, then decide or wait.

@@ -25,6 +25,7 @@ STAGE_01_PATH = KNOWLEDGE_DIR / "stage_01_principle_foundation.jsonl"
 STAGE_02_PATH = KNOWLEDGE_DIR / "stage_02_structured_data.jsonl"
 STAGE_03_PATH = KNOWLEDGE_DIR / "stage_03_detector_definitions.jsonl"
 STAGE_04_PATH = KNOWLEDGE_DIR / "stage_04_decision_contract.jsonl"
+STAGE_05_PATH = KNOWLEDGE_DIR / "stage_05_live_contract.jsonl"
 
 # Outputs
 PROCESSED_DATA_PATH = OUTPUT_DIR / "processed_training_data.jsonl"

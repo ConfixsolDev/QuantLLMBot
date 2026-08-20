@@ -130,7 +130,7 @@ Setup: {example.get('setup', 'N/A')}
 </trade_setup>
 
 Based on the principles above and the trade setup, decide using this contract:
-Action open|wait|skip; Direction buy|sell|none; Confidence 0-100;
+Action open|wait|skip; Direction buy|sell|none; Confidence 1-100;
 named Key Levels; Entry/Stop Loss/Take Profit when Action=open.
 Session permission and closed-bar acceptance override pattern names."""
 

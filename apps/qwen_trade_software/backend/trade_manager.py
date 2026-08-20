@@ -6,6 +6,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from candle_clock import candle_clock
+
 
 ALLOWED_ACTIONS = {"hold", "protect", "close"}
 
@@ -192,6 +194,7 @@ def build_management_facts(
             "side": entry_plan["side"],
             "structure_timeframe": entry_plan.get("structure_timeframe"),
         },
+        "candle_clock": candle_clock(entry_time=position.get("opened_at")),
         "trade_path": {
             "peak_price": round(peak_price, 3),
             "peak_favorable_price_move": round(peak_move, 3),

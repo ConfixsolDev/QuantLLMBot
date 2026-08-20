@@ -36,6 +36,7 @@ import news_blackout
 import process_logging
 from trade_step_log import log_step
 from market_context_cache import (
+    get_cached_completed_bars,
     latest_entry_context,
     load_prompt_section,
 )
@@ -81,6 +82,8 @@ from zone_scorer import score_zones, compact_score_log, ScoringConfig
 from market_structure import compute_structure_context
 from market_runtime import MarketRuntime, MarketRuntimeRegistry
 from runtime_config import PRIMARY_MARKET_SYMBOL, model_for_role
+from candle_clock import candle_clock
+from market_intelligence import MarketIntelligenceService
 
 
 # 2026-08-06: kept separate from trade_management.py's
@@ -106,7 +109,15 @@ LIVENESS = DecisionLivenessMonitor()
 from pathlib import Path as _Path
 
 LIFECYCLE_STATE_FILE = _Path(__file__).resolve().parent / "lifecycle-state.json"
+INTELLIGENCE_DB = _Path(__file__).resolve().parent / "cache" / "market-intelligence.sqlite3"
 _MARKET_RUNTIMES = MarketRuntimeRegistry()
+
+
+def _intelligence_candles(symbol: str, timeframe: str, count: int) -> list[dict]:
+    return get_cached_completed_bars(symbol, timeframe, count)
+
+
+MARKET_INTELLIGENCE = MarketIntelligenceService(INTELLIGENCE_DB, _intelligence_candles)
 _PRIMARY_RUNTIME = _MARKET_RUNTIMES.get(PRIMARY_MARKET_SYMBOL)
 # Compatibility aliases for diagnostics/tests. Live paths resolve by symbol.
 _IDEA_MANAGER = _PRIMARY_RUNTIME.idea_manager
@@ -879,6 +890,10 @@ def compact_entry_facts(
             "v": closed_m1.get("tick_volume"),
         },
         "forming": forming_slim,
+        # Evidence IDs encode bar opens, but the model should not have to do
+        # hidden M15/M30/H1/H4 clock arithmetic—especially where boundaries
+        # coincide and one completed lower frame changes its parent bar.
+        "candle_clock": candle_clock(),
         "volume": minute.get("volume") or {},
         "nearby_levels": minute.get("nearby_levels") or [],
         "live_map": live_map,
@@ -1058,6 +1073,11 @@ def compact_entry_facts(
         ms = compute_structure_context(symbol, mid)
         if ms.get("status") == "ok":
             packet["market_structure"] = ms
+            try:
+                packet["persistent_market_memory"] = MARKET_INTELLIGENCE.observe(symbol, ms)
+            except Exception:
+                logging.exception("market_intelligence:observe_failed")
+                packet["persistent_market_memory"] = {"status": "error"}
             # Phase 2 must not depend on Qwen already saying "ready".  That
             # created a circular deadlock: without a remembered zone there was
             # no approach/response context, and without that context Qwen could
@@ -1596,6 +1616,28 @@ def entry_decision_schema(entry_cache: dict, decision_levels: dict, facts: dict 
                 "required": ["status", "reason"],
                 "additionalProperties": False,
             },
+            "data_requests": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "tool": {"type": "string", "enum": [
+                            "get_completed_candles", "get_structure_state",
+                            "get_structure_events", "get_dxy_state",
+                        ]},
+                        "symbol": {"type": "string"},
+                        "timeframe": {"type": "string", "enum": [
+                            "M1", "M5", "M15", "M30", "H1", "H4", "D1",
+                        ]},
+                        "count": {"type": "integer", "minimum": 1, "maximum": 80},
+                        "missing_fact": {"type": "string", "maxLength": 120},
+                        "why_needed": {"type": "string", "maxLength": 160},
+                    },
+                    "required": ["tool", "symbol", "timeframe", "count", "missing_fact", "why_needed"],
+                    "additionalProperties": False,
+                },
+                "maxItems": 2,
+            },
         },
         "required": [
             "bias", "confidence", "summary", "acknowledged_epochs",
@@ -1603,6 +1645,25 @@ def entry_decision_schema(entry_cache: dict, decision_levels: dict, facts: dict 
         ],
         "additionalProperties": False,
     }
+
+
+def build_retrieval_followup_prompt(facts: dict, first_review: dict, results: list[dict]) -> str:
+    """Second and final bounded decision after an allowlisted evidence request."""
+    packet = {
+        "original_epochs": facts.get("epochs"),
+        "original_market_memory": facts.get("persistent_market_memory"),
+        "original_decision": first_review,
+        "retrieval_results": results,
+        "execution_levels": facts.get("execution_levels"),
+        "citeable_evidence_ids": facts.get("citeable_evidence_ids"),
+    }
+    return (
+        "FINAL RETRIEVAL PASS for qwen_cached_entry. Return one JSON decision only. "
+        "No further data_requests are allowed. Retrieved rows are completed evidence, "
+        "but XAUUSD structure/location/M1 trigger retain trading authority; DXY only "
+        "adjusts confidence. Copy original epochs exactly and use only supplied level IDs.\n"
+        + json.dumps(packet, separators=(",", ":"))
+    )
 
 
 def dual_side_observation_schema(
@@ -2429,6 +2490,8 @@ def build_snapshot() -> dict:
         snapshot["qwen"] = management_state["qwen_management"]
     else:
         snapshot["qwen"] = entry_state.get("qwen", dict(DEFAULT_ENTRY_QWEN_STATE))
+    snapshot["market_intelligence"] = entry_state.get("market_intelligence", {})
+    snapshot["qwen_trace"] = entry_state.get("qwen_trace", {})
     snapshot.pop("qwen_management", None)
     primary_symbol = str(snapshot.get("symbol") or "XAUUSDr")
     snapshot["primary_symbol"] = instrument_for(primary_symbol).key
@@ -2735,6 +2798,8 @@ def generate_dashboard_deal_sheet() -> dict:
     decision_wall_seconds = None
     decision_duration_ns = None
     prompt_text = None
+    requested_data = []
+    retrieval_results = []
     market_atr = None
     facts: dict = {}
     market = gold_market_open()
@@ -2840,6 +2905,34 @@ def generate_dashboard_deal_sheet() -> dict:
         )
         raw_response = result.get("response", "{}")
         review = json.loads(raw_response)
+        retrieval_results = []
+        requested_data = list(review.get("data_requests") or [])[:2]
+        if requested_data and (review.get("execution_plan") or {}).get("status") == "wait":
+            retrieval_results = MARKET_INTELLIGENCE.retrieve(symbol, requested_data)
+            retrieval_prompt = build_retrieval_followup_prompt(
+                facts, review, retrieval_results
+            )
+            logging.info(
+                "Qwen active retrieval requested count=%d tools=%s",
+                len(requested_data), [row.get("tool") for row in requested_data],
+            )
+            retrieval_call = ollama_generate(
+                retrieval_prompt, timeout=None, num_predict=768, num_ctx=8192,
+                format_schema=entry_decision_schema(entry_cache, decision_levels, facts),
+                model=ENTRY_MODEL,
+            )
+            decision_duration_ns = int(decision_duration_ns or 0) + int(
+                retrieval_call.get("total_duration") or 0
+            )
+            prompt_text = retrieval_prompt
+            raw_response = retrieval_call.get("response", "{}")
+            review = json.loads(raw_response)
+            # The broker grants one bounded retrieval round only.
+            review.pop("data_requests", None)
+            log_step(
+                "qwen_active_retrieval", "completed", symbol=symbol,
+                detail=f"requests={len(requested_data)} results={len(retrieval_results)}",
+            )
         correction_reason = qwen_contract_correction_reason(review)
         if correction_reason:
             correction_prompt = build_qwen_correction_prompt(
@@ -3061,7 +3154,7 @@ def generate_dashboard_deal_sheet() -> dict:
             duration_ns=decision_duration_ns,
             proposal_id=proposal_id,
             atr=market_atr,
-            context={
+        context={
                 "cache_status": entry_cache.get("status"),
                 "session": entry_cache.get("session"),
                 "execution_plan": review.get("execution_plan"),
@@ -3069,6 +3162,8 @@ def generate_dashboard_deal_sheet() -> dict:
                 "entry_prompt_mode": "compact_trade_quality_v1",
                 "wait_signature": wait_signature or None,
                 "model_called": model_called,
+                "retrieval_requests": requested_data if model_called else [],
+                "retrieval_results": retrieval_results if model_called else [],
                 **build_manifest.stamp(),
             },
         )
@@ -3099,6 +3194,18 @@ def generate_dashboard_deal_sheet() -> dict:
         "proposal_price": snapshot.get("price"),
         "execution_plan": review["execution_plan"],
         "wait_deduped": skip_wait_audit,
+    }
+    entry_state["market_intelligence"] = MARKET_INTELLIGENCE.observability()
+    entry_state["qwen_trace"] = {
+        "model": ENTRY_MODEL,
+        "contract_version": entry_contract_version(),
+        "prompt_bytes": len(prompt_text.encode("utf-8")) if prompt_text else 0,
+        "decision_wall_seconds": decision_wall_seconds,
+        "retrieval_requests": requested_data if model_called else [],
+        "retrieval_results": retrieval_results if model_called else [],
+        "evidence_ids": list(review.get("evidence_ids") or []),
+        "acknowledged_epochs": review.get("acknowledged_epochs") or {},
+        "raw_response": raw_response,
     }
     write_json_atomic(ENTRY_STATE_FILE, entry_state)
     try:

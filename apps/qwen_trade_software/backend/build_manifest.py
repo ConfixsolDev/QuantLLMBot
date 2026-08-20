@@ -68,6 +68,12 @@ DECISION_MODULES = (
     # Shape what the model is asked and what it is allowed to answer. A prompt
     # or cache change alters behaviour just as surely as a threshold does.
     "market_context_cache.py",
+    "candle_clock.py",
+    "market_intelligence/store.py",
+    "market_intelligence/projection.py",
+    "market_intelligence/cross_market.py",
+    "market_intelligence/retrieval.py",
+    "market_intelligence/service.py",
     "instrument_config.py",
     "market_runtime.py",
     "prompt_composer.py",

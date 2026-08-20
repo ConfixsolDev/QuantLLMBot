@@ -11,6 +11,7 @@ import { CheatSheetPanel } from "@/components/CheatSheetPanel";
 import { PlanChart } from "@/components/PlanChart";
 import { TechnicalDetails } from "@/components/NarrativePanels";
 import { buildPlanViewModel } from "@/lib/viewModel";
+import { MarketIntelligencePanel } from "@/components/MarketIntelligencePanel";
 
 const TIMEFRAMES = ["H4", "H1", "M15"] as const;
 
@@ -186,6 +187,11 @@ export default function PlanViewPage() {
 
       {/* One home per fact: ladder = TF lean; day plan = bull/bear side by side. */}
       <TimeframeLadderPanel ladder={plan?.timeframe_ladder} />
+
+      <MarketIntelligencePanel
+        intelligence={snapshot?.market_intelligence}
+        trace={snapshot?.qwen_trace}
+      />
 
       <DayBranchPanel
         branches={plan?.day_branches}

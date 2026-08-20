@@ -88,6 +88,34 @@ The runtime, rather than the model, enforces every safety invariant in phases
 3 and 4. Qwen supplies contextual judgment and named-level decisions; broker
 state and deterministic validation remain authoritative.
 
+### Persistent market-intelligence subsystem
+
+The live cognition layer uses selective event sourcing and materialized views.
+Every completed XAUUSD or DXY candle used by cognition is recorded as an
+immutable, provenance-tagged event. A deterministic reducer maintains one
+current projection per `(symbol,timeframe)` across D1/H4/H1/M30/M15/M5/M1.
+Projections contain active leg, direction, transition, named invalidation,
+unresolved condition, last evidence ID, and content-derived structure epoch.
+They are rebuildable caches: replaying the event ledger must reproduce them.
+
+The entry prompt receives a bounded projection plus recent deltas. DXY has its
+own structure stream and contributes a relationship classification. DXY may
+calibrate confidence and patience but has no execution authority over gold.
+XAUUSD structure, mapped location, and completed XAUUSD trigger remain
+mandatory.
+
+Qwen may identify a precise evidence gap and request at most two allowlisted,
+read-only retrievals for completed candles, structure state/events, or DXY
+state. The application validates limits, audits the request/result, supplies
+one final follow-up packet, and forbids another retrieval round. Qwen never
+receives arbitrary SQL or database/broker write access.
+
+Model qualification and evidence freshness are independent. Qualification
+proves contract capability; it never suppresses projection refresh when a
+structure epoch changes. Website and logs expose structure epochs, DXY and
+relationship state, retrievals, prompt size, response latency, cited evidence,
+acknowledged epochs, and the bounded raw JSON response.
+
 ### Modular market-structure provider boundary
 
 Market structure is represented as zones and normalized events rather than

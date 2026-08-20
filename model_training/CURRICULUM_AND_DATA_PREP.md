@@ -140,6 +140,23 @@ Operator process (books: Elder Triple Screen, Brooks L2 / breakout-pullback, Mur
 Live executor fills **only inside** the approved band (no approach-side fill below a sell hunt zone).  
 Util: `python_utilities_for_models/append_entry_location_hunt_v5.py`.
 
+### 1.2c Candle-boundary context (required live and in future training rows)
+
+Entry and management packets expose deterministic `candle_clock` facts for
+M15, M30, H1, and H4: UTC open/close, elapsed seconds/percentage, remaining seconds,
+transition phase, entry seconds before close, and whether the frame rolled
+since entry. This implements the already-distilled `developing_elapsed_pct`
+requirement in `knowledge/topics/04_timeframe_relations.md`.
+
+The clock is context, never proof. Forming-bar direction may change into its
+close, and the first lower-timeframe close after rollover can confirm
+continuation or failure. Training rows must not label a rollover itself as a
+reversal or close command; pair it with observable closed price evidence and
+the existing R1–R4 management conditions.
+Rows must preserve timeframe nesting: M15 closes build M30, M30 closes build
+H1, and H1 closes build H4. Coincident closes are one nested evidence event,
+not several independent confirmations.
+
 ### 1.3 v004 sideways / three-regime pack
 
 Gold is sideways/balance most of the time (Brooks/Dalton). Curriculum must teach:
@@ -247,7 +264,7 @@ or the exported model will not match the data that produced it.
 | **Model / LoRA version** | **v5** (`qwen-trading-v005`) | `export_lora_to_ollama_colab.py` `--outfile-prefix`; `QWEN_MODEL` env, default in `review_shared.py` + `market_context_cache.py` |
 | **Curriculum / dataset version** | **v9** + Phase 4 regime pack | this file, §3 size line below |
 
-**v5 is the model trained on curriculum v9 + Phase 4 regime/architecture pack** (789 aligned rows). Anything built from an earlier dataset is not v5, whatever it is named.
+**The next v5 build is trained on curriculum v9 + Phase 4 regime/architecture judgement rows and their exact stage_05 live-contract counterparts** (789 + 789 rows before the 10-row holdout is excluded). Anything built from an earlier dataset or a pipeline that omits stage_05 is not the current v5, whatever it is named.
 
 Model version history:
 
@@ -256,7 +273,8 @@ Model version history:
 | v002 | early curriculum | export script default was still stuck here until 2026-08-10 |
 | v003 | ~389 rows | live through 2026-08-10; buy-blind — scored buy non-zero only **14%** of the time against **82%** for sell |
 | v004 | 712 rows, curriculum v9 | balanced buy/sell; live **confidence=0** on ready after Phase 4 prompt fields |
-| **v005** | **789 rows, v9 + Phase 4 pack** | regime vocabulary + calibrated confidence. Holdout: **direction 100%**, action 90%; opens scored ~86 |
+| **v005 (earlier)** | **789 judgement rows, v9 + Phase 4 pack** | regime vocabulary + calibrated confidence, but preprocessing omitted stage_05 and therefore did not teach the deployed JSON schemas |
+| **v005 (current retrain material)** | **779 judgement + 779 exact live-contract pairs** | current entry `1.20`, management `2.5`, persistent structure/DXY/retrieval, confidence 1–100, and M15/M30/H1/H4 candle clock |
 
 > **Note on the number 4.** `v004` still names the **geometry/reason conventions** in §1.1 and §1.2 (curriculum rules), not the live Ollama tag. The live tag is **v005**.
 
@@ -290,8 +308,20 @@ python market_context_cache.py --once     # without --no-qwen
 Default in code is **v005**. Flip `DEFAULT_MODEL` in `review_shared.py` only after a new GGUF has a holdout you accept; then qualify cache without `--no-qwen`.
 
 **Current size (curriculum v9 + v5 ATR3/51 + regime/dual/M5/FVG + entry-hunt + V2 architecture Phase 4 packs):** 789 aligned stage_02/04 examples
-(779 train / 10 holdout at end) + 721 stage_05 rows.  
+(779 train / 10 holdout at end) + 789 positionally aligned stage_05 rows. Preprocessing emits **1,558 training pairs**: 779 judgement pairs plus 779 exact live-contract pairs.
 **Config:** `scripts/config.py` → `training_lines_end=779`, `test_lines_end=789`.
+
+Stage_05 must be rebuilt with `build_stage05_live_contract.py` after any stage_02/04 append. Its required alignment is:
+
+- entry contract `qwen_cached_entry:1.20`, `bias=buy|sell|wait`, confidence 1–100;
+- management contract `qwen_trade_management:2.5` with only deployed enums;
+- M15, M30, H1, H4 elapsed/remaining time on every prompt, with `M15 builds M30; M30 builds H1; H1 builds H4`;
+- candle-clock phase is context, never a substitute for completed price evidence;
+- closed M1 probe/failure is the execution trigger; closed M5 adds strength but is not mandatory.
+- persistent_market_memory carries replayable parent/child state and DXY relationship context;
+- selected wait rows teach bounded `data_requests`, never arbitrary SQL or broker writes.
+
+`audit_training_dataset.py` is a blocking gate: it checks the one-to-one ordering, exact response keys/enums, named-level references, and candle-clock arithmetic before reporting ready.
 
 > **Bounds are absolute row indices, not proportions.** After any `append_*.py`
 > run you MUST bump both values or the appended rows — which land at the end of
@@ -494,7 +524,7 @@ Hyperparameters: repo `scripts/config.py` (5 epochs, warmup 5, QLoRA r=16).
 | v5 pullback | `append_pullback_entry_v5.py` | With-trend entry only after pullback — never sell the low / buy the high (2026-08-13 −147/−162) |
 | v5 regime ATR | `append_regime_atr_v5.py` | Expand/compress/normal + pullback + calibrated confidence (topics 07–08) |
 | v5 dual-side | `append_dual_side_ideas_v5.py` | Long+short idea cases then pick/wait (curriculum only; live `entry_policy` dual-side revive deferred — see reviewer note + prior dual_side study) |
-| v5 M5 confirm | `append_m5_confirm_v5.py` | Closed M5 confirms; M1 pin alone waits (topic 04) |
+| v5 M5 confirm (historical; superseded) | `append_m5_confirm_v5.py` | Earlier M5-mandatory lesson; current doctrine uses closed M1 as trigger and M5 as optional strength |
 | v5 FVG/OB lit | `append_fvg_ob_literature_v5.py` | Micro measuring gap / impulse-origin zone aliases (topics 05–06) |
 | v5 entry hunt | `append_entry_location_hunt_v5.py` | Context → Hunt → Arm; `missing_fact=at_entry_location` outside band |
 | v2 regime arch | `append_regime_architecture_v2.py` | Regime hint + override, CHoCH/FVG interpret, calibrated confidence, H4 geometry, live_map double-top |

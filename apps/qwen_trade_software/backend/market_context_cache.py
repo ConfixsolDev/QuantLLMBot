@@ -3504,6 +3504,12 @@ class QwenContextShadow:
         challenge_failures: list[str] = []
         challenge_metrics: dict = {}
         structural_analysis = self.cache.object("structural_analysis", self.symbol)
+        structural_epoch_changed = not (
+            structural_analysis
+            and structural_analysis.get("model_digest") == model_info.get("digest")
+            and structural_analysis["payload"].get("acknowledged_epochs", {}).get("structural")
+            == structure["cache_epoch"]
+        )
         needs_warmup = not (
             structural_analysis
             and structural_analysis.get("model_digest") == model_info.get("digest")
@@ -3523,10 +3529,13 @@ class QwenContextShadow:
             )
         )
         if (
-            run_qwen
-            and gate_a
+            gate_a
             and needs_warmup
-            and not prior_qualification_reusable
+            # Qualification proves model/contract capability. It must never
+            # freeze market interpretation. The always-on --no-qwen worker may
+            # therefore refresh once on a genuine D1/H4/H1 epoch change, while
+            # ordinary session/minute churn keeps the low-cost no-Qwen path.
+            and (run_qwen or structural_epoch_changed)
         ):
             _, playbooks, warmup_failures = self._run_warmup(
                 structure,
