@@ -375,6 +375,31 @@ def test_a_genuinely_triggered_setup_is_not_blocked():
         assert ep.check_ready_reason_contradiction(review) is None, reason
 
 
+def test_present_target_mode_overrules_stale_missing_target_reason():
+    """Exact 2026-08-20 live contract inconsistency must not reject a scalp."""
+    review = {
+        "confidence": 60,
+        "bias": "sell",
+        "execution_plan": {
+            "status": "ready",
+            "reason": "missing_target_mode",
+            "target_mode": "scalp",
+        },
+    }
+    assert ep.check_ready_reason_contradiction(review) is None
+
+
+def test_missing_target_mode_is_still_blocked_when_really_missing():
+    review = {
+        "confidence": 60,
+        "bias": "sell",
+        "execution_plan": {"status": "ready", "reason": "missing_target_mode"},
+    }
+    assert ep.check_ready_reason_contradiction(review) == (
+        ep.ReasonCode.READY_CONTRADICTS_OWN_REASON
+    )
+
+
 def test_free_prose_summary_is_not_matched():
     """Matching the narration blocked 28 entries in one day's replay, 7 of them
     reason='entry_condition_met'. Only the structured reason is checked."""

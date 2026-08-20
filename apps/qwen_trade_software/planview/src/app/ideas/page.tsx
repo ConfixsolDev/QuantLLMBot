@@ -121,24 +121,48 @@ export default function TradeIdeasPage() {
   const [error, setError] = useState<string | null>(null);
   const [readyOnly, setReadyOnly] = useState(false);
   const [geometryOnly, setGeometryOnly] = useState(false);
+  const [symbol, setSymbol] = useState("XAUUSDr");
+  const [symbolDraft, setSymbolDraft] = useState("XAUUSDr");
   const { hideLowConfidence, setHideLowConfidence } = useHideLowConfidence();
   const minConfidence = hideLowConfidence ? LOW_CONFIDENCE_FLOOR : -1;
 
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("symbol");
+    if (requested) {
+      setSymbol(requested);
+      setSymbolDraft(requested);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     try {
-      const [response, liveLifecycle, liveSnapshot] = await Promise.all([
-        fetchTradeIdeas({ minConfidence, days: 2, readyOnly, limit: 400 }),
-        fetchLifecycle(),
-        fetchSnapshot(),
+      const results = await Promise.allSettled([
+        fetchTradeIdeas({ minConfidence, days: 2, readyOnly, limit: 400, symbol }),
+        fetchLifecycle(symbol),
+        fetchSnapshot(symbol),
       ]);
-      setData(response);
-      setLifecycle(liveLifecycle);
-      setSnapshot(liveSnapshot);
-      setError(null);
+      if (results[0].status === "fulfilled") setData(results[0].value);
+      if (results[1].status === "fulfilled") setLifecycle(results[1].value);
+      if (results[2].status === "fulfilled") setSnapshot(results[2].value);
+      const failures = results
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
+      setError(failures.length ? failures.join(" · ") : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load trade ideas");
     }
-  }, [minConfidence, readyOnly]);
+  }, [minConfidence, readyOnly, symbol]);
+
+  const applySymbol = useCallback(() => {
+    const next = symbolDraft.trim() || "XAUUSDr";
+    const url = new URL(window.location.href);
+    url.searchParams.set("symbol", next);
+    window.history.replaceState({}, "", url);
+    setData(null);
+    setLifecycle(null);
+    setSnapshot(null);
+    setSymbol(next);
+  }, [symbolDraft]);
 
   useEffect(() => {
     load();
@@ -179,6 +203,23 @@ export default function TradeIdeasPage() {
       </header>
 
       <div className="flex flex-wrap items-center gap-3 text-sm">
+        <label className="flex items-center gap-2 text-slate-300">
+          Instrument
+          <input
+            aria-label="Instrument symbol"
+            value={symbolDraft}
+            onChange={(e) => setSymbolDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") applySymbol(); }}
+            className="w-32 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={applySymbol}
+          className="rounded bg-sky-900 px-3 py-1 text-sky-100 hover:bg-sky-800"
+        >
+          Load instrument
+        </button>
         <label className="flex items-center gap-2 font-medium text-slate-200">
           <input
             type="checkbox"
@@ -230,7 +271,7 @@ export default function TradeIdeasPage() {
           <div className="mt-2 text-lg font-semibold text-slate-100">
             {snapshot?.connected ? "Live" : "Disconnected"} · {fmt(snapshot?.price, 3)}
           </div>
-          <div className="text-xs text-slate-400">{snapshot?.symbol || "XAUUSDr"} broker quote</div>
+          <div className="text-xs text-slate-400">{snapshot?.symbol || symbol} broker quote</div>
         </div>
         <div className="card p-4">
           <div className="text-xs uppercase tracking-wide text-slate-500">2 · Zone memory</div>

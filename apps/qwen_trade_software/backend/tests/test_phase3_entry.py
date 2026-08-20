@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import live_mapped_levels as lml  # noqa: E402
+from paper_executor import pre_fill_zone_cancellation  # noqa: E402
 import paper_executor as pe  # noqa: E402
 import qualified_levels as ql  # noqa: E402
 import regime_engine as re  # noqa: E402
@@ -65,6 +66,36 @@ def test_stamp_keeps_qwen_target_mode(monkeypatch, tmp_path):
     assert review["execution_plan"]["target_mode"] == "directional_basket"
 
 
+def test_range_without_bounds_keeps_mapped_zone_ready(monkeypatch, tmp_path):
+    """Regression for the missed 02:41 close / 02:42 double-top scalp."""
+    monkeypatch.setattr(ql, "QUALIFIED_LEVELS_PATH", tmp_path / "qualified-levels.json")
+    review = {
+        "execution_plan": {
+            "status": "ready",
+            "side": "sell",
+            "entry_low": 4491.489,
+            "entry_high": 4492.853,
+            "optimal_entry_price": 4492.853,
+            "entry_low_id": "M1_PREVIOUS_LOW",
+            "entry_high_id": "M1_PREVIOUS_HIGH",
+            "target_mode": "scalp",
+        }
+    }
+    facts = {
+        "regime_context": {
+            "regime_hint": "range",
+            "regime_state": "range",
+            "range_detected": False,
+            "range_support": None,
+            "range_resistance": None,
+            "current_price": 4490.961,
+        }
+    }
+    reviewer._stamp_regime_target_mode(review, facts)
+    assert review["execution_plan"]["status"] == "ready"
+    assert review["execution_plan"]["range_edge_check"] == "unavailable"
+
+
 def test_entry_fill_ready_waits_without_m1_failure():
     ready, gate = pe.entry_fill_ready(
         "sell", 101, 100, 102, 105,
@@ -72,6 +103,24 @@ def test_entry_fill_ready_waits_without_m1_failure():
     )
     assert not ready
     assert gate == "inside_zone_waiting_m1_failure"
+
+
+def test_zone_wait_survives_time_but_cancels_on_structure_not_clock():
+    rejection = {"open": 101.5, "high": 102.4, "low": 100.8, "close": 101.4}
+    assert pre_fill_zone_cancellation("sell", 101.5, 100, 102, 104, 95, rejection) is None
+    accepted = {"open": 101.5, "high": 103.0, "low": 101.0, "close": 102.5}
+    assert pre_fill_zone_cancellation("sell", 102.2, 100, 102, 104, 95, accepted) == (
+        "zone_accepted_through_on_m1"
+    )
+
+
+def test_zone_wait_cancels_if_invalidation_or_target_already_traded():
+    assert pre_fill_zone_cancellation("sell", 104, 100, 102, 104, 95, None) == (
+        "zone_invalidated_at_stop"
+    )
+    assert pre_fill_zone_cancellation("sell", 95, 100, 102, 104, 95, None) == (
+        "target_reached_without_fill"
+    )
 
 
 def test_levels_for_ui_marks_qualified(monkeypatch, tmp_path):

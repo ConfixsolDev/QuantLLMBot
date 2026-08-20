@@ -2,7 +2,7 @@
 Market Structure Shift (MSS) events from swing point data and candle
 displacement.
 
-ICT/SMC market structure event detection for XAUUSD scalping:
+Instrument-agnostic ICT/SMC market structure event detection:
 
     BOS   -- price breaks a swing point IN the direction of the current trend.
              Confirms continuation.  Bullish BOS = new HH in uptrend,
@@ -36,7 +36,9 @@ _MAX_EVENTS = 50
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _displacement(candle: dict) -> tuple[float, float, bool]:
+def _displacement(
+    candle: dict, min_body_points: float = 1.5
+) -> tuple[float, float, bool]:
     """Return (body_range_ratio, body_pts, is_displacement) for *candle*."""
     o = float(candle["open"])
     h = float(candle["high"])
@@ -45,7 +47,9 @@ def _displacement(candle: dict) -> tuple[float, float, bool]:
     body = abs(c - o)
     range_ = h - l
     ratio = body / range_ if range_ > 0 else 0.0
-    return round(ratio, 4), round(body, 4), (ratio > 0.6 and body > 1.5)
+    return round(ratio, 4), round(body, 4), (
+        ratio > 0.6 and body > min_body_points
+    )
 
 
 def _candle_direction(candle: dict) -> str:
@@ -80,7 +84,8 @@ def _now_utc() -> str:
 class StructuralEventDetector:
     """Detect BOS / CHoCH / MSS from swing points and live price."""
 
-    def __init__(self) -> None:
+    def __init__(self, displacement_min_body: float = 1.5) -> None:
+        self.displacement_min_body = float(displacement_min_body)
         self._events: list[dict] = []
         self._last_event_by_tf: dict[str, dict] = {}
         self._seen_keys: set[str] = set()      # dedup broken_level+tf
@@ -146,7 +151,9 @@ class StructuralEventDetector:
         if current_structure == "bullish" and last_low:
             level = float(last_low["price"])
             if candle_close < level:
-                ratio, body_pts, has_disp = _displacement(break_candle)
+                ratio, body_pts, has_disp = _displacement(
+                    break_candle, self.displacement_min_body
+                )
                 event_type = "MSS" if has_disp else "CHoCH"
                 evt = self._make_event(
                     event_type, "bearish", timeframe, level, last_low,
@@ -158,7 +165,9 @@ class StructuralEventDetector:
         if current_structure == "bearish" and last_high:
             level = float(last_high["price"])
             if candle_close > level:
-                ratio, body_pts, has_disp = _displacement(break_candle)
+                ratio, body_pts, has_disp = _displacement(
+                    break_candle, self.displacement_min_body
+                )
                 event_type = "MSS" if has_disp else "CHoCH"
                 evt = self._make_event(
                     event_type, "bullish", timeframe, level, last_high,
@@ -237,7 +246,9 @@ class StructuralEventDetector:
             return None
         self._seen_keys.add(key)
 
-        ratio, body_pts, has_disp = _displacement(break_candle)
+        ratio, body_pts, has_disp = _displacement(
+            break_candle, self.displacement_min_body
+        )
 
         # confidence
         if event_type == "MSS":

@@ -17,6 +17,7 @@ logs/
 
 # Local virtual environments and editor state
 .venv/
+.venvs/
 venv/
 .codex_deps/
 .agents/

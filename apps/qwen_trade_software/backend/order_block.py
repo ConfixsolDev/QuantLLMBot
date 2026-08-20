@@ -1,4 +1,4 @@
-"""Order Block (OB) detector for XAUUSD scalping.
+"""Instrument-agnostic Order Block (OB) detector.
 
 Identifies Order Blocks -- the last opposing candle before a structural
 break (BOS / CHoCH / MSS).  These mark institutional entry points where
@@ -96,12 +96,14 @@ def _status_from_mitigation(pct: float) -> str:
     return "active"
 
 
-def _touches_zone_edge(ob: dict, price: float) -> bool:
+def _touches_zone_edge(
+    ob: dict, price: float, tolerance: float = ZONE_TOUCH_TOLERANCE
+) -> bool:
     """True when *price* is within tolerance of the OB zone edge."""
     if ob["direction"] == "bullish":
-        return abs(price - ob["high"]) <= ZONE_TOUCH_TOLERANCE
+        return abs(price - ob["high"]) <= tolerance
     else:
-        return abs(price - ob["low"]) <= ZONE_TOUCH_TOLERANCE
+        return abs(price - ob["low"]) <= tolerance
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +123,8 @@ _TF_RANK: dict[str, int] = {
 class OrderBlockDetector:
     """Detect and track Order Blocks across multiple timeframes."""
 
-    def __init__(self) -> None:
+    def __init__(self, touch_tolerance: float = ZONE_TOUCH_TOLERANCE) -> None:
+        self.touch_tolerance = float(touch_tolerance)
         self._active_obs: dict[str, list[dict]] = {}   # tf -> list of OBs
         self._candle_counts: dict[str, int] = {}        # tf -> candles seen
         self._processed_events: set[str] = set()        # dedup event keys
@@ -295,9 +298,9 @@ class OrderBlockDetector:
             ob["mitigated"] = ob["status"] == "mitigated"
 
             # Track zone-edge touches (price bounces off the edge).
-            if _touches_zone_edge(ob, current_price):
+            if _touches_zone_edge(ob, current_price, self.touch_tolerance):
                 last = ob.get("_last_touch_price")
-                if last is None or abs(current_price - last) > ZONE_TOUCH_TOLERANCE * 3:
+                if last is None or abs(current_price - last) > self.touch_tolerance * 3:
                     ob["tested_count"] = ob.get("tested_count", 0) + 1
                     ob["_last_touch_price"] = current_price
                     log.debug(

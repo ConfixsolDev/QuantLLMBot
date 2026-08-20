@@ -231,6 +231,12 @@ def test_compact_facts_expose_live_map_ids():
     assert facts["live_map"]["double_top"]["id"] == "M5_LIVE_H_4323_0110"
     assert "M5_LIVE_H_4323_0110" in {row["id"] for row in facts["execution_levels"]}
     assert "M5_LIVE_H_4323_0110" in facts["citeable_evidence_ids"]
+    response = next(
+        row for row in facts["structural_responses"]
+        if row["level_id"] == "M5_LIVE_H_4323_0110"
+    )
+    assert response["confirmed"] is True
+    assert response["direction"] == "sell"
 
 
 def test_classify_swing_sequence_hh_hl_lh_ll_mixed():

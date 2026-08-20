@@ -1,4 +1,4 @@
-"""Fair Value Gap (FVG) detector for XAUUSD scalping.
+"""Instrument-agnostic Fair Value Gap (FVG) detector.
 
 Scans candle data for price imbalance zones where the market moved too
 fast for orders to fill.  An FVG is a 3-candle formation where the wicks
@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 # Tuning constants
 # ---------------------------------------------------------------------------
 
-MIN_FVG_WIDTH: float = 0.3          # filter out sub-0.3-point noise on XAUUSD
+MIN_FVG_WIDTH: float = 0.3          # legacy XAUUSD-compatible default
 MAX_FVGS_PER_TF: int = 20           # keep at most 20 per timeframe
 STALE_CANDLE_LIMIT: int = 200        # expire after 200 candles on the TF
 FILL_THRESHOLD: float = 0.90         # >= 90 % fill  =>  fully_filled
@@ -80,7 +80,8 @@ def _status_from_fill(filled_pct: float) -> str:
 class FVGDetector:
     """Detect and track Fair Value Gaps across multiple timeframes."""
 
-    def __init__(self) -> None:
+    def __init__(self, min_width: float = MIN_FVG_WIDTH) -> None:
+        self.min_width = float(min_width)
         self._active_fvgs: dict[str, list[dict]] = {}   # tf -> list of FVGs
         self._candle_counts: dict[str, int] = {}         # tf -> candles seen
         self._seen_ids: dict[str, set[str]] = {}
@@ -125,7 +126,7 @@ class FVGDetector:
                 low = c1["high"]
                 high = c3["low"]
                 width = high - low
-                if width >= MIN_FVG_WIDTH:
+                if width >= self.min_width:
                     created = (
                         c2.get("close_time_utc")
                         or c2.get("closed_at_utc")
@@ -156,7 +157,7 @@ class FVGDetector:
                 high = c1["low"]
                 low = c3["high"]
                 width = high - low
-                if width >= MIN_FVG_WIDTH:
+                if width >= self.min_width:
                     created = (
                         c2.get("close_time_utc")
                         or c2.get("closed_at_utc")

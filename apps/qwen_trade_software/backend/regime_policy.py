@@ -45,16 +45,32 @@ def policy_for(regime_state: str | None) -> RegimePolicy:
     return POLICIES.get(str(regime_state or "unknown").lower(), POLICIES["unknown"])
 
 
-def range_entry_allowed(side: str | None, entry_price: float | None, regime: dict) -> bool:
-    """Permit range trades only in the outer 30%, directed back into balance."""
+def range_entry_allowed(
+    side: str | None,
+    entry_price: float | None,
+    regime: dict,
+) -> bool | None:
+    """Check a range edge when deterministic range geometry is available.
+
+    ``None`` means the regime classifier supplied only a range *hint* and did
+    not detect usable support/resistance bounds.  That is not evidence that a
+    model-qualified mapped-zone entry is in the middle of a range.  Callers
+    must therefore enforce the edge veto only on an explicit ``False``.
+
+    Previously missing bounds returned ``False``.  Because a mixed M5 swing
+    pattern can produce ``regime_state=range`` while ``range_detected=false``,
+    this silently blocked every entry -- including valid mapped double-top
+    scalps -- as ``range_middle_or_wrong_edge`` without having an edge to
+    measure.
+    """
     try:
         support = float(regime["range_support"])
         resistance = float(regime["range_resistance"])
         entry = float(entry_price)
     except (KeyError, TypeError, ValueError):
-        return False
+        return None
     if resistance <= support:
-        return False
+        return None
     position = (entry - support) / (resistance - support)
     return (side == "buy" and position <= 0.30) or (side == "sell" and position >= 0.70)
 

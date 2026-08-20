@@ -6,7 +6,7 @@ direction, zone and structural geometry are already validated.
 
 2026-08-18: M1 confirmations removed. In range markets M1 structure breaks
 are noise — false CHoCH/BOS signals that mislead the model. M5 is the minimum
-reliable timeframe for structural confirmation on XAUUSD; M15 is added for
+reliable timeframe for structural confirmation; M15 is added for
 higher-quality signals that yield bigger trades.
 """
 

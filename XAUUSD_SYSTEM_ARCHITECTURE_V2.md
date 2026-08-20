@@ -58,7 +58,9 @@ silently redo an earlier phase's job.
    the session and refreshed only when its evidence epoch changes.
 2. **Map and remember the target zone.** The reviewer converts the committed
    bias into one structurally identified zone and the runtime persists its
-   lifecycle. A zone is a location to observe, never an order by itself.
+   lifecycle. A zone is a location to observe, never an order by itself. Its
+   lifetime is distinct from an entry-trigger lifetime: it may remain armed
+   through a later price revisit within a bounded session window.
 3. **Qualify the entry at the zone.** Code requires price inside the zone, a
    completed M1 probe-and-failure response in the planned direction, and price
    at the plan's optimal zone edge. Direction, zone, target and structural
@@ -67,6 +69,13 @@ silently redo an earlier phase's job.
    delays entry until the move is exhausted. BOS/CHoCH, liquidity sweep, FVG
    and Fibonacci/OTE location remain supporting confluence, not standalone
    triggers. Only then may the executor submit the order.
+   Expiry of the short Qwen/M1 signal does not delete the mapped zone. The
+   executor keeps it armed for up to 15 minutes by default, but requires the
+   latest completed M1 candle to provide a fresh probe-and-failure response at
+   the revisit. It cancels immediately if live price reaches structural
+   invalidation or the target before entry, or if a completed M1 candle accepts
+   through the zone. The bounded window also prevents an obsolete synchronous
+   zone watcher from blocking newer plans indefinitely.
 4. **Protect the accepted trade.** Entry uses the planned structural
    invalidation as the broker SL and sizes volume from the configured risk
    budget. After fill, the trade reviewer manages level-to-level using closed
@@ -78,6 +87,43 @@ silently redo an earlier phase's job.
 The runtime, rather than the model, enforces every safety invariant in phases
 3 and 4. Qwen supplies contextual judgment and named-level decisions; broker
 state and deterministic validation remain authoritative.
+
+### Modular market-structure provider boundary
+
+Market structure is represented as zones and normalized events rather than
+exact-price equalities. The native closed-candle engine remains the sole live
+authority. External libraries plug into `market_structure_providers.py` behind
+one instrument-neutral schema and initially run only as shadow evidence:
+
+- SciPy prominence swings, scikit-learn DBSCAN zones, TA-Lib candle evidence,
+  and Smart Money Concepts comparisons may inspect the same completed M5 bars.
+- SMC Toolkit, Ruptures, Statsmodels Markov models, VectorBT replay, and Stock
+  Indicators ZigZag are research/offline providers. ZigZag is explicitly
+  repainting evidence and can never validate a live entry.
+- Provider availability, errors, directional agreement, delay, and eventual
+  trade outcomes are measured separately. Missing packages and provider errors
+  fail closed inside the provider boundary and cannot stop an MT5 cycle.
+- No provider may influence execution until walk-forward, cross-instrument,
+  closed-candle evaluation demonstrates improvement over the native baseline.
+  Promotion changes require tested code and an in-place revision of this V2
+  architecture; package installation alone never grants authority.
+
+The scientific package set is isolated in a supported Python research runtime
+(`requirements-structure.txt`) because the current MT5 runtime uses Python
+3.14. Research output must cross the boundary as normalized, timestamped
+events; the live process does not inherit the research environment's dependency
+or latency risk.
+
+The live process publishes one immutable sample per completed M5 candle to
+`structure-shadow-input-YYYY-MM-DD.jsonl`, containing the same closed bars and
+a frozen native direction. A separate Python 3.12/3.13 worker owns all external
+imports and records external consensus plus per-provider decisions. After three
+later completed M5 bars, it labels both native and external calls against the
+same ATR-normalized forward-price outcome and maintains a comparison summary.
+Shadow output is excluded from Qwen prompts, validators, and execution state;
+its JSONL ledger and summary state are observability and research artifacts
+only. Missing-provider health is `no_providers_available`, never a successful
+market-structure observation.
 
 ---
 
@@ -243,9 +289,20 @@ except (TimeoutError, OllamaError):
 ### P15 — Entry Target Mode Not Informed by Regime
 **Component:** `reviewer.py` → Qwen entry decision  
 **Severity:** MEDIUM — entries aim for wrong targets  
+**Status:** RESOLVED — 2026-08-20, with range-boundary consistency hardening  
 **Evidence:** In the 4392-4398 range, all 9 entries had targets at 4387, 4382, 4376, 4369, 4364 — all below the range. These are HTF trend targets that were never going to be reached in a 6-point range.  
 **Root cause:** Qwen picks targets from M15/H1/H4 structural levels because the entry prompt asks for `first_target` and `runner_target` without regime context. The model doesn't know "this is a range — target the M5 boundary, not the H1 level."  
 **Fix path:** Supply regime_context in entry prompt. In range, Qwen should output `target_mode: scalp` with `first_target` at the opposing M5 boundary. Curriculum teaches this mapping.
+
+**Resolution:** Runtime stamps the deterministic regime target mode and keeps a
+valid structured `target_mode` authoritative over stale reason prose. The range
+outer-edge veto is enforced only when `range_support` and `range_resistance`
+were actually detected. A mixed-swing range hint with `range_detected=false`
+and null boundaries cannot label a mapped-zone entry as
+`range_middle_or_wrong_edge`; it records `range_edge_check=unavailable` and
+leaves the mapped-zone plus closed-M1 failure gates authoritative. Replay of
+2026-08-20 found 83 false range-edge blocks with missing boundaries and 46
+`missing_target_mode` reasons whose structured mode was already `scalp`.
 
 ---
 
@@ -985,6 +1042,20 @@ Step 3.3: Dashboard qualified levels (P10)
 - Are basket targets being reached in trends?
 - Does M1 rejection gate improve entry quality (fewer immediate adverse moves)?
 
+Step 3.1a: Shared zone-response measurement
+  - `structure_response.py` evaluates every completed M1 against the current
+    execution-level ladder before model qualification.
+  - Zones remain intervals; probe, sweep, close-back, and acceptance use the
+    zone edges rather than exact-price equality.
+  - Excursion and close-return distances are reported in ATR-normalized units,
+    while instrument point size supplies the minimum width for line levels.
+  - The resulting `structural_responses` packet is instrument-neutral and is
+    authoritative over stale playbook `missing_evidence` text.
+  - Qwen still judges context and trade quality; Python establishes what the
+    completed candle objectively printed.
+  - Regression fixture: XAUUSD 2026-08-19 16:16 UTC must classify the sweep of
+    4498.867/4499.153 and close at 4497.674 as a confirmed sell response.
+
 ---
 
 ### Phase 4: Curriculum (Aug 31 - Sep 5) — Model Alignment
@@ -1069,6 +1140,7 @@ Every problem has a testable success criterion:
 | P15 | Wrong target mode | Range entries have first_target at M5 boundary, not H1 | Check target levels in proposals |
 | P19 | No range detection | Range detected when price bounces 3+ times between M5 levels | Replay known ranging sessions |
 | P20 | No transitions | Breakout detected within 2 M5 candles of range boundary break | Replay known breakout events |
+| P21 | Closed response missed by stale playbook | 100% of replayed probe-and-close fixtures appear in `structural_responses` on the next decision | Replay identical normalized fixtures for XAUUSD and a non-gold price scale |
 
 ---
 
@@ -1084,6 +1156,7 @@ Every problem has a testable success criterion:
 | Two guards create edge cases | HIGH | Both paths have invalidation check first (regime-independent). Unknown regime falls through to Qwen. Both guards log their regime + reason for audit. |
 | Curriculum doesn't stick in 7B model | MEDIUM | Qwen 7B has limited capacity. Keep regime vocabulary simple (4 states). Don't teach complex conditional logic — Python handles complexity, Qwen judges quality. |
 | Build drift accumulates further | LOW | Freeze after Phase 1 (foundation). Freeze again after Phase 2 (guard). Two intermediate freezes, not one at the end. |
+| Mechanical zone response overrules context | HIGH | Detector reports printed structure only; Qwen retains directional/context judgment and executor retains risk/geometry gates. |
 
 ---
 

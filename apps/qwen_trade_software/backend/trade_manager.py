@@ -479,10 +479,18 @@ def confirmed_management_guard(facts: dict) -> dict | None:
 def build_management_prompt(facts: dict, store_root: Path) -> str:
     """Use the compact human-owned manager contract plus current facts only."""
     from market_context_cache import load_prompt_section
+    from prompt_composer import compose_market_prompt, instrument_knowledge
 
     contract = load_prompt_section("qwen_trade_management", store_root)
-    return contract + "\n\nMANAGEMENT FACTS:\n" + json.dumps(
-        facts, separators=(",", ":")
+    symbol = str(facts.get("symbol") or "XAUUSDr")
+    return compose_market_prompt(
+        generic_contract=contract,
+        symbol=symbol,
+        instrument_contract=instrument_knowledge(
+            symbol, store_root, load_prompt_section
+        ),
+        facts_label="MANAGEMENT FACTS",
+        facts=facts,
     )
 
 

@@ -7,7 +7,7 @@ Fibonacci retracement of the impulse, with the "sweet spot" at 70.5%.
   Bullish OTE:  swing low -> swing high impulse, buy zone at 62-79% retrace
   Bearish OTE:  swing high -> swing low impulse, sell zone at 62-79% retrace
 
-Part of an ICT / SMC market-structure trading system for XAUUSD scalping.
+Instrument scale is supplied by the owning market-analysis engine.
 
 No project imports.
 """
@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 # Tuning constants
 # ---------------------------------------------------------------------------
 
-MIN_IMPULSE_PTS: float = 3.0        # minimum impulse size in points (XAUUSD)
+MIN_IMPULSE_PTS: float = 3.0        # legacy XAUUSD-compatible default
 MAX_OTES_PER_TF: int = 5            # cap active OTEs per timeframe
 STALE_CANDLE_LIMIT: int = 100        # expire after 100 candles on the TF
 MAX_IMPULSE_PAIRS: int = 3           # only consider last N impulse moves
@@ -80,7 +80,8 @@ class OTECalculator:
     FIB_705 = 0.705   # sweet spot
     FIB_79 = 0.786
 
-    def __init__(self) -> None:
+    def __init__(self, min_impulse_points: float = MIN_IMPULSE_PTS) -> None:
+        self.min_impulse_points = float(min_impulse_points)
         self._active_otes: dict[str, list[dict]] = {}   # tf -> list of OTEs
         self._candle_counts: dict[str, int] = {}         # tf -> candles seen
 
@@ -131,7 +132,7 @@ class OTECalculator:
             if kind_a == "low" and kind_b == "high":
                 # Bullish impulse (up-move) -> bullish OTE (buy zone)
                 impulse_size = price_b - price_a
-                if impulse_size < MIN_IMPULSE_PTS:
+                if impulse_size < self.min_impulse_points:
                     continue
                 fib_62 = round(price_b - (impulse_size * self.FIB_62), 4)
                 fib_705 = round(price_b - (impulse_size * self.FIB_705), 4)
@@ -143,7 +144,7 @@ class OTECalculator:
             elif kind_a == "high" and kind_b == "low":
                 # Bearish impulse (down-move) -> bearish OTE (sell zone)
                 impulse_size = price_a - price_b
-                if impulse_size < MIN_IMPULSE_PTS:
+                if impulse_size < self.min_impulse_points:
                     continue
                 fib_62 = round(price_b + (impulse_size * self.FIB_62), 4)
                 fib_705 = round(price_b + (impulse_size * self.FIB_705), 4)

@@ -8,6 +8,7 @@ from typing import Any
 import displacement
 import live_mapped_levels
 from market_atr import snapshot_atr_from_cache
+from instrument_config import instrument_for
 
 MAPPED_LEVEL_MAX_DISTANCE = 30.0
 
@@ -208,6 +209,7 @@ def compute_regime(
     levels: dict[str, float],
     prev_regime: str | None = None,
     prev_atr_ratio: float | None = None,
+    price_digits: int = 3,
 ) -> RegimeContext:
     """Compute regime from combined signals. Called every M1 close."""
     atr_ratio = None
@@ -264,7 +266,7 @@ def compute_regime(
         regime_state=state,
         volatility_state=_volatility_state(atr_ratio, prev_atr_ratio),
         trend_direction={"hh_hl": "buy", "lh_ll": "sell"}.get(m5_pattern),
-        current_price=round(float(current_price), 3),
+        current_price=round(float(current_price), price_digits),
         prev_regime_hint=prev_regime,
         regime_transition=transition,
     )
@@ -297,6 +299,7 @@ def snapshot_regime(
         levels,
         prev_regime=prev_regime,
         prev_atr_ratio=prev_atr_ratio,
+        price_digits=instrument_for(symbol).digits,
     )
     packet = ctx.to_dict()
     packet["atr_ok"] = bool(atr.get("ok"))

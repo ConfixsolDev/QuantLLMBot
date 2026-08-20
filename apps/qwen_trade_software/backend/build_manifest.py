@@ -68,6 +68,18 @@ DECISION_MODULES = (
     # Shape what the model is asked and what it is allowed to answer. A prompt
     # or cache change alters behaviour just as surely as a threshold does.
     "market_context_cache.py",
+    "instrument_config.py",
+    "market_runtime.py",
+    "prompt_composer.py",
+    "runtime_config.py",
+    "market_structure.py",
+    "structure_tracker.py",
+    "structural_event.py",
+    "fvg_detector.py",
+    "order_block.py",
+    "ote_calculator.py",
+    "liquidity_map.py",
+    "zone_scorer.py",
     "review_shared.py",
     # Infrastructure the decision path runs THROUGH.
     #
@@ -180,8 +192,12 @@ def _tunables() -> dict:
          "MAX_CACHE_AGE_HOURS")
 
     # Env switches that alter behaviour without touching a file.
-    for var in ("QWEN_SKIP_ON_GEOMETRY", "QWEN_MIN_REWARD_RISK", "QWEN_MODEL",
-                "QWEN_STRUCTURAL_BRACKET", "QWEN_REVIEW_INTERVAL_SECONDS"):
+    for var in (
+        "QWEN_SKIP_ON_GEOMETRY", "QWEN_MIN_REWARD_RISK", "QWEN_MODEL",
+        "QWEN_ENTRY_MODEL", "QWEN_MANAGEMENT_MODEL", "QWEN_PLANNER_MODEL",
+        "QWEN_CONTEXT_MODEL", "QWEN_PRIMARY_SYMBOL",
+        "QWEN_STRUCTURAL_BRACKET", "QWEN_REVIEW_INTERVAL_SECONDS",
+    ):
         values[f"env.{var}"] = os.environ.get(var)
     return values
 

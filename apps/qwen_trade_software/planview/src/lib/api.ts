@@ -23,8 +23,14 @@ export function fetchCandles(
   return fetchJson<CandlesResponse>(`/candles?tf=${timeframe}&count=${count}`);
 }
 
-export function fetchSnapshot(): Promise<Snapshot> {
-  return fetchJson<Snapshot>("/snapshot");
+function withSymbol(path: string, symbol?: string): string {
+  if (!symbol) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}symbol=${encodeURIComponent(symbol)}`;
+}
+
+export function fetchSnapshot(symbol?: string): Promise<Snapshot> {
+  return fetchJson<Snapshot>(withSymbol("/snapshot", symbol));
 }
 
 export function fetchPlanHistory(date: string) {
@@ -36,6 +42,7 @@ export function fetchTradeIdeas(options?: {
   days?: number;
   readyOnly?: boolean;
   limit?: number;
+  symbol?: string;
 }): Promise<TradeIdeasResponse> {
   const params = new URLSearchParams({
     min_confidence: String(options?.minConfidence ?? 50),
@@ -43,9 +50,10 @@ export function fetchTradeIdeas(options?: {
     ready_only: options?.readyOnly ? "1" : "0",
     limit: String(options?.limit ?? 300),
   });
+  if (options?.symbol) params.set("symbol", options.symbol);
   return fetchJson<TradeIdeasResponse>(`/trade-ideas?${params.toString()}`);
 }
 
-export function fetchLifecycle(): Promise<LifecycleResponse> {
-  return fetchJson<LifecycleResponse>("/lifecycle");
+export function fetchLifecycle(symbol?: string): Promise<LifecycleResponse> {
+  return fetchJson<LifecycleResponse>(withSymbol("/lifecycle", symbol));
 }

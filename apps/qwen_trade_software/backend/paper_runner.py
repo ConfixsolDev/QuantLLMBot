@@ -14,6 +14,8 @@ import MetaTrader5 as mt5
 import build_manifest
 import process_logging
 import paper_executor
+from instrument_config import instrument_for
+from runtime_config import PRIMARY_MARKET_SYMBOL
 import trade_geometry
 from trade_step_log import log_step
 from market_context_cache import latest_entry_context
@@ -24,7 +26,7 @@ LOG_DIR = APP_DIR / "logs"
 LOG_FILE = LOG_DIR / "paper-runner.log"
 DAILY_PAPER_CAP = 25
 MIN_ENTRY_CONFIDENCE = 51
-MAX_PROPOSAL_AGE_SECONDS = 60
+MAX_PROPOSAL_AGE_SECONDS = paper_executor.ZONE_ARMED_MAX_SECONDS
 # ── Daily loss cap ───────────────────────────────────────────────────────
 # 2026-08-18: Aug 10 lost $1,034 across 43 trades. A daily loss limit
 # stops the bleeding before one bad session destroys a week of gains.
@@ -190,7 +192,9 @@ def latest_ready_proposal():
             age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
             plan = proposal.get("qwen", {}).get("execution_plan", {})
             try:
-                ttl = min(MAX_PROPOSAL_AGE_SECONDS, max(5, int(plan.get("signal_ttl_seconds") or MAX_PROPOSAL_AGE_SECONDS)))
+                # The zone persists beyond the short M1 signal TTL. A fresh M1
+                # rejection is still mandatory inside the executor.
+                ttl = MAX_PROPOSAL_AGE_SECONDS
             except (TypeError, ValueError):
                 ttl = MAX_PROPOSAL_AGE_SECONDS
             if age_seconds < 0 or age_seconds > ttl:
@@ -246,6 +250,7 @@ def arguments_for(proposal: dict) -> Namespace:
         buckets=1,
         volume=float(plan["volume_each"]),
         signal_ttl_seconds=int(plan.get("signal_ttl_seconds") or MAX_PROPOSAL_AGE_SECONDS),
+        zone_validity_seconds=MAX_PROPOSAL_AGE_SECONDS,
         risk_budget=float(plan.get("risk_budget") or 150.0),
         regime_state=plan.get("regime_state"),
         volatility_state=plan.get("volatility_state"),
@@ -283,7 +288,10 @@ def proposal_runtime_failures(proposal: dict) -> list[str]:
     if plan.get("decision_confidence") != round(confidence):
         failures.append("confidence_provenance_mismatch")
 
-    symbol = str(proposal.get("symbol") or "XAUUSDr")
+    symbol = str(proposal.get("symbol") or PRIMARY_MARKET_SYMBOL)
+    instrument = instrument_for(symbol)
+    if not instrument.trade_enabled or instrument.context_only:
+        failures.append(f"instrument_not_trade_enabled:{instrument.key}")
     current = latest_entry_context(symbol)
     if current.get("status") != "ready":
         failures.append("current_cache_not_ready")

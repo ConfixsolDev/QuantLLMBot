@@ -42,6 +42,7 @@ import live_mapped_levels
 import process_logging
 import management_policy
 import trade_geometry
+from instrument_config import instrument_for
 from market_context_cache import latest_entry_context, latest_readiness
 from review_shared import (
     DEFAULT_MANAGEMENT_STATE,
@@ -66,6 +67,9 @@ from review_shared import (
     sync_model_residency,
     write_json_atomic,
 )
+from runtime_config import PRIMARY_MARKET_SYMBOL, model_for_role
+
+MANAGEMENT_MODEL = model_for_role("management")
 from tick_data_archive import append_qwen_decision, append_tick_record
 from trade_manager import (
     GUARD_TIMEOUT_CYCLES,
@@ -203,7 +207,9 @@ def _mapped_trade_level_prices(symbol: str, current_price: float | None = None) 
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
-    if str(payload.get("symbol") or symbol) not in {symbol, "XAUUSDr", "XAUUSD"}:
+    if not instrument_for(symbol).accepts(
+        str(payload.get("symbol") or symbol)
+    ):
         return {}
     out = {}
     for row in payload.get("levels") or []:
@@ -482,7 +488,7 @@ def update_dashboard(positions, levels_by_symbol, today, review=None, protection
     Qwen-owned position open -- doesn't clobber the last "qwen_management"
     commentary reviewer.py may still be surfacing for a just-closed trade.
     """
-    symbol = next(iter(levels_by_symbol), "XAUUSDr")
+    symbol = next(iter(levels_by_symbol), PRIMARY_MARKET_SYMBOL)
     tick = mt5.symbol_info_tick(symbol)
     review_tickets = load_review_tickets()
     position_rows = []
@@ -1149,7 +1155,7 @@ def review_positions() -> None:
         | {deal.symbol for deal in recent_deals if deal.symbol}
     )
     if not symbols:
-        symbols = ["XAUUSDr"]
+        symbols = [PRIMARY_MARKET_SYMBOL]
     levels_by_symbol = {symbol: chart_levels(symbol) for symbol in symbols}
     today = today_basket_summary(now)
     update_dashboard(positions, levels_by_symbol, today)
@@ -1259,7 +1265,7 @@ def review_positions() -> None:
     snapshot["management_facts"] = facts
     snapshot["regime_context"] = regime
     hard_stop = safety_guard(facts)
-    model_used = MODEL
+    model_used = MANAGEMENT_MODEL
     total_duration_ns = None
     prompt_text = None
     raw_response = None
@@ -1287,6 +1293,7 @@ def review_positions() -> None:
                 num_predict=512,
                 num_ctx=4096,
                 format_schema=management_schema(facts),
+                model=MANAGEMENT_MODEL,
             )
             total_duration_ns = result.get("total_duration")
             market_atr = result.get("market_atr")
@@ -1296,7 +1303,7 @@ def review_positions() -> None:
                 raw_review, facts
             )
             CONSECUTIVE_QWEN_FAILURES[position.ticket] = 0
-            model_used = MODEL
+            model_used = MANAGEMENT_MODEL
         except Exception as exc:
             ticket = int(position.ticket)
             CONSECUTIVE_QWEN_FAILURES[ticket] = (

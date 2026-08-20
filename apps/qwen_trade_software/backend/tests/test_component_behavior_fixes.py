@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import os
+import inspect
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import paper_executor  # noqa: E402
 import reviewer  # noqa: E402
+
+
+def test_executor_initializes_instrument_before_position_sizing():
+    source = inspect.getsource(paper_executor.submit_single_position)
+    assert source.index("instrument = instrument_for(args.symbol)") < source.index(
+        "instrument.contract_value_per_price_unit_lot"
+    )
 
 
 def test_geometry_omission_does_not_trigger_slow_second_model_call():

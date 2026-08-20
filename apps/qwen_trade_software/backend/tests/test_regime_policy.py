@@ -24,6 +24,17 @@ def test_range_entries_only_at_correct_outer_edge():
     assert not range_entry_allowed("sell", 102.0, regime)
 
 
+def test_range_hint_without_detected_boundaries_does_not_invent_middle():
+    """A missing range cannot prove that an entry is at the wrong edge."""
+    regime = {
+        "regime_state": "range",
+        "range_detected": False,
+        "range_support": None,
+        "range_resistance": None,
+    }
+    assert range_entry_allowed("sell", 4492.0, regime) is None
+
+
 def test_unconfirmed_transition_states_do_not_trade():
     assert not execution_settings("breakout_attempt")["allow_new_entry"]
     assert not execution_settings("reversal_attempt")["allow_new_entry"]

@@ -293,8 +293,9 @@ sent to the model, so this note is not shipped as an instruction.
 -->
 
 <!-- prompt:qwen_cached_entry -->
-<!-- version: 1.15 | directional bias first; M1 executes validated zone -->
-Judge trade QUALITY for one XAUUSD paper entry from ENTRY FACTS only. Cache
+<!-- version: 1.17 | persistent zone lifecycle; fresh closed-M1 trigger -->
+Judge trade QUALITY for one paper entry in the supplied instrument from ENTRY
+FACTS only. Cache
 facts are authoritative. Use only supplied levels, candles, sessions, prices,
 and evidence. Judge the current market independently of prior trade outcomes.
 
@@ -307,10 +308,17 @@ the missing directional evidence.
 
 Your job is directional judgment at support/resistance; runtime owns broker
 math. Once direction, zone and structural geometry align, one fresh completed
-M1 probe-and-failure response at the zone is sufficient execution timing. M5
+M1 probe-and-failure response at the zone is sufficient execution timing. The
+mapped zone remains an armed opportunity beyond a short inference TTL; a later
+return still requires a fresh completed M1 response. Cancel the armed zone when
+price reaches structural invalidation, reaches the target before entry, a
+completed M1 candle accepts through the zone, its bounded session window ends,
+or the owning thesis changes. M5
 response adds strength but is not a routine second confirmation. A clear buy
 or sell read must use that bias instead of wait. Confidence scores current
 setup quality whether the result is ready or wait.
+When structural_responses marks a mapped zone confirmed, that current closed-M1
+measurement overrides stale playbook missing-evidence text for the same setup.
 
 HTF auction outranks a local wick. Trade with acceptance, not against it.
 
@@ -368,6 +376,15 @@ missing any closed response at the zone, or session conflict. Never wait only
 for a better price. Use only supplied level IDs from execution_levels.
 A wait still reports the confidence the setup actually earned. Confidence 0
 is a contract error; if the stack is empty, use wait with confidence 1.
+
+<!-- prompt:instrument_xauusd -->
+<!-- version: 1.0 | XAUUSD-specific overlay; generic doctrine stays above -->
+The supplied instrument is XAUUSD (broker alias may be XAUUSDr). Interpret
+price distances in gold dollars/points using the runtime-supplied scale. Gold
+uses the supplied Asia range as prior session structure during London and the
+overlap. Its spread, zone width, stop distance, and target room must come from
+the supplied facts and XAUUSD instrument configuration, never from another
+pair. Gold remains authoritative over any future intermarket validator.
 
 <!-- prompt:qwen_dual_side_entry -->
 <!-- version: 2.0 | dual-side observation contract; model judges, code decides -->

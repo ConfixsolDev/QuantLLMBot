@@ -36,6 +36,7 @@ from dataclasses import dataclass, asdict, field
 from typing import Mapping, Sequence
 
 import entry_policy
+from instrument_config import InstrumentConfig, XAUUSD
 
 
 GEOMETRY_VERSION = "3.0"
@@ -95,14 +96,20 @@ MIN_STOP_DISTANCE = 1.00      # absolute sanity floor; the ladder above governs
 MAX_STOP_DISTANCE = 25.00
 
 
-def min_stop_for(frame: str | None) -> float:
+def min_stop_for(
+    frame: str | None, instrument: InstrumentConfig = XAUUSD
+) -> float:
     """Frame's minimum stop distance per CURRICULUM_AND_DATA_PREP.md 1.1."""
-    return TF_MIN_STOP.get((frame or "").upper(), DEFAULT_MIN_STOP)
+    ladder = instrument.min_stop_by_timeframe or TF_MIN_STOP
+    return ladder.get((frame or "").upper(), instrument.default_min_stop)
 
 
-def min_target_for(frame: str | None) -> float:
+def min_target_for(
+    frame: str | None, instrument: InstrumentConfig = XAUUSD
+) -> float:
     """Frame's minimum target distance per CURRICULUM_AND_DATA_PREP.md 1.1."""
-    return TF_MIN_TARGET.get((frame or "").upper(), DEFAULT_MIN_TARGET)
+    ladder = instrument.min_target_by_timeframe or TF_MIN_TARGET
+    return ladder.get((frame or "").upper(), instrument.default_min_target)
 
 # Minimum reward:risk, measured AFTER round-trip cost.
 #
@@ -184,7 +191,11 @@ def round_lot(volume: float) -> float:
     return round(steps * LOT_STEP, 2)
 
 
-def size_for_risk(stop_distance: float, risk_budget: float) -> float:
+def size_for_risk(
+    stop_distance: float,
+    risk_budget: float,
+    contract_value: float = VALUE_PER_PRICE_UNIT_PER_LOT,
+) -> float:
     """Position size such that a stop-out costs approximately the risk budget.
 
     This is the inversion that makes structural stops affordable: a wider stop
@@ -192,17 +203,24 @@ def size_for_risk(stop_distance: float, risk_budget: float) -> float:
     """
     if stop_distance <= 0:
         return 0.0
-    raw = risk_budget / (stop_distance * VALUE_PER_PRICE_UNIT_PER_LOT)
+    if contract_value <= 0:
+        return 0.0
+    raw = risk_budget / (stop_distance * contract_value)
     return max(0.0, min(MAX_LOT, round_lot(raw)))
 
 
-def structure_buffer(frame_range: float) -> float:
+def structure_buffer(
+    frame_range: float, instrument: InstrumentConfig = XAUUSD
+) -> float:
     """Room beyond the level so the level can be tested without a stop-out."""
-    return max(MIN_STRUCTURE_BUFFER, abs(frame_range) * STRUCTURE_BUFFER_FRACTION)
+    return max(
+        instrument.minimum_structure_buffer,
+        abs(frame_range) * instrument.structure_buffer_fraction,
+    )
 
 
 def _fixed_fallback(side: str, entry_price: float, risk_budget: float,
-                    detail: str) -> Bracket:
+                    detail: str, instrument: InstrumentConfig = XAUUSD) -> Bracket:
     """Reproduce the legacy $3/$5 bracket when structure is unusable.
 
     Kept so that turning this module on can never leave a trade unprotected --
@@ -210,22 +228,29 @@ def _fixed_fallback(side: str, entry_price: float, risk_budget: float,
     rather than refusing or improvising.
     """
     direction = 1.0 if side == "buy" else -1.0
-    stop = entry_price - direction * LEGACY_STOP_DISTANCE
-    target = entry_price + direction * LEGACY_TARGET_DISTANCE
-    volume = size_for_risk(LEGACY_STOP_DISTANCE, risk_budget)
+    stop_distance = instrument.fallback_stop_distance
+    target_distance = instrument.fallback_target_distance
+    stop = entry_price - direction * stop_distance
+    target = entry_price + direction * target_distance
+    volume = size_for_risk(
+        stop_distance, risk_budget,
+        instrument.contract_value_per_price_unit_lot,
+    )
     return Bracket(
         ok=volume >= MIN_LOT,
         reason_code=GeometryReason.FELL_BACK_TO_FIXED,
         side=side,
         entry_price=entry_price,
-        stop_loss=round(stop, 3),
-        take_profit=round(target, 3),
-        stop_distance=LEGACY_STOP_DISTANCE,
-        target_distance=LEGACY_TARGET_DISTANCE,
-        reward_risk=LEGACY_TARGET_DISTANCE / LEGACY_STOP_DISTANCE,
+        stop_loss=round(stop, instrument.digits),
+        take_profit=round(target, instrument.digits),
+        stop_distance=stop_distance,
+        target_distance=target_distance,
+        reward_risk=target_distance / stop_distance,
         volume=volume,
         risk_budget=risk_budget,
-        expected_risk=LEGACY_STOP_DISTANCE * VALUE_PER_PRICE_UNIT_PER_LOT * volume,
+        expected_risk=(
+            stop_distance * instrument.contract_value_per_price_unit_lot * volume
+        ),
         geometry_source="legacy_fixed_3_5",
         detail=detail,
     )
@@ -243,6 +268,7 @@ def build_bracket(
     target_id: str | None = None,
     risk_budget: float = DEFAULT_RISK_BUDGET,
     allow_fallback: bool = True,
+    instrument: InstrumentConfig = XAUUSD,
 ) -> Bracket:
     """Build the entry bracket from structure, sizing to a constant risk.
 
@@ -262,12 +288,12 @@ def build_bracket(
     if invalidation_price is None:
         if allow_fallback:
             return _fixed_fallback(side, entry_price, risk_budget,
-                                   "no structural invalidation supplied")
+                                   "no structural invalidation supplied", instrument)
         return Bracket(ok=False, reason_code=GeometryReason.NO_INVALIDATION)
     if target_price is None:
         if allow_fallback:
             return _fixed_fallback(side, entry_price, risk_budget,
-                                   "no structural target supplied")
+                                   "no structural target supplied", instrument)
         return Bracket(ok=False, reason_code=GeometryReason.NO_TARGET)
 
     # The invalidation must sit behind the entry, the target in front of it.
@@ -278,7 +304,7 @@ def build_bracket(
         return Bracket(ok=False, reason_code=GeometryReason.TARGET_WRONG_SIDE,
                        detail=f"target {target_price} is not beyond entry {entry_price}")
 
-    buffer_amount = structure_buffer(frame_range)
+    buffer_amount = structure_buffer(frame_range, instrument)
     stop_loss = invalidation_price - direction * buffer_amount
     stop_distance = abs(entry_price - stop_loss)
     target_distance = abs(target_price - entry_price)
@@ -286,13 +312,13 @@ def build_bracket(
     # Pad out to the frame's minimum (curriculum 1.1). "Pad to mins if nearer
     # level is tighter" -- the level is where the idea fails, the minimum is how
     # much room that frame's noise demands. Take whichever is further.
-    floor_stop = min_stop_for(frame)
+    floor_stop = min_stop_for(frame, instrument)
     if stop_distance < floor_stop:
         stop_distance = floor_stop
         stop_loss = entry_price - direction * floor_stop
 
     # A target inside the frame's minimum cannot pay for the frame's risk.
-    floor_target = min_target_for(frame)
+    floor_target = min_target_for(frame, instrument)
     if target_distance < floor_target:
         return Bracket(ok=False, reason_code=GeometryReason.REWARD_RISK_TOO_LOW,
                        stop_distance=stop_distance, target_distance=target_distance,
@@ -300,23 +326,27 @@ def build_bracket(
                        detail=(f"target {target_distance:.2f} below the {frame} "
                                f"minimum {floor_target}"))
 
-    if stop_distance < MIN_STOP_DISTANCE:
+    if stop_distance < instrument.minimum_stop_distance:
         return Bracket(ok=False, reason_code=GeometryReason.STOP_TOO_TIGHT,
                        stop_distance=stop_distance,
                        detail=f"stop {stop_distance:.2f} below minimum {MIN_STOP_DISTANCE}")
-    if stop_distance > MAX_STOP_DISTANCE:
+    if stop_distance > instrument.maximum_stop_distance:
         return Bracket(ok=False, reason_code=GeometryReason.STOP_TOO_WIDE,
                        stop_distance=stop_distance,
                        detail=f"stop {stop_distance:.2f} above maximum {MAX_STOP_DISTANCE}")
 
-    reward_risk = (target_distance - ROUND_TRIP_COST) / stop_distance
+    reward_risk = (target_distance - instrument.round_trip_cost) / stop_distance
     if reward_risk < MIN_REWARD_RISK:
         return Bracket(ok=False, reason_code=GeometryReason.REWARD_RISK_TOO_LOW,
                        stop_distance=stop_distance, target_distance=target_distance,
                        reward_risk=reward_risk,
                        detail=f"reward:risk {reward_risk:.2f} below {MIN_REWARD_RISK}")
 
-    volume = size_for_risk(stop_distance, risk_budget)
+    volume = size_for_risk(
+        stop_distance,
+        risk_budget,
+        instrument.contract_value_per_price_unit_lot,
+    )
     if volume < MIN_LOT:
         return Bracket(ok=False, reason_code=GeometryReason.SIZE_BELOW_MINIMUM,
                        stop_distance=stop_distance, volume=volume,
@@ -327,14 +357,17 @@ def build_bracket(
         reason_code=GeometryReason.OK,
         side=side,
         entry_price=entry_price,
-        stop_loss=round(stop_loss, 3),
-        take_profit=round(target_price, 3),
-        stop_distance=round(stop_distance, 3),
-        target_distance=round(target_distance, 3),
+        stop_loss=round(stop_loss, instrument.digits),
+        take_profit=round(target_price, instrument.digits),
+        stop_distance=round(stop_distance, instrument.digits),
+        target_distance=round(target_distance, instrument.digits),
         reward_risk=round(reward_risk, 3),
         volume=volume,
         risk_budget=risk_budget,
-        expected_risk=round(stop_distance * VALUE_PER_PRICE_UNIT_PER_LOT * volume, 2),
+        expected_risk=round(
+            stop_distance * instrument.contract_value_per_price_unit_lot * volume,
+            2,
+        ),
         frame=frame,
         invalidation_id=invalidation_id,
         target_id=target_id,

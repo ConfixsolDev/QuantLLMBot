@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import entry_policy
+from instrument_config import instrument_for
 import live_mapped_levels
 import plan_ladder
 from execution_funnel import build_funnel
@@ -78,6 +79,8 @@ from approach_tracker import ApproachTracker
 from idea_lifecycle import IdeaManager
 from zone_scorer import score_zones, compact_score_log, ScoringConfig
 from market_structure import compute_structure_context
+from market_runtime import MarketRuntime, MarketRuntimeRegistry
+from runtime_config import PRIMARY_MARKET_SYMBOL, model_for_role
 
 
 # 2026-08-06: kept separate from trade_management.py's
@@ -88,7 +91,6 @@ from market_structure import compute_structure_context
 # Defaults to the same 30s starting point either way.
 INTERVAL_SECONDS = int(os.environ.get("QWEN_ENTRY_INTERVAL_SECONDS", "30"))
 DAILY_PAPER_CAP = 100
-ENTRY_REGIME_MEMORY = {"hint": None, "atr_ratio": None}
 MIN_ENTRY_CONFIDENCE = 51
 QWEN_PLAN_GATING = os.environ.get("QWEN_PLAN_GATING", "0") == "1"
 QWEN_DECISION_LOCK = threading.Lock()
@@ -104,11 +106,13 @@ LIVENESS = DecisionLivenessMonitor()
 from pathlib import Path as _Path
 
 LIFECYCLE_STATE_FILE = _Path(__file__).resolve().parent / "lifecycle-state.json"
-XAUUSD_SCORING_CONFIG = ScoringConfig()  # default tuning for gold
-
-_IDEA_MANAGER = IdeaManager()
-_APPROACH_TRACKER = ApproachTracker()
+_MARKET_RUNTIMES = MarketRuntimeRegistry()
+_PRIMARY_RUNTIME = _MARKET_RUNTIMES.get(PRIMARY_MARKET_SYMBOL)
+# Compatibility aliases for diagnostics/tests. Live paths resolve by symbol.
+_IDEA_MANAGER = _PRIMARY_RUNTIME.idea_manager
+_APPROACH_TRACKER = _PRIMARY_RUNTIME.approach_tracker
 LEGACY_DUAL_ASSESSMENT = "dual-direction assessment"
+ENTRY_MODEL = model_for_role("entry")
 
 
 def _has_legacy_dual_assessment(value) -> bool:
@@ -122,6 +126,7 @@ def _has_legacy_dual_assessment(value) -> bool:
 
 def _load_lifecycle_state() -> None:
     """Restore IdeaManager and ApproachTracker from disk on startup."""
+    global _MARKET_RUNTIMES, _PRIMARY_RUNTIME
     global _IDEA_MANAGER, _APPROACH_TRACKER
     state = read_json_safe(LIFECYCLE_STATE_FILE, {})
     if _has_legacy_dual_assessment(state.get("idea_manager")):
@@ -129,29 +134,26 @@ def _load_lifecycle_state() -> None:
         # back to Qwen on every call. Start a fresh directional observation;
         # broker/trade logs remain untouched.
         logging.warning("lifecycle:discarded_legacy_dual_assessment_state")
-        _IDEA_MANAGER = IdeaManager()
-        _APPROACH_TRACKER = ApproachTracker()
+        _MARKET_RUNTIMES = MarketRuntimeRegistry()
+        _PRIMARY_RUNTIME = _MARKET_RUNTIMES.get(PRIMARY_MARKET_SYMBOL)
+        _IDEA_MANAGER = _PRIMARY_RUNTIME.idea_manager
+        _APPROACH_TRACKER = _PRIMARY_RUNTIME.approach_tracker
         _save_lifecycle_state()
         return
-    if state.get("idea_manager"):
-        try:
-            _IDEA_MANAGER = IdeaManager.from_state(state["idea_manager"])
-        except Exception:
-            logging.exception("lifecycle:idea_manager_restore_failed")
-            _IDEA_MANAGER = IdeaManager()
-    if state.get("approach_tracker"):
-        try:
-            _APPROACH_TRACKER = ApproachTracker.from_state(state["approach_tracker"])
-        except Exception:
-            logging.exception("lifecycle:approach_tracker_restore_failed")
-            _APPROACH_TRACKER = ApproachTracker()
+    try:
+        _MARKET_RUNTIMES = MarketRuntimeRegistry.from_state(state)
+    except Exception:
+        logging.exception("lifecycle:market_runtime_restore_failed")
+        _MARKET_RUNTIMES = MarketRuntimeRegistry()
+    _PRIMARY_RUNTIME = _MARKET_RUNTIMES.get(PRIMARY_MARKET_SYMBOL)
+    _IDEA_MANAGER = _PRIMARY_RUNTIME.idea_manager
+    _APPROACH_TRACKER = _PRIMARY_RUNTIME.approach_tracker
 
 
 def _save_lifecycle_state() -> None:
     """Persist IdeaManager and ApproachTracker to disk after each cycle."""
     state = {
-        "idea_manager": _IDEA_MANAGER.to_state(),
-        "approach_tracker": _APPROACH_TRACKER.to_state(),
+        **_MARKET_RUNTIMES.to_state(),
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
     write_json_atomic(LIFECYCLE_STATE_FILE, state)
@@ -367,6 +369,7 @@ def _geometry_metrics(plan: dict) -> dict:
 
 def list_trade_ideas(
     *,
+    symbol: str | None = None,
     min_confidence: float = 50.0,
     days_back: int = 2,
     ready_only: bool = False,
@@ -377,6 +380,7 @@ def list_trade_ideas(
     Used by Plan View /ideas so operators can see geometry skips
     (reward_risk_too_low / target below HTF minimum) on high-confidence ideas.
     """
+    requested_market = instrument_for(symbol).key if symbol else None
     outcomes = _execution_outcome_index(days_back=days_back)
     ideas: list[dict] = []
     for path in _dated_log_files("paper-proposals", days_back=days_back):
@@ -391,6 +395,14 @@ def list_trade_ideas(
                 proposal = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            proposal_symbol = str(proposal.get("symbol") or "")
+            if requested_market:
+                try:
+                    proposal_market = instrument_for(proposal_symbol).key
+                except ValueError:
+                    proposal_market = proposal_symbol.upper()
+                if proposal_market != requested_market:
+                    continue
             qwen = proposal.get("qwen") if isinstance(proposal.get("qwen"), dict) else {}
             plan = (
                 qwen.get("execution_plan")
@@ -444,6 +456,8 @@ def list_trade_ideas(
     blocked = sum(1 for row in ideas if row.get("blocked_by_geometry"))
     ready = sum(1 for row in ideas if row.get("status") == "ready")
     return {
+        "symbol": symbol,
+        "market": requested_market,
         "min_confidence": float(min_confidence),
         "days_back": int(days_back),
         "count": len(ideas),
@@ -884,8 +898,9 @@ def compact_entry_facts(
     }
 
     # -- Lifecycle context injection --
-    mgr = idea_manager or _IDEA_MANAGER
-    trk = approach_tracker or _APPROACH_TRACKER
+    runtime = _MARKET_RUNTIMES.get(symbol)
+    mgr = idea_manager or runtime.idea_manager
+    trk = approach_tracker or runtime.approach_tracker
     # A closed M1 beyond the wrong side of the watched zone invalidates the
     # directional idea before Qwen sees the packet. Previously the stale sell
     # at 4347 remained active while M5 had already changed bullish, repeatedly
@@ -971,7 +986,7 @@ def compact_entry_facts(
                 })
             scored = score_zones(
                 zone_dicts, full_m15,
-                live_price=mid, config=XAUUSD_SCORING_CONFIG,
+                live_price=mid, config=runtime.scoring_config,
                 min_grade="C",
             )
             packet["zone_scores"] = [s.to_dict() for s in scored[:5]]
@@ -1011,14 +1026,14 @@ def compact_entry_facts(
         # Buy → enter at zone_low (lowest possible), SL just below.
         # Sell → enter at zone_high (highest possible), SL just above.
         # Structural SL buffer: spread + noise margin beyond zone boundary.
-        SL_BUFFER = 1.5  # points beyond zone edge (XAUUSD spread ~0.3 + slippage + noise)
+        sl_buffer = runtime.config.zone_stop_buffer
         if active.side == "buy":
             optimal_entry = active.zone_low
-            structural_sl = active.zone_low - SL_BUFFER
+            structural_sl = active.zone_low - sl_buffer
             sl_distance = optimal_entry - structural_sl
         else:
             optimal_entry = active.zone_high
-            structural_sl = active.zone_high + SL_BUFFER
+            structural_sl = active.zone_high + sl_buffer
             sl_distance = structural_sl - optimal_entry
 
         # Distance from current price to the optimal entry
@@ -1113,15 +1128,16 @@ def compact_entry_facts(
                 continue
             level_prices[str(level_id)] = (lo + hi) / 2.0
         if mid > 0:
+            regime_memory = runtime.regime_memory
             packet["regime_context"] = snapshot_regime(
                 symbol,
                 mid,
                 level_prices,
-                prev_regime=ENTRY_REGIME_MEMORY.get("hint"),
-                prev_atr_ratio=ENTRY_REGIME_MEMORY.get("atr_ratio"),
+                prev_regime=regime_memory.get("hint"),
+                prev_atr_ratio=regime_memory.get("atr_ratio"),
             )
-            ENTRY_REGIME_MEMORY["hint"] = packet["regime_context"].get("regime_hint")
-            ENTRY_REGIME_MEMORY["atr_ratio"] = packet["regime_context"].get("atr_ratio_3_51")
+            regime_memory["hint"] = packet["regime_context"].get("regime_hint")
+            regime_memory["atr_ratio"] = packet["regime_context"].get("atr_ratio_3_51")
         packet["suggested_target_mode"] = suggested_target_mode(
             packet["regime_context"].get("regime_hint")
         )
@@ -1130,6 +1146,32 @@ def compact_entry_facts(
         ]
     except Exception:
         pass
+
+    # Closed-candle structure is evaluated mechanically at decision time.
+    # Cached playbooks describe what to watch; they must not remain the
+    # authority for whether the latest M1 has already printed the response.
+    try:
+        from structure_response import evaluate_nearby_responses
+
+        responses = evaluate_nearby_responses(
+            execution_levels,
+            closed_m1,
+            atr=(packet.get("regime_context") or {}).get("atr_m1_51"),
+            point_size=runtime.config.point_size,
+        )
+        packet["structural_responses"] = responses
+        by_level = {
+            str(row.get("level_id")): row for row in responses
+            if row.get("level_id")
+        }
+        for playbook in packet["playbooks"]:
+            response = by_level.get(str(playbook.get("level_id")))
+            if response and response.get("confirmed"):
+                playbook["missing"] = []
+                playbook["closed_response"] = response
+    except Exception:
+        packet["structural_responses"] = []
+        logging.debug("structure_response:evaluation_failed", exc_info=True)
     try:
         from confirmation_engine import snapshot_confirmations
 
@@ -1328,7 +1370,13 @@ def _stamp_regime_target_mode(review: dict, facts: dict) -> None:
                 entry = (float(plan["entry_low"]) + float(plan["entry_high"])) / 2.0
             except (KeyError, TypeError, ValueError):
                 entry = None
-        if not range_entry_allowed(plan.get("side"), entry, regime):
+        range_edge_allowed = range_entry_allowed(plan.get("side"), entry, regime)
+        plan["range_edge_check"] = (
+            "allowed" if range_edge_allowed is True
+            else "blocked" if range_edge_allowed is False
+            else "unavailable"
+        )
+        if range_edge_allowed is False:
             blocked_reason = "range_middle_or_wrong_edge"
     expected_side = regime.get("trend_direction")
     if (
@@ -1418,9 +1466,22 @@ def entry_contract_version() -> str:
 
 
 def build_entry_prompt(facts: dict) -> str:
-    """Compact entry prompt: short trade-quality contract + compressed facts."""
-    contract = load_prompt_section("qwen_cached_entry", STORE_ROOT)
-    return contract + "\n\nENTRY FACTS:\n" + json.dumps(facts, separators=(",", ":"))
+    """Assemble generic doctrine + instrument overlay + compressed facts."""
+    generic = load_prompt_section("qwen_cached_entry", STORE_ROOT)
+    profile = instrument_for(str(facts.get("symbol") or "XAUUSDr"))
+    if profile.prompt_section:
+        specific = load_prompt_section(profile.prompt_section, STORE_ROOT)
+    else:
+        specific = (
+            f"Analyse instrument {profile.key} ({profile.broker_symbol}). "
+            f"Price digits={profile.digits}, point_size={profile.point_size}. "
+            "No instrument-specific intermarket assumptions are supplied."
+        )
+    return (
+        "GENERIC MARKET ANALYSIS CONTRACT:\n" + generic
+        + "\n\nINSTRUMENT-SPECIFIC CONTRACT:\n" + specific
+        + "\n\nENTRY FACTS:\n" + json.dumps(facts, separators=(",", ":"))
+    )
 
 
 def qwen_contract_correction_reason(review: dict) -> str | None:
@@ -2369,6 +2430,19 @@ def build_snapshot() -> dict:
     else:
         snapshot["qwen"] = entry_state.get("qwen", dict(DEFAULT_ENTRY_QWEN_STATE))
     snapshot.pop("qwen_management", None)
+    primary_symbol = str(snapshot.get("symbol") or "XAUUSDr")
+    snapshot["primary_symbol"] = instrument_for(primary_symbol).key
+    snapshot["markets"] = {
+        runtime.symbol: {
+            "symbol": runtime.symbol,
+            "broker_symbol": runtime.config.broker_symbol,
+            "trade_enabled": runtime.config.trade_enabled,
+            "context_only": runtime.config.context_only,
+            "lifecycle": runtime.idea_manager.active_idea_for_facts(),
+            "regime_memory": dict(runtime.regime_memory),
+        }
+        for runtime in _MARKET_RUNTIMES.all()
+    }
     return snapshot
 
 
@@ -2460,7 +2534,9 @@ def _zone_bounds_from_data(
     return center - _FALLBACK_ZONE_HALF, center + _FALLBACK_ZONE_HALF
 
 
-def _update_idea_lifecycle(review: dict, facts: dict) -> None:
+def _update_idea_lifecycle(
+    review: dict, facts: dict, runtime: MarketRuntime | None = None
+) -> None:
     """Update trade idea state machine based on the Qwen entry response.
 
     Called after every model-produced entry decision. Drives the lifecycle
@@ -2475,6 +2551,11 @@ def _update_idea_lifecycle(review: dict, facts: dict) -> None:
 
     All mutations are on the module-level _IDEA_MANAGER / _APPROACH_TRACKER.
     """
+    runtime = runtime or _MARKET_RUNTIMES.get(
+        str(facts.get("symbol") or "XAUUSDr")
+    )
+    idea_manager = runtime.idea_manager
+    approach_tracker = runtime.approach_tracker
     plan = review.get("execution_plan") or {}
     status = str(plan.get("status", "wait")).strip().lower()
     side = plan.get("side")
@@ -2529,10 +2610,10 @@ def _update_idea_lifecycle(review: dict, facts: dict) -> None:
                 matched_score = zs
                 break
 
-        active = _IDEA_MANAGER.active_idea
+        active = idea_manager.active_idea
         if active and active.zone_id == zone_id and active.state.value != "armed":
             # Same zone, transition forward
-            _IDEA_MANAGER.transition(
+            idea_manager.transition(
                 active.idea_id, "armed",
                 reason=f"model_ready_conf={confidence}",
             )
@@ -2542,7 +2623,7 @@ def _update_idea_lifecycle(review: dict, facts: dict) -> None:
             )
         elif not active or active.zone_id != zone_id:
             # New zone — create new idea (auto-supersedes old)
-            idea = _IDEA_MANAGER.create_idea(
+            idea = idea_manager.create_idea(
                 zone_id=zone_id, side=side,
                 zone_low=lo, zone_high=hi,
                 # Lead with runtime-owned geometry. Qwen sometimes repeats an
@@ -2555,11 +2636,11 @@ def _update_idea_lifecycle(review: dict, facts: dict) -> None:
                 zone_score=matched_score,
             )
             # Jump straight to ARMED since model said ready
-            _IDEA_MANAGER.transition(
+            idea_manager.transition(
                 idea.idea_id, "at_zone",
                 reason="model_identified_zone",
             )
-            _IDEA_MANAGER.transition(
+            idea_manager.transition(
                 idea.idea_id, "armed",
                 reason=f"model_ready_conf={confidence}",
             )
@@ -2568,31 +2649,31 @@ def _update_idea_lifecycle(review: dict, facts: dict) -> None:
                 zone_id, lo, hi, side, confidence,
             )
 
-    elif status == "wait" and _IDEA_MANAGER.has_active:
+    elif status == "wait" and idea_manager.has_active:
         # Model says wait — check if we should maintain or invalidate idea
-        active = _IDEA_MANAGER.active_idea
+        active = idea_manager.active_idea
         reason_text = str(plan.get("reason", "")).lower()
 
         if "broke" in reason_text or "invalidat" in reason_text:
             # Zone broke — resolve the idea
-            _IDEA_MANAGER.resolve(
+            idea_manager.resolve(
                 active.idea_id,
                 outcome="invalidated",
                 reason=f"model_wait:{reason_text[:80]}",
             )
-            _APPROACH_TRACKER.reset()
+            approach_tracker.reset()
             logging.info(
                 "lifecycle:idea_invalidated :: %s reason=%s",
                 active.zone_id, reason_text[:60],
             )
         elif approach.get("distance_trend") == "retreating" and approach.get("observation_count", 0) >= 3:
             # Price retreating from zone for multiple observations — expire
-            _IDEA_MANAGER.resolve(
+            idea_manager.resolve(
                 active.idea_id,
                 outcome="expired",
                 reason="price_retreating_from_zone",
             )
-            _APPROACH_TRACKER.reset()
+            approach_tracker.reset()
             logging.info(
                 "lifecycle:idea_expired :: %s retreating",
                 active.zone_id,
@@ -2601,7 +2682,7 @@ def _update_idea_lifecycle(review: dict, facts: dict) -> None:
             # Still tracking — approach data was already updated in compact_entry_facts
             if active.state.value == "armed":
                 # Was armed but model now says wait — downgrade back to at_zone
-                _IDEA_MANAGER.transition(
+                idea_manager.transition(
                     active.idea_id, "at_zone",
                     reason=f"model_wait:{reason_text[:40]}",
                 )
@@ -2611,7 +2692,7 @@ def _update_idea_lifecycle(review: dict, facts: dict) -> None:
                 approach.get("assessment", "unknown"),
             )
 
-    elif status == "wait" and not _IDEA_MANAGER.has_active:
+    elif status == "wait" and not idea_manager.has_active:
         # No active idea and model says wait — check if planner has zones to stalk
         planner_zones = (facts.get("planner") or {}).get("entry_zones") or []
         # side may be None on a wait plan — fall back to bias
@@ -2627,7 +2708,7 @@ def _update_idea_lifecycle(review: dict, facts: dict) -> None:
             except (TypeError, ValueError):
                 lo, hi, z_id = 0.0, 0.0, ""
             if lo > 0 and hi > 0 and z_id:
-                _IDEA_MANAGER.create_idea(
+                idea_manager.create_idea(
                     zone_id=z_id, side=stalk_side,
                     zone_low=lo, zone_high=hi,
                     thesis=f"Session plan zone: {z_id}",
@@ -2700,10 +2781,11 @@ def generate_dashboard_deal_sheet() -> dict:
         }
         raw_response = json.dumps(review, separators=(",", ":"))
     else:
+        runtime = _MARKET_RUNTIMES.get(symbol)
         facts = compact_entry_facts(
             entry_cache, decision_levels, planner_context, symbol,
-            idea_manager=_IDEA_MANAGER,
-            approach_tracker=_APPROACH_TRACKER,
+            idea_manager=runtime.idea_manager,
+            approach_tracker=runtime.approach_tracker,
         )
         log_step(
             "context_ready", "passed", symbol=symbol,
@@ -2745,6 +2827,7 @@ def generate_dashboard_deal_sheet() -> dict:
             format_schema=entry_decision_schema(
                 entry_cache, decision_levels, facts
             ),
+            model=ENTRY_MODEL,
         )
         decision_wall_seconds = round(time.monotonic() - decision_started, 3)
         decision_duration_ns = result.get("total_duration")
@@ -2766,6 +2849,7 @@ def generate_dashboard_deal_sheet() -> dict:
             correction = ollama_generate(
                 correction_prompt, timeout=None, num_predict=768, num_ctx=4096,
                 format_schema=entry_decision_schema(entry_cache, decision_levels, facts),
+                model=ENTRY_MODEL,
             )
             decision_duration_ns = int(decision_duration_ns or 0) + int(
                 correction.get("total_duration") or 0
@@ -2973,7 +3057,7 @@ def generate_dashboard_deal_sheet() -> dict:
             prompt_text=prompt_text,
             raw_response=raw_response,
             parsed=review,
-            model=snapshot.get("model") or MODEL,
+            model=ENTRY_MODEL,
             duration_ns=decision_duration_ns,
             proposal_id=proposal_id,
             atr=market_atr,
@@ -3054,7 +3138,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/snapshot":
+            query = parse_qs(parsed.query)
+            requested_symbol = str(
+                query.get("symbol", [PRIMARY_MARKET_SYMBOL])[0]
+                or PRIMARY_MARKET_SYMBOL
+            )
             snapshot = build_snapshot()
+            requested_profile = instrument_for(requested_symbol)
+            snapshot_profile = instrument_for(
+                str(snapshot.get("symbol") or PRIMARY_MARKET_SYMBOL)
+            )
+            snapshot["requested_symbol"] = requested_symbol
+            snapshot["requested_market"] = requested_profile.key
+            snapshot["data_market"] = snapshot_profile.key
+            if requested_profile.key != snapshot_profile.key:
+                # Never display the primary market's quote as another pair.
+                snapshot["connected"] = False
+                snapshot["price"] = None
+                snapshot["symbol"] = requested_profile.broker_symbol
+                snapshot["availability_reason"] = "market_snapshot_not_running"
             snapshot["paper_execution"] = latest_paper_execution()
             payload = json.dumps(snapshot).encode("utf-8")
             self._headers()
@@ -3095,6 +3197,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if path == "/trade-ideas":
             query = parse_qs(parsed.query)
+            requested_symbol = str(query.get("symbol", [""])[0] or "") or None
             try:
                 min_confidence = float(query.get("min_confidence", ["50"])[0])
             except ValueError:
@@ -3114,6 +3217,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             }
             payload = json.dumps(
                 list_trade_ideas(
+                    symbol=requested_symbol,
                     min_confidence=min_confidence,
                     days_back=max(0, min(days_back, 14)),
                     ready_only=ready_only,
@@ -3124,13 +3228,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
         if path == "/lifecycle":
+            query = parse_qs(parsed.query)
+            requested_symbol = str(
+                query.get("symbol", [PRIMARY_MARKET_SYMBOL])[0]
+                or PRIMARY_MARKET_SYMBOL
+            )
+            runtime = _MARKET_RUNTIMES.get(requested_symbol)
+            manager = runtime.idea_manager
+            tracker = runtime.approach_tracker
             payload = json.dumps({
-                "active_idea": _IDEA_MANAGER.active_idea_for_facts(),
-                "prior_context": _IDEA_MANAGER.prior_idea_context(),
-                "history": [h.to_dict() for h in _IDEA_MANAGER.history[-5:]],
+                "symbol": runtime.symbol,
+                "active_idea": manager.active_idea_for_facts(),
+                "prior_context": manager.prior_idea_context(),
+                "history": [h.to_dict() for h in manager.history[-5:]],
                 "approach": (
-                    _APPROACH_TRACKER.snapshot().to_dict()
-                    if _APPROACH_TRACKER.active else {}
+                    tracker.snapshot().to_dict() if tracker.active else {}
                 ),
             }).encode("utf-8")
             self._headers()
@@ -3387,13 +3499,18 @@ def main() -> None:
     # Restore trade idea lifecycle state from disk
     try:
         _load_lifecycle_state()
-        if _IDEA_MANAGER.has_active:
+        for runtime in _MARKET_RUNTIMES.all():
+            manager = runtime.idea_manager
+            if manager.has_active:
+                logging.info(
+                    "lifecycle:restored symbol=%s active_idea=%s state=%s",
+                    runtime.symbol, manager.active_idea.zone_id,
+                    manager.active_idea.state,
+                )
             logging.info(
-                "lifecycle:restored active_idea=%s state=%s",
-                _IDEA_MANAGER.active_idea.zone_id,
-                _IDEA_MANAGER.active_idea.state,
+                "lifecycle:restored symbol=%s history_count=%d",
+                runtime.symbol, len(manager.history),
             )
-        logging.info("lifecycle:restored history_count=%d", len(_IDEA_MANAGER.history))
     except Exception:
         logging.exception("lifecycle:restore_failed")
     # Evict any previous qwen-trading-* left pinned in VRAM. warm_model() pins

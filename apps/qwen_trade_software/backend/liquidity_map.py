@@ -5,7 +5,7 @@ liquidity sweeps: price briefly pierces through a pool level, grabs stops,
 then reverses.  A sweep of buy-side liquidity (above EQH) is bearish; a
 sweep of sell-side liquidity (below EQL) is bullish.
 
-Part of an ICT / SMC market-structure trading system for XAUUSD scalping.
+Price-scale thresholds are supplied by the owning market-analysis engine.
 
 No project imports.
 """
@@ -68,7 +68,13 @@ class LiquidityMap:
     EQUAL_TOLERANCE_PTS = EQUAL_TOLERANCE_PTS
     SWEEP_OVERSHOOT_MAX_PTS = SWEEP_OVERSHOOT_MAX_PTS
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        equal_tolerance_points: float = EQUAL_TOLERANCE_PTS,
+        sweep_overshoot_max_points: float = SWEEP_OVERSHOOT_MAX_PTS,
+    ) -> None:
+        self.EQUAL_TOLERANCE_PTS = float(equal_tolerance_points)
+        self.SWEEP_OVERSHOOT_MAX_PTS = float(sweep_overshoot_max_points)
         self._pools: dict[str, list[dict]] = {}   # tf -> list of pools
         self._sweeps: list[dict] = []              # detected sweep events
         self._candle_counts: dict[str, int] = {}   # tf -> candles processed

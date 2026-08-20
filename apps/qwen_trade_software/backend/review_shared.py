@@ -32,7 +32,10 @@ from pathlib import Path
 import MetaTrader5 as mt5
 
 from market_context_cache import DEFAULT_STORE_ROOT, model_generation_lock
-from runtime_config import ACTIVE_QWEN_MODEL, DEFAULT_QWEN_MODEL
+from runtime_config import (
+    ACTIVE_QWEN_MODEL, DEFAULT_QWEN_MODEL, PRIMARY_MARKET_SYMBOL,
+    configured_models, model_for_role,
+)
 
 
 # Model version. See model_training/CURRICULUM_AND_DATA_PREP.md 3.0.
@@ -84,7 +87,7 @@ QWEN_COMMENT_PREFIX = "QWEN_"
 # XAUUSD typically quiets Friday ~21:00 UTC through Sunday ~22:00 UTC. When the
 # calendar says closed, or MT5 stops producing fresh ticks, unload Qwen from
 # Ollama and skip model calls until the market is quoting again.
-GOLD_SYMBOL = "XAUUSDr"
+GOLD_SYMBOL = PRIMARY_MARKET_SYMBOL  # compatibility name; configured primary market
 MAX_QUOTE_AGE_MS_MARKET_OPEN = 180_000
 MODEL_RESIDENCY_FILE = None  # set after APP_DIR below
 # Both processes read the same skill/contract text off disk (entry reads
@@ -127,7 +130,7 @@ DEFAULT_MANAGEMENT_STATE = {
     "connected": False,
     "model": MODEL,
     "model_status": "Starting",
-    "symbol": "XAUUSDr",
+    "symbol": PRIMARY_MARKET_SYMBOL,
     "price": 0.0,
     "change": 0.0,
     "timeframe": "M1",
@@ -222,12 +225,13 @@ def write_json_atomic(path: Path, data: dict) -> None:
 def _ollama_generate_raw(
     prompt: str, keep_alive=-1, timeout=45, num_predict=160, num_ctx=4096,
     format_schema: dict | None = None,
+    model: str | None = None,
 ) -> dict:
     import urllib.request
 
     payload = json.dumps(
         {
-            "model": MODEL,
+            "model": model or MODEL,
             "prompt": prompt,
             "stream": False,
             "keep_alive": keep_alive,
@@ -255,6 +259,7 @@ def _ollama_generate_raw(
 def ollama_generate(
     prompt: str, keep_alive=-1, timeout=45, num_predict=160, num_ctx=4096,
     format_schema: dict | None = None,
+    model: str | None = None,
 ) -> dict:
     # Empty-prompt warm/unload paths use _ollama_generate_raw / warm_model /
     # unload_model. Real decision calls must not run while gold is not quoting.
@@ -267,8 +272,9 @@ def ollama_generate(
 
     from io_performance_log import log_qwen_generate
 
+    selected_model = model or MODEL
     return log_qwen_generate(
-        model=MODEL,
+        model=selected_model,
         prompt=prompt,
         num_ctx=num_ctx,
         num_predict=num_predict,
@@ -282,6 +288,7 @@ def ollama_generate(
             num_predict=num_predict,
             num_ctx=num_ctx,
             format_schema=format_schema,
+            model=selected_model,
         ),
     )
 
@@ -378,7 +385,7 @@ def unload_model() -> None:
     logging.info("Qwen model unloaded from Ollama: %s", MODEL)
 
 
-def unload_stale_models(keep: str | None = None) -> list[str]:
+def unload_stale_models(keep: str | list[str] | tuple[str, ...] | None = None) -> list[str]:
     """Evict any resident qwen-trading-* model that is not the active one.
 
     2026-08-10 INCIDENT. warm_model() pins with keep_alive=-1, which Ollama
@@ -393,7 +400,11 @@ def unload_stale_models(keep: str | None = None) -> list[str]:
 
     Called on startup so a version switch cannot silently double VRAM.
     """
-    keep = keep or MODEL
+    keep_models = set(
+        configured_models()
+        if keep is None
+        else ([keep] if isinstance(keep, str) else keep)
+    )
     evicted: list[str] = []
     try:
         with urllib.request.urlopen(OLLAMA_PS, timeout=10) as response:
@@ -404,7 +415,7 @@ def unload_stale_models(keep: str | None = None) -> list[str]:
 
     for row in running:
         name = str(row.get("name") or row.get("model") or "")
-        if not name or name == keep:
+        if not name or name in keep_models:
             continue
         if "qwen-trading" not in name:
             continue  # never touch models this system did not load
@@ -420,7 +431,8 @@ def unload_stale_models(keep: str | None = None) -> list[str]:
                 pass
             evicted.append(name)
             logging.info(
-                "evicted stale resident model %s (active model is %s)", name, keep
+                "evicted stale resident model %s (configured models are %s)",
+                name, sorted(keep_models),
             )
         except Exception as error:
             logging.warning("failed to evict stale model %s: %s", name, error)

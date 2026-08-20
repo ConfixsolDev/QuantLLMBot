@@ -39,6 +39,9 @@ from review_shared import (
     sync_model_residency,
     write_json_atomic,
 )
+from runtime_config import PRIMARY_MARKET_SYMBOL, model_for_role
+
+PLANNER_MODEL = model_for_role("planner")
 from tick_data_archive import (
     TICK_DATA_ROOT,
     append_qwen_decision,
@@ -49,7 +52,7 @@ from tick_data_archive import (
 
 INTERVAL_SECONDS = 20
 MAX_PRICE_REPAIR_ATTEMPTS = 1
-SYMBOL = "XAUUSDr"
+SYMBOL = PRIMARY_MARKET_SYMBOL
 PLANNING_SESSIONS = ("asia", "london", "overlap", "new_york")
 SESSION_OPEN_HOUR = {"asia": 0, "london": 8, "overlap": 13, "new_york": 16}
 SESSION_CLOSE_HOUR = {"asia": 7, "london": 13, "overlap": 16, "new_york": 17}
@@ -666,14 +669,18 @@ def live_sanity_snapshot(plan: dict | None, live_price: float | None) -> dict | 
 
 
 def _prompt(role: str, facts: dict) -> str:
-    core_skill = (STORE_ROOT / "core_skill.md").read_text(encoding="utf-8")
+    from prompt_composer import compose_market_prompt, instrument_knowledge
+
     contract = load_prompt_section(role, STORE_ROOT)
-    return (
-        core_skill
-        + "\n\n"
-        + contract
-        + "\n\nPLANNER FACTS:\n"
-        + json.dumps(facts, separators=(",", ":"))
+    symbol = str(facts.get("symbol") or SYMBOL)
+    return compose_market_prompt(
+        generic_contract=contract,
+        symbol=symbol,
+        instrument_contract=instrument_knowledge(
+            symbol, STORE_ROOT, load_prompt_section
+        ),
+        facts_label="PLANNER FACTS",
+        facts=facts,
     )
 
 
@@ -685,6 +692,7 @@ def _call_model(role: str, facts: dict, schema: dict, num_predict: int = 768) ->
         num_predict=num_predict,
         num_ctx=8192,
         format_schema=schema,
+        model=PLANNER_MODEL,
     )
     parsed = json.loads(result.get("response", "{}"))
     append_qwen_decision(
@@ -694,7 +702,7 @@ def _call_model(role: str, facts: dict, schema: dict, num_predict: int = 768) ->
         prompt_text=prompt,
         raw_response=result.get("response", "{}"),
         parsed=parsed,
-        model=MODEL,
+        model=PLANNER_MODEL,
         duration_ns=result.get("total_duration"),
         atr=result.get("market_atr"),
         context={"role": role, "clock": facts.get("clock")},

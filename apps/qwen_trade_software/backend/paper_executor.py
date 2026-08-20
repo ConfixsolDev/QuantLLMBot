@@ -15,6 +15,8 @@ import MetaTrader5 as mt5
 import build_manifest
 import live_mapped_levels
 import trade_geometry
+from instrument_config import XAUUSD, instrument_for
+from runtime_config import PRIMARY_MARKET_SYMBOL
 from trade_step_log import log_step
 from tick_data_archive import append_tick_record
 
@@ -43,15 +45,24 @@ INITIAL_TAKE_PROFIT_DISTANCE = 5.0
 # Sell → optimal = zone high, fill only when price >= optimal - tolerance.
 # This ensures we buy at the bottom and sell at the top of the zone.
 OPTIMAL_ENTRY_TOLERANCE_PTS = 0.5  # allow 0.5pt slippage from optimal edge
+# A mapped zone is slower-lived than its M1 trigger.  The executor may wait for
+# price to revisit structure, but never indefinitely: a bounded window prevents
+# an old synchronous execution from hiding a newer Qwen plan.
+ZONE_ARMED_MAX_SECONDS = max(
+    60, int(os.environ.get("QWEN_ZONE_ARMED_MAX_SECONDS", "900"))
+)
 
 # Stage 3: place the stop beyond the structural invalidation and let size absorb
 # the distance. Set QWEN_STRUCTURAL_BRACKET=0 to fall back to the flat $3/$5.
 STRUCTURAL_BRACKET_ENABLED = os.environ.get("QWEN_STRUCTURAL_BRACKET", "1") != "0"
 
-# Strategy-establishment window: allow an H1+ thesis to fall back to the
-# protected fixed bracket when structural geometry cannot be built.  This is
-# deliberately one switch so the stricter rule can be restored after enough
-# demo outcomes exist by setting QWEN_ENFORCE_HTF_MICRO_BRACKET=1.
+# RESEARCH POLICY (2026-08-20): keep the protected fallback enabled by default
+# during the next few months of research.  A structural path can lose because
+# it is wrong in a different way; retaining the fixed bracket gives us a safe,
+# comparable control sample instead of prematurely optimizing around one loss
+# direction.  This is research behaviour, not proof of positive expectancy.
+# Set QWEN_ENFORCE_HTF_MICRO_BRACKET=1 when the collected evidence supports
+# enforcing the stricter HTF-only rule.
 ENFORCE_HTF_MICRO_BRACKET = (
     os.environ.get("QWEN_ENFORCE_HTF_MICRO_BRACKET", "0") == "1"
 )
@@ -398,6 +409,38 @@ def entry_fill_ready(
     return True, "armed_m1_failure_at_optimal"
 
 
+def pre_fill_zone_cancellation(
+    side: str,
+    price: float,
+    low: float,
+    high: float,
+    stop_loss: float,
+    take_profit: float,
+    closed_m1: dict | None,
+) -> str | None:
+    """Return why a persistent zone is no longer tradeable.
+
+    Zone lifetime and trigger lifetime are intentionally separate.  A later
+    revisit is allowed, but it must not enter after the thesis invalidated, its
+    target already traded, or a completed M1 candle accepted through the zone.
+    """
+    if side == "buy":
+        if price <= stop_loss:
+            return "zone_invalidated_at_stop"
+        if price >= take_profit:
+            return "target_reached_without_fill"
+        if closed_m1 is not None and float(closed_m1["close"]) < low:
+            return "zone_accepted_through_on_m1"
+    else:
+        if price >= stop_loss:
+            return "zone_invalidated_at_stop"
+        if price <= take_profit:
+            return "target_reached_without_fill"
+        if closed_m1 is not None and float(closed_m1["close"]) > high:
+            return "zone_accepted_through_on_m1"
+    return None
+
+
 def remaining_signal_seconds(created_at: datetime, now: datetime, ttl: float) -> float:
     return ttl - (now - created_at).total_seconds()
 
@@ -678,14 +721,16 @@ def _manager_close_summary(record: dict | None) -> dict | None:
     }
 
 
-def initial_safety_bracket(side: str, order_price: float, digits: int) -> tuple[float, float]:
+def initial_safety_bracket(
+    side: str, order_price: float, digits: int, instrument=XAUUSD
+) -> tuple[float, float]:
     """Fixed $3 stop / $5 target from the fill price."""
     if side == "buy":
-        stop_loss = order_price - INITIAL_STOP_DISTANCE
-        take_profit = order_price + INITIAL_TAKE_PROFIT_DISTANCE
+        stop_loss = order_price - instrument.fallback_stop_distance
+        take_profit = order_price + instrument.fallback_target_distance
     else:
-        stop_loss = order_price + INITIAL_STOP_DISTANCE
-        take_profit = order_price - INITIAL_TAKE_PROFIT_DISTANCE
+        stop_loss = order_price + instrument.fallback_stop_distance
+        take_profit = order_price - instrument.fallback_target_distance
     return round(stop_loss, digits), round(take_profit, digits)
 
 
@@ -752,12 +797,16 @@ def broker_bracket_from_plan(
 
     Set QWEN_STRUCTURAL_BRACKET=0 to force the legacy path (still HTF-blocked).
     """
-    safety_sl, safety_tp = initial_safety_bracket(args.side, order_price, digits)
+    instrument = instrument_for(getattr(args, "symbol", PRIMARY_MARKET_SYMBOL))
+    safety_sl, safety_tp = initial_safety_bracket(
+        args.side, order_price, digits, instrument
+    )
     risk_budget = float(
         getattr(args, "risk_budget", trade_geometry.DEFAULT_RISK_BUDGET)
     )
     fallback_volume = trade_geometry.size_for_risk(
-        abs(order_price - safety_sl), risk_budget
+        abs(order_price - safety_sl), risk_budget,
+        instrument.contract_value_per_price_unit_lot,
     )
 
     def result(sl: float, tp: float, source: str, volume: float):
@@ -790,6 +839,7 @@ def broker_bracket_from_plan(
         target_id=getattr(args, "target_level_id", None),
         risk_budget=risk_budget,
         allow_fallback=False,
+        instrument=instrument,
     )
     if not bracket.ok:
         # 2026-08-11 observation window: do not refuse on level/R:R geometry for
@@ -838,6 +888,7 @@ def broker_bracket_from_plan(
 
 
 def submit_single_position(args, execution_id: str, tick):
+    instrument = instrument_for(args.symbol)
     is_buy = args.side == "buy"
     order_price = float(tick.ask if is_buy else tick.bid)
     symbol_info = mt5.symbol_info(args.symbol)
@@ -874,6 +925,7 @@ def submit_single_position(args, execution_id: str, tick):
         trade_geometry.size_for_risk(
             abs(order_price - safety_sl),
             float(getattr(args, "risk_budget", trade_geometry.DEFAULT_RISK_BUDGET)),
+            instrument.contract_value_per_price_unit_lot,
         ),
     )
     bracket_source = f"planned_invalidation_live+{bracket_source}"
@@ -902,13 +954,22 @@ def submit_single_position(args, execution_id: str, tick):
 
 
 def _run(args) -> dict:
+    instrument = instrument_for(args.symbol)
+    if not instrument.trade_enabled or instrument.context_only:
+        raise RuntimeError(
+            f"Execution disabled for context-only instrument {instrument.key}"
+        )
     proposal = load_proposal(args.proposal_id)
     validate_plan(args, proposal)
     proposal_created_at = datetime.fromisoformat(proposal["created_at_utc"])
+    zone_validity_seconds = max(
+        float(args.signal_ttl_seconds),
+        float(getattr(args, "zone_validity_seconds", ZONE_ARMED_MAX_SECONDS)),
+    )
     signal_seconds_left = remaining_signal_seconds(
         proposal_created_at,
         datetime.now(timezone.utc),
-        args.signal_ttl_seconds,
+        zone_validity_seconds,
     )
     if signal_seconds_left <= 0:
         result = {
@@ -916,8 +977,9 @@ def _run(args) -> dict:
             "event": "mt5_execution_skipped",
             "proposal_id": args.proposal_id,
             "created_at_utc": utc_now(),
-            "reason": "signal_expired",
+            "reason": "zone_wait_expired",
             "signal_ttl_seconds": args.signal_ttl_seconds,
+            "zone_validity_seconds": zone_validity_seconds,
         }
         append_event(result)
         return result
@@ -982,6 +1044,7 @@ def _run(args) -> dict:
                     "initial_safety_distance": INITIAL_SAFETY_DISTANCE,
                     "management_owner": "qwen_trade_management",
                     "signal_ttl_seconds": args.signal_ttl_seconds,
+                    "zone_validity_seconds": zone_validity_seconds,
                     "optimal_entry_price": getattr(args, "optimal_entry_price", None),
                     "optimal_entry_tolerance_pts": OPTIMAL_ENTRY_TOLERANCE_PTS,
                     "entry_price_policy": (
@@ -1015,7 +1078,7 @@ def _run(args) -> dict:
                     "execution_id": execution_id,
                     "proposal_id": args.proposal_id,
                     "created_at_utc": utc_now(),
-                    "reason": "signal_expired",
+                    "reason": "zone_wait_expired",
                     "exit_price": None,
                     "fills": [],
                     "unfilled_positions": 1,
@@ -1072,6 +1135,42 @@ def _run(args) -> dict:
 
             entry_quote = fill_price(tick, args.side)
             mark = close_price(tick, args.side)
+            closed_m1 = latest_closed_m1_bar(args.symbol)
+            cancellation = pre_fill_zone_cancellation(
+                args.side,
+                entry_quote,
+                args.entry_low,
+                args.entry_high,
+                args.stop_loss,
+                args.take_profit,
+                closed_m1,
+            ) if not fills else None
+            if cancellation:
+                result = {
+                    "schema_version": 1,
+                    "event": "mt5_execution_closed",
+                    "execution_id": execution_id,
+                    "proposal_id": args.proposal_id,
+                    "created_at_utc": utc_now(),
+                    "reason": cancellation,
+                    "exit_price": None,
+                    "fills": [],
+                    "unfilled_positions": 1,
+                    "gross_pnl": 0,
+                    "peak_pnl": 0.0,
+                    "maximum_drawdown": 0.0,
+                    "holding_seconds": round(time.monotonic() - started, 3),
+                    "position_holding_seconds": 0.0,
+                    "close_results": [],
+                }
+                append_event(result)
+                log_step(
+                    "zone_lifecycle", "cancelled", proposal_id=args.proposal_id,
+                    execution_id=execution_id, symbol=args.symbol,
+                    price=entry_quote, quote_age_ms=max(0, age_ms),
+                    detail=cancellation,
+                )
+                return result
             location = entry_location(
                 args.side,
                 entry_quote,
@@ -1085,7 +1184,7 @@ def _run(args) -> dict:
                 args.entry_low,
                 args.entry_high,
                 args.stop_loss,
-                latest_closed_m1_bar(args.symbol),
+                closed_m1,
                 optimal_entry_price=getattr(args, "optimal_entry_price", None),
             )
             currently_allowed = not fills and currently_allowed
@@ -1509,7 +1608,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="MT5 single-position paper executor")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--proposal-id")
-    parser.add_argument("--symbol", default="XAUUSDr")
+    parser.add_argument("--symbol", default=PRIMARY_MARKET_SYMBOL)
     parser.add_argument("--side", choices=("buy", "sell"))
     parser.add_argument("--entry-low", type=float)
     parser.add_argument("--entry-high", type=float)

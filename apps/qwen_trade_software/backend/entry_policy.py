@@ -618,6 +618,16 @@ def check_ready_reason_contradiction(review: Mapping) -> str | None:
         str(plan.get(key) or "") for key in ("reason", "reason_code")
     ).lower()
 
+    # Live regression, 2026-08-20: Qwen emitted reason="missing_target_mode"
+    # alongside target_mode="scalp".  The structured value is authoritative;
+    # refusing the entry because stale reason prose denies a field that is
+    # demonstrably present turns a valid ready plan into a false contradiction.
+    # Keep blocking this reason when the field really is absent or invalid.
+    if "missing_target_mode" in text and str(plan.get("target_mode") or "").lower() in {
+        "scalp", "starter_basket", "directional_basket",
+    }:
+        text = text.replace("missing_target_mode", "")
+
     if any(marker in text for marker in NOT_READY_MARKERS):
         return ReasonCode.READY_CONTRADICTS_OWN_REASON
     return None

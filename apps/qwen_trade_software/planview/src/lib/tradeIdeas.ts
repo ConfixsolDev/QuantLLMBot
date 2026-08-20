@@ -52,6 +52,8 @@ export type TradeIdeaRow = {
 };
 
 export type TradeIdeasResponse = {
+  symbol?: string | null;
+  market?: string | null;
   min_confidence: number;
   days_back: number;
   count: number;
@@ -63,6 +65,7 @@ export type TradeIdeasResponse = {
 };
 
 export type LifecycleResponse = {
+  symbol?: string;
   active_idea?: {
     state?: string;
     watching_zone?: string;

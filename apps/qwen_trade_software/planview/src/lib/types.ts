@@ -311,6 +311,10 @@ export interface Snapshot {
   connected?: boolean;
   symbol?: string;
   price?: number;
+  requested_symbol?: string;
+  requested_market?: string;
+  data_market?: string;
+  availability_reason?: string;
   positions?: Array<{ ticket?: number; price_open?: number; price_current?: number }>;
   profit_protection?: {
     ticket?: number; state?: string; armed?: boolean; entry?: number;

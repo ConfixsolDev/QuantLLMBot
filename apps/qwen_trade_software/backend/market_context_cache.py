@@ -27,9 +27,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import MetaTrader5 as mt5
+from instrument_config import instrument_for
 
 import live_mapped_levels
-from runtime_config import ACTIVE_QWEN_MODEL
+from runtime_config import PRIMARY_MARKET_SYMBOL, model_for_role
 
 
 SCHEMA_VERSION = 1
@@ -37,7 +38,7 @@ QUALIFICATION_VERSION = 2
 # Kept in lockstep with review_shared.MODEL -- both processes must talk to the
 # same model or the qualification certificate (keyed on model_digest) is
 # invalidated on every cycle. See CURRICULUM_AND_DATA_PREP.md 3.0.
-MODEL = ACTIVE_QWEN_MODEL
+MODEL = model_for_role("context")
 OLLAMA_GENERATE = "http://127.0.0.1:11434/api/generate"
 OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
 OLLAMA_PS = "http://127.0.0.1:11434/api/ps"
@@ -321,7 +322,7 @@ class Quote:
 
 
 class MT5MarketSource:
-    def __init__(self, symbol: str = "XAUUSDr") -> None:
+    def __init__(self, symbol: str = PRIMARY_MARKET_SYMBOL) -> None:
         self.requested_symbol = symbol
         self.symbol = symbol
 
@@ -335,9 +336,17 @@ class MT5MarketSource:
             raise RuntimeError("Context shadow is restricted to an MT5 demo account")
         info = mt5.symbol_info(self.requested_symbol)
         if info is None:
-            symbols = mt5.symbols_get(group="*XAUUSD*") or []
+            profile = instrument_for(self.requested_symbol)
+            candidates = (profile.broker_symbol, profile.key, *profile.aliases)
+            symbols = []
+            for candidate in candidates:
+                symbols = mt5.symbols_get(group=f"*{candidate}*") or []
+                if symbols:
+                    break
             if not symbols:
-                raise RuntimeError("No XAUUSD symbol is available in MT5")
+                raise RuntimeError(
+                    f"No MT5 symbol is available for {self.requested_symbol}"
+                )
             self.symbol = symbols[0].name
         else:
             self.symbol = self.requested_symbol
@@ -1168,7 +1177,8 @@ class ContextProjectionBuilder:
             payload = json.loads(MAPPED_TRADE_LEVELS_PATH.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return []
-        if str(payload.get("symbol") or self.symbol) not in {self.symbol, "XAUUSDr", "XAUUSD"}:
+        profile = instrument_for(self.symbol)
+        if not profile.accepts(str(payload.get("symbol") or self.symbol)):
             return []
         mapped: list[dict] = []
         for row in payload.get("levels") or []:
@@ -2211,7 +2221,16 @@ class QwenContextShadow:
             return existing["payload"], [], {"reused": True}
         contract = load_prompt_section("qwen_history_chunk", self.store_root)
         facts = {"timeframe_digest": digest}
-        prompt = contract + "\n\nTIMEFRAME DIGEST:\n" + canonical_json(facts)
+        from prompt_composer import compose_market_prompt, instrument_knowledge
+        prompt = compose_market_prompt(
+            generic_contract=contract,
+            symbol=self.symbol,
+            instrument_contract=instrument_knowledge(
+                self.symbol, self.store_root, load_prompt_section
+            ),
+            facts_label="TIMEFRAME DIGEST",
+            facts=facts,
+        )
         known = {row[0] for row in digest.get("recent_exact_bars", [])}
         known.update(
             block[index]
@@ -2431,7 +2450,14 @@ class QwenContextShadow:
                 return rows, normalized, [], metrics
 
         contract = load_prompt_section("qwen_playbook_interpretation", self.store_root)
-        prompt = core + "\n\n" + contract + "\n\nPLAYBOOK FACTS:\n" + canonical_json(facts)
+        from prompt_composer import compose_market_prompt
+        prompt = compose_market_prompt(
+            generic_contract=contract,
+            symbol=self.symbol,
+            instrument_contract=core,
+            facts_label="PLAYBOOK FACTS",
+            facts=facts,
+        )
         interpretation_properties = {}
         for row in pending_playbooks:
             known_evidence = sorted(set(row.get("evidence_ids") or []))
@@ -2556,7 +2582,10 @@ class QwenContextShadow:
         raw_hash: str,
         as_of: datetime,
     ) -> tuple[dict, dict, list[str]]:
-        core = (self.store_root / "core_skill.md").read_text(encoding="utf-8")
+        from prompt_composer import compose_market_prompt, instrument_knowledge
+        core = instrument_knowledge(
+            self.symbol, self.store_root, load_prompt_section
+        )
         contract = load_prompt_section("qwen_cache_warmup", self.store_root)
         session_epochs = {
             "structural": structure["cache_epoch"],
@@ -2645,12 +2674,12 @@ class QwenContextShadow:
             },
             "deterministic_structure": structure["payload"],
         }
-        prompt = (
-            core
-            + "\n\n"
-            + contract
-            + "\n\nSTRUCTURAL CACHE FACTS:\n"
-            + canonical_json(structural_facts)
+        prompt = compose_market_prompt(
+            generic_contract=contract,
+            symbol=self.symbol,
+            instrument_contract=core,
+            facts_label="STRUCTURAL CACHE FACTS",
+            facts=structural_facts,
         )
         # A bounded validation response leaves the consolidation prompt room
         # for output. ``-1`` can reserve excessive output space and silently
@@ -2911,12 +2940,12 @@ class QwenContextShadow:
                     for row in playbooks["payload"].get("playbooks", [])
                 ],
             }
-            session_prompt = (
-                core
-                + "\n\n"
-                + session_contract
-                + "\n\nSESSION CACHE FACTS:\n"
-                + canonical_json(session_facts)
+            session_prompt = compose_market_prompt(
+                generic_contract=session_contract,
+                symbol=self.symbol,
+                instrument_contract=core,
+                facts_label="SESSION CACHE FACTS",
+                facts=session_facts,
             )
             expected_session = session["payload"]
             expected_ids = {
@@ -3199,7 +3228,16 @@ class QwenContextShadow:
             return True, [], {"reused_certificate": True}
         challenge = self._challenge_payload(structure, levels, session, playbooks)
         contract = load_prompt_section("qwen_context_challenge", self.store_root)
-        prompt = contract + "\n\nCACHE CHALLENGE:\n" + canonical_json(challenge["supplied"])
+        from prompt_composer import compose_market_prompt, instrument_knowledge
+        prompt = compose_market_prompt(
+            generic_contract=contract,
+            symbol=self.symbol,
+            instrument_contract=instrument_knowledge(
+                self.symbol, self.store_root, load_prompt_section
+            ),
+            facts_label="CACHE CHALLENGE",
+            facts=challenge["supplied"],
+        )
 
         prior = self.cache.latest_qwen_response(
             self.symbol, "context_challenge", challenge["supplied"]
@@ -3319,7 +3357,16 @@ class QwenContextShadow:
     def _run_minute_shadow(self, minute: dict) -> tuple[bool, list[str], dict]:
         packet = minute["payload"]
         contract = load_prompt_section("qwen_minute_shadow", self.store_root)
-        prompt = contract + "\n\nMINUTE PACKET:\n" + canonical_json(packet)
+        from prompt_composer import compose_market_prompt, instrument_knowledge
+        prompt = compose_market_prompt(
+            generic_contract=contract,
+            symbol=self.symbol,
+            instrument_contract=instrument_knowledge(
+                self.symbol, self.store_root, load_prompt_section
+            ),
+            facts_label="MINUTE PACKET",
+            facts=packet,
+        )
         started = time.perf_counter()
         minute_schema = {
             "type": "object",
@@ -4049,7 +4096,7 @@ def run_service(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--symbol", default="XAUUSDr")
+    parser.add_argument("--symbol", default=PRIMARY_MARKET_SYMBOL)
     parser.add_argument("--model", default=MODEL)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--store-root", type=Path, default=DEFAULT_STORE_ROOT)
