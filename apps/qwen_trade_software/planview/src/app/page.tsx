@@ -191,6 +191,7 @@ export default function PlanViewPage() {
       <MarketIntelligencePanel
         intelligence={snapshot?.market_intelligence}
         trace={snapshot?.qwen_trace}
+        gate={snapshot?.qwen_event_gate}
       />
 
       <DayBranchPanel

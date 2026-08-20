@@ -7,9 +7,11 @@ function value(v: unknown) {
 export function MarketIntelligencePanel({
   intelligence,
   trace,
+  gate,
 }: {
   intelligence?: MarketIntelligence | null;
   trace?: QwenTrace | null;
+  gate?: { fingerprint?: string; called_at_epoch?: number; reason?: string } | null;
 }) {
   const hierarchy = intelligence?.hierarchy ?? {};
   const dxy = intelligence?.dxy?.states ?? {};
@@ -62,6 +64,7 @@ export function MarketIntelligencePanel({
             <dt>Decision seconds</dt><dd className="text-right text-slate-200">{value(trace?.decision_wall_seconds)}</dd>
             <dt>Evidence cited</dt><dd className="text-right text-slate-200">{trace?.evidence_ids?.length ?? 0}</dd>
             <dt>Retrievals</dt><dd className="text-right text-slate-200">{trace?.retrieval_requests?.length ?? 0}</dd>
+            <dt>Last trigger</dt><dd className="text-right text-slate-200">{value(gate?.reason)}</dd>
           </dl>
           <div className="mt-3 max-h-28 overflow-auto rounded bg-slate-950 p-2 font-mono text-[11px] text-slate-400">
             {trace?.raw_response || "No Qwen response recorded yet."}

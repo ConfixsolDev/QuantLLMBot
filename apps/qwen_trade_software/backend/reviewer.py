@@ -84,6 +84,7 @@ from market_runtime import MarketRuntime, MarketRuntimeRegistry
 from runtime_config import PRIMARY_MARKET_SYMBOL, model_for_role
 from candle_clock import candle_clock
 from market_intelligence import MarketIntelligenceService
+from qwen_event_gate import QwenEventGate
 
 
 # 2026-08-06: kept separate from trade_management.py's
@@ -119,6 +120,10 @@ def _intelligence_candles(symbol: str, timeframe: str, count: int) -> list[dict]
 
 MARKET_INTELLIGENCE = MarketIntelligenceService(INTELLIGENCE_DB, _intelligence_candles)
 MARKET_INTELLIGENCE.refresh_snapshot(PRIMARY_MARKET_SYMBOL)
+EVENT_GATE = QwenEventGate(
+    _Path(__file__).resolve().parent / "cache" / "qwen-event-gate-state.json",
+    heartbeat_seconds=float(os.environ.get("QWEN_EVENT_HEARTBEAT_SECONDS", "900")),
+)
 _PRIMARY_RUNTIME = _MARKET_RUNTIMES.get(PRIMARY_MARKET_SYMBOL)
 # Compatibility aliases for diagnostics/tests. Live paths resolve by symbol.
 _IDEA_MANAGER = _PRIMARY_RUNTIME.idea_manager
@@ -2503,6 +2508,7 @@ def build_snapshot() -> dict:
         logging.exception("market_intelligence:snapshot_refresh_failed")
         snapshot["market_intelligence"] = entry_state.get("market_intelligence", {})
     snapshot["qwen_trace"] = entry_state.get("qwen_trace", {})
+    snapshot["qwen_event_gate"] = dict(EVENT_GATE.state)
     snapshot.pop("qwen_management", None)
     primary_symbol = str(snapshot.get("symbol") or "XAUUSDr")
     snapshot["primary_symbol"] = instrument_for(primary_symbol).key
@@ -3426,7 +3432,7 @@ def start_dashboard_server() -> None:
     logging.info("Dashboard API listening on http://127.0.0.1:48632")
 
 
-def generate_automatic_deal_sheet() -> None:
+def generate_automatic_deal_sheet() -> bool:
     """Generate the next proposal without depending on an open web browser."""
     management_state = read_json_safe(MANAGEMENT_STATE_FILE, DEFAULT_MANAGEMENT_STATE)
     broker_positions_today = int(management_state.get("today", {}).get("baskets", 0))
@@ -3439,13 +3445,14 @@ def generate_automatic_deal_sheet() -> None:
             broker_positions_today,
             DAILY_PAPER_CAP,
         )
-        return
+        return False
     if qwen_position_open:
-        return
+        return False
     if not QWEN_DECISION_LOCK.acquire(blocking=False):
-        return
+        return False
     try:
         generate_dashboard_deal_sheet()
+        return True
     except Exception as exc:
         # 2026-08-10: this used to log the bare string "Automatic deal-sheet
         # generation failed" with no exception attached, which cannot be
@@ -3456,8 +3463,75 @@ def generate_automatic_deal_sheet() -> None:
             type(exc).__name__,
             exc,
         )
+        return False
     finally:
         QWEN_DECISION_LOCK.release()
+
+
+def entry_event_snapshot() -> dict:
+    """Return only state changes capable of altering an entry decision."""
+    symbol = PRIMARY_MARKET_SYMBOL
+    cache = latest_entry_context(symbol)
+    memory = MARKET_INTELLIGENCE.refresh_snapshot(symbol)
+    hierarchy = memory.get("hierarchy") or {}
+    dxy = ((memory.get("dxy") or {}).get("states") or {})
+    management = read_json_safe(MANAGEMENT_STATE_FILE, DEFAULT_MANAGEMENT_STATE)
+    runtime = _MARKET_RUNTIMES.get(symbol)
+    idea = runtime.idea_manager.active_idea if runtime.idea_manager.has_active else None
+    price = float(management.get("price") or 0.0)
+    zone_relation = "none"
+    if idea and price:
+        zone_relation = (
+            "below" if price < float(idea.zone_low) else
+            "above" if price > float(idea.zone_high) else "inside"
+        )
+    return {
+        "symbol": symbol,
+        "cache_status": cache.get("status"),
+        # levels/session epochs include refresh timestamps and can change on a
+        # 30-second cache refresh without any market event. Keep only the
+        # genuinely structural epoch plus semantic level/playbook state.
+        "structural_epoch": (cache.get("epochs") or {}).get("structural"),
+        "session": {
+            "name": (cache.get("session") or {}).get("session"),
+            "trade_permitted": (cache.get("session") or {}).get("trade_permitted"),
+            "asia_relation": (cache.get("session") or {}).get("asia_relation"),
+        },
+        "xau": {
+            tf: {"epoch": row.get("structure_epoch"),
+                 "evidence": row.get("latest_evidence_id")}
+            for tf, row in hierarchy.items()
+        },
+        "dxy": {
+            tf: {"epoch": row.get("structure_epoch"),
+                 "evidence": row.get("latest_evidence_id")}
+            for tf, row in dxy.items()
+        },
+        "relationship": (memory.get("relationship") or {}).get("state"),
+        "nearest_zones": {
+            name: {
+                "id": ((cache.get("structure") or {}).get(name) or {}).get("level_id"),
+                "low": ((cache.get("structure") or {}).get(name) or {}).get("zone_low"),
+                "high": ((cache.get("structure") or {}).get(name) or {}).get("zone_high"),
+            }
+            for name in ("nearest_lower_zone", "nearest_upper_zone")
+        },
+        "playbooks": [
+            {"id": row.get("playbook_id"), "status": row.get("status"),
+             "approach": row.get("approach_state"), "level": row.get("level_id")}
+            for row in (cache.get("playbooks") or [])
+        ],
+        "idea": {
+            "id": getattr(idea, "idea_id", None),
+            "state": getattr(getattr(idea, "state", None), "value", None),
+            "zone": getattr(idea, "zone_id", None),
+            "relation": zone_relation,
+        },
+        "positions": sorted(
+            str(row.get("ticket")) for row in management.get("positions", [])
+            if row.get("qwen_owned")
+        ),
+    }
 
 
 def self_test_entry_prompt() -> None:
@@ -3689,7 +3763,22 @@ def main() -> None:
                 # logs honest about why nothing is trading.
                 pass
             else:
-                generate_automatic_deal_sheet()
+                event_snapshot = entry_event_snapshot()
+                should_call, event_reason, event_fingerprint = EVENT_GATE.evaluate(
+                    event_snapshot
+                )
+                if should_call:
+                    log_step(
+                        "qwen_event_gate", "triggered", symbol=PRIMARY_MARKET_SYMBOL,
+                        detail=event_reason, event_fingerprint=event_fingerprint,
+                    )
+                    if generate_automatic_deal_sheet():
+                        EVENT_GATE.record_call(event_fingerprint, event_reason)
+                else:
+                    log_step(
+                        "qwen_event_gate", "skipped", symbol=PRIMARY_MARKET_SYMBOL,
+                        detail=event_reason, event_fingerprint=event_fingerprint,
+                    )
 
             # Time-based liveness must run every cycle, including cycles that
             # produce nothing. The 2026-08-10 outage was invisible precisely

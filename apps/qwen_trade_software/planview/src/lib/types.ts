@@ -330,6 +330,7 @@ export interface Snapshot {
   } | null;
   market_intelligence?: MarketIntelligence;
   qwen_trace?: QwenTrace;
+  qwen_event_gate?: { fingerprint?: string; called_at_epoch?: number; reason?: string };
 }
 
 export interface StructureMemoryState {
