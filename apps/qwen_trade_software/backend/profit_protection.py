@@ -10,6 +10,10 @@ from datetime import datetime, timezone
 import MetaTrader5 as mt5
 
 import build_manifest
+from cooldown_manager import (
+    VolatilityDetector, start_volatility_cooldown, volatility_cooldown_active,
+)
+from entry_safety import temporal_protection_window
 import process_logging
 from profit_protection_policy import evaluate
 from review_shared import (
@@ -17,11 +21,13 @@ from review_shared import (
     is_qwen_owned, write_json_atomic,
 )
 from tick_data_archive import append_tick_record
+from runtime_config import PRIMARY_MARKET_SYMBOL
 
 
 POLL_SECONDS = 0.25
 HEARTBEAT_SECONDS = 10.0
 STATE: dict[int, dict] = {}
+VOLATILITY = VolatilityDetector()
 process_logging.configure(LOG_DIR / "profit-protection.log", owner="profit_protection")
 build_manifest.log_identity("profit_protection")
 
@@ -74,6 +80,24 @@ def _close(position, price: float):
 
 def supervise_once(now: float | None = None) -> None:
     now = now or time.monotonic()
+    market_tick = mt5.symbol_info_tick(PRIMARY_MARKET_SYMBOL)
+    if market_tick is not None:
+        tick_seconds = float(getattr(market_tick, "time_msc", 0) or 0) / 1000.0
+        midpoint = (float(market_tick.bid) + float(market_tick.ask)) / 2.0
+        shock = VOLATILITY.observe(
+            PRIMARY_MARKET_SYMBOL, tick_seconds or time.time(), midpoint
+        )
+        if shock:
+            cooldown = start_volatility_cooldown(shock)
+            append_tick_record("profit-protection", {
+                "schema_version": 1,
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "event": "volatility_cooldown_started",
+                **shock,
+                "until_utc": cooldown["until_utc"],
+                **build_manifest.stamp(),
+            })
+            logging.warning("Volatility cooldown started: %s", shock)
     positions = tuple(p for p in (mt5.positions_get() or ()) if is_qwen_owned(p))
     live = {int(p.ticket) for p in positions}
     for ticket in set(STATE) - live:
@@ -99,6 +123,9 @@ def supervise_once(now: float | None = None) -> None:
             current=current, peak=float(state["peak"]), broker_sl=float(position.sl or 0.0),
             atr=float(state["atr"]), spread=max(0.0, float(tick.ask - tick.bid)),
             point=float(info.point), initial_risk=float(state["initial_risk"]),
+            force_break_even=bool(
+                temporal_protection_window() or volatility_cooldown_active()
+            ),
         )
         changed = decision.state != state["last_state"]
         heartbeat = now - state["heartbeat_at"] >= HEARTBEAT_SECONDS

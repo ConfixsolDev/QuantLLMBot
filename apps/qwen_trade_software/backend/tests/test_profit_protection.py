@@ -19,6 +19,15 @@ def test_does_not_arm_inside_normal_noise():
     assert not decision.should_modify
 
 
+def test_temporal_window_secures_break_even_without_normal_arm_threshold():
+    decision = evaluate(side="buy", entry=100, current=100.4, peak=100.4,
+                        broker_sl=98, atr=1, spread=0.1, point=0.01,
+                        force_break_even=True)
+    assert decision.armed
+    assert decision.should_modify
+    assert decision.candidate_stop >= 100.3
+
+
 def test_stop_is_monotonic_and_never_widens():
     decision = evaluate(side="sell", entry=100, current=97, peak=96,
                         broker_sl=97.5, atr=1, spread=0.1, point=0.01,

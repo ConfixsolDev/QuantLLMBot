@@ -56,6 +56,8 @@ DECISION_MODULES = (
     "trade_manager.py",
     "paper_executor.py",
     "paper_runner.py",
+    "entry_safety.py",
+    "cooldown_manager.py",
     "reviewer.py",
     "trade_management.py",
     "profit_protection.py",

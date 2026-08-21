@@ -44,7 +44,8 @@ class ProtectionDecision:
 def evaluate(*, side: str, entry: float, current: float, peak: float,
              broker_sl: float, atr: float, spread: float,
              point: float = 0.001,
-             initial_risk: float | None = None) -> ProtectionDecision:
+             initial_risk: float | None = None,
+             force_break_even: bool = False) -> ProtectionDecision:
     """Return a monotonic protection decision using price distances only."""
     is_buy = side == "buy"
     initial_risk = (
@@ -72,6 +73,17 @@ def evaluate(*, side: str, entry: float, current: float, peak: float,
         elif progress_r >= 1.0:
             floor = entry + mfe * LOCK_1R if is_buy else entry - mfe * LOCK_1R
             candidate = max(candidate, floor) if is_buy else min(candidate, floor)
+        locked_move = max(0.0, candidate - entry if is_buy else entry - candidate)
+
+    # Parent-candle close and shock modes do not force-close losing trades.
+    # They secure true break-even as soon as current profit covers execution
+    # costs, then normal target/trailing logic remains in control.
+    if force_break_even and current_move >= costs_buffer:
+        floor = entry + costs_buffer if is_buy else entry - costs_buffer
+        candidate = floor if candidate is None else (
+            max(candidate, floor) if is_buy else min(candidate, floor)
+        )
+        armed = True
         locked_move = max(0.0, candidate - entry if is_buy else entry - candidate)
 
     minimum_change = max(point * 2, spread * 0.10)

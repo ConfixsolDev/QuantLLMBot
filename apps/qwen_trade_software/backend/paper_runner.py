@@ -12,9 +12,10 @@ from pathlib import Path
 import MetaTrader5 as mt5
 
 import build_manifest
+import cooldown_manager as cooldowns
 import process_logging
 import paper_executor
-from entry_safety import candle_boundary_entry_block
+from entry_safety import temporal_protection_window
 from instrument_config import instrument_for
 from runtime_config import PRIMARY_MARKET_SYMBOL
 import trade_geometry
@@ -60,18 +61,17 @@ PROPOSAL_POLL_SECONDS = 0.25
 # cooldown the runner still polls: a fresh ready proposal may enter only when
 # model confidence is very high AND structural reward:risk is very high. Win
 # cooldown stays short and hard (no bypass).
-LOSS_COOLDOWN_SECONDS = 300
-WIN_COOLDOWN_SECONDS = 120
-LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE = 82
+LOSS_COOLDOWN_SECONDS = cooldowns.LOSS_COOLDOWN_SECONDS
+WIN_COOLDOWN_SECONDS = cooldowns.WIN_COOLDOWN_SECONDS
+LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE = cooldowns.LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE
 # Above normal geometry floor (~0.9) and above the fixed $3/$5 bracket (~1.67).
-LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK = 2.5
+LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK = cooldowns.LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK
 BEST_PRICE_OBSERVATION_SECONDS = 2.0
 BEST_PRICE_RETRACE = 0.10
 RUNNER_LOCK_FILE = APP_DIR / "paper-runner.lock"
 BROKER_TRUTH_REFRESH_SECONDS = 2.0
 _BROKER_COUNT_CACHE = {"checked": 0.0, "count": 0}
 # Active post-trade pause. Cleared on expiry or a qualifying loss-cooldown bypass.
-_COOLDOWN_STATE = {"until_monotonic": 0.0, "label": ""}
 
 _LOG_HANDLER = process_logging.configure(LOG_FILE, owner="paper_runner")
 # Announce the build and alarm if it has drifted from the declared freeze.
@@ -274,11 +274,7 @@ def arguments_for(proposal: dict) -> Namespace:
 def proposal_runtime_failures(proposal: dict) -> list[str]:
     """Recheck confidence, boundary safety, session, and cache before entry."""
     failures = []
-    boundary_block = candle_boundary_entry_block()
-    if boundary_block:
-        failures.append(
-            "candle_boundary_blackout:" + ",".join(boundary_block["frames"])
-        )
+    temporal = temporal_protection_window()
     qwen = proposal.get("qwen")
     qwen = qwen if isinstance(qwen, dict) else {}
     plan = qwen.get("execution_plan")
@@ -293,6 +289,18 @@ def proposal_runtime_failures(proposal: dict) -> list[str]:
         failures.append("side_missing")
     if plan.get("decision_confidence") != round(confidence):
         failures.append("confidence_provenance_mismatch")
+    if temporal:
+        reward_risk = proposal_reward_risk(proposal)
+        if reward_risk is None or reward_risk < trade_geometry.MIN_REWARD_RISK:
+            failures.append("temporal_protection:structural_geometry")
+        try:
+            planned_edge = float(plan["optimal_entry_price"])
+            structural_edge = float(plan["zone_edge_context"]["optimal_entry_price"])
+            zone_width = abs(float(plan["entry_high"]) - float(plan["entry_low"]))
+            if abs(planned_edge - structural_edge) > max(0.5, zone_width * 0.5):
+                failures.append("temporal_protection:entry_edge_mismatch")
+        except (KeyError, TypeError, ValueError):
+            failures.append("temporal_protection:entry_edge_missing")
 
     symbol = str(proposal.get("symbol") or PRIMARY_MARKET_SYMBOL)
     instrument = instrument_for(symbol)
@@ -349,58 +357,24 @@ def cooldown_for(result: dict) -> tuple[int, str]:
     is False when the closing deal never reached MT5 history, in which case
     net_pnl is the entry commission and its sign means nothing.
     """
-    if result.get("pnl_is_complete") is False:
-        return 0, ""
-    net = result.get("net_pnl")
-    if net is None:
-        return 0, ""          # signal_expired and friends: no position was held
-    try:
-        net = float(net)
-    except (TypeError, ValueError):
-        return 0, ""
-    # A broker SL is also the execution mechanism for the deterministic
-    # profit-protection floor.  When that tightened stop closes above net
-    # break-even it is a successful protected exit, not a loss and not a
-    # reason to suppress the next independent zone opportunity.
-    close_comments = result.get("close_comments") or []
-    positive_sl = net > 0 and any(
-        "[sl" in str(comment).lower() for comment in close_comments
-    )
-    if positive_sl:
-        return 0, ""
-    if net < 0:
-        return LOSS_COOLDOWN_SECONDS, "Loss"
-    if net > 0:
-        return WIN_COOLDOWN_SECONDS, "Win"
-    return 0, ""              # exactly flat: nothing to step back from
+    return cooldowns.cooldown_for(result)
 
 
 def start_cooldown(seconds: int, label: str) -> None:
     """Arm the post-trade pause. Loss pauses stay interruptible; see bypass."""
-    if seconds <= 0:
-        _COOLDOWN_STATE.update({"until_monotonic": 0.0, "label": ""})
-        return
-    _COOLDOWN_STATE.update(
-        {
-            "until_monotonic": time.monotonic() + float(seconds),
-            "label": label,
-        }
-    )
+    cooldowns.start_cooldown(seconds, label)
 
 
 def clear_cooldown() -> None:
-    _COOLDOWN_STATE.update({"until_monotonic": 0.0, "label": ""})
+    cooldowns.clear_cooldown()
 
 
 def cooldown_remaining_seconds() -> float:
-    remaining = float(_COOLDOWN_STATE.get("until_monotonic") or 0.0) - time.monotonic()
-    return remaining if remaining > 0 else 0.0
+    return cooldowns.cooldown_remaining_seconds()
 
 
 def active_cooldown_label() -> str:
-    if cooldown_remaining_seconds() <= 0:
-        return ""
-    return str(_COOLDOWN_STATE.get("label") or "")
+    return cooldowns.active_cooldown_label()
 
 
 def proposal_confidence(proposal: dict) -> float:
@@ -574,7 +548,7 @@ def run_loop() -> None:
                     )
                     time.sleep(PROPOSAL_POLL_SECONDS)
                     continue
-            else:
+            elif label == "Win":
                 skip_proposal(
                     proposal_id,
                     "win_cooldown_active",
@@ -582,6 +556,19 @@ def run_loop() -> None:
                 )
                 logging.info(
                     "Win cooldown blocked %s remaining=%.0fs",
+                    proposal_id,
+                    remaining,
+                )
+                time.sleep(PROPOSAL_POLL_SECONDS)
+                continue
+            else:
+                skip_proposal(
+                    proposal_id,
+                    "volatility_cooldown_active",
+                    remaining_seconds=round(remaining, 1),
+                )
+                logging.warning(
+                    "Volatility cooldown blocked %s remaining=%.0fs",
                     proposal_id,
                     remaining,
                 )

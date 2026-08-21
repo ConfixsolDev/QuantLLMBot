@@ -15,7 +15,6 @@ import MetaTrader5 as mt5
 import build_manifest
 import live_mapped_levels
 import trade_geometry
-from entry_safety import candle_boundary_entry_block
 from instrument_config import XAUUSD, instrument_for
 from runtime_config import PRIMARY_MARKET_SYMBOL
 from trade_step_log import log_step
@@ -1226,33 +1225,6 @@ def _run(args) -> dict:
                 location=location,
             )
             if not fills and tracker_state.get("enter"):
-                boundary_block = candle_boundary_entry_block(
-                    datetime.fromtimestamp(tick.time_msc / 1000, timezone.utc)
-                )
-                if boundary_block:
-                    skipped = {
-                        "schema_version": 1,
-                        "event": "mt5_execution_skipped",
-                        "execution_id": execution_id,
-                        "proposal_id": args.proposal_id,
-                        "created_at_utc": utc_now(),
-                        **boundary_block,
-                    }
-                    append_event(skipped)
-                    log_step(
-                        "candle_boundary_gate", "blocked",
-                        proposal_id=args.proposal_id,
-                        execution_id=execution_id,
-                        symbol=args.symbol,
-                        price=entry_quote,
-                        detail=boundary_block,
-                    )
-                    logging.info(
-                        "entry blocked at candle boundary proposal=%s frames=%s",
-                        args.proposal_id,
-                        ",".join(boundary_block["frames"]),
-                    )
-                    return skipped
                 phase = "single_entry"
                 log_step(
                     "m1_trigger", "passed", proposal_id=args.proposal_id,
