@@ -14,6 +14,7 @@ import MetaTrader5 as mt5
 import build_manifest
 import process_logging
 import paper_executor
+from entry_safety import candle_boundary_entry_block
 from instrument_config import instrument_for
 from runtime_config import PRIMARY_MARKET_SYMBOL
 import trade_geometry
@@ -271,8 +272,13 @@ def arguments_for(proposal: dict) -> Namespace:
 
 
 def proposal_runtime_failures(proposal: dict) -> list[str]:
-    """Recheck confidence + session/cache before entry. No TP/SL geometry veto."""
+    """Recheck confidence, boundary safety, session, and cache before entry."""
     failures = []
+    boundary_block = candle_boundary_entry_block()
+    if boundary_block:
+        failures.append(
+            "candle_boundary_blackout:" + ",".join(boundary_block["frames"])
+        )
     qwen = proposal.get("qwen")
     qwen = qwen if isinstance(qwen, dict) else {}
     plan = qwen.get("execution_plan")
