@@ -6,7 +6,9 @@ import argparse
 import json
 import logging
 import logging.handlers
+import os
 import time
+import uuid
 from pathlib import Path
 
 import MetaTrader5 as mt5
@@ -31,10 +33,44 @@ def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
-def write_health(payload: dict) -> None:
-    temporary = HEALTH_FILE.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-    temporary.replace(HEALTH_FILE)
+def write_health(
+    payload: dict,
+    *,
+    target: Path = HEALTH_FILE,
+    attempts: int = 5,
+    retry_seconds: float = 0.05,
+) -> bool:
+    """Publish health atomically without ever endangering candle ingestion.
+
+    Windows can briefly deny ``os.replace`` while the dashboard has the old
+    JSON open. A unique temporary name prevents workers/restarts colliding;
+    bounded retries absorb reader locks. Health is diagnostic, so exhausting
+    retries logs a warning and returns False instead of killing the collector.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        for attempt in range(max(1, attempts)):
+            try:
+                os.replace(temporary, target)
+                return True
+            except PermissionError:
+                if attempt + 1 < max(1, attempts):
+                    time.sleep(max(0.0, retry_seconds))
+        logging.warning(
+            "market memory health publication deferred after %d attempts target=%s",
+            max(1, attempts), target,
+        )
+        return False
+    except OSError:
+        logging.warning("market memory health publication failed target=%s", target, exc_info=True)
+        return False
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def run(db_path: Path, symbol: str, interval: float, once: bool = False) -> None:
