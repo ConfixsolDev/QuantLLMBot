@@ -86,6 +86,14 @@ def evaluate(*, side: str, entry: float, current: float, peak: float,
         armed = True
         locked_move = max(0.0, candidate - entry if is_buy else entry - candidate)
 
+    # Once the broker accepted a break-even-or-better stop, protection state
+    # must not appear to regress merely because live price dipped below the
+    # arming threshold. The broker stop remains the monotonic source of truth.
+    broker_locked_move = broker_sl - entry if is_buy else entry - broker_sl
+    if broker_sl and broker_locked_move >= costs_buffer:
+        armed = True
+        locked_move = max(locked_move, broker_locked_move)
+
     minimum_change = max(point * 2, spread * 0.10)
     tighter = bool(candidate is not None and (
         (is_buy and candidate > broker_sl + minimum_change)

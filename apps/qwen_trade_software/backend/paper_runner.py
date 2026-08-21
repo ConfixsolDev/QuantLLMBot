@@ -125,8 +125,20 @@ def broker_filled_today() -> int:
     now_monotonic = time.monotonic()
     if now_monotonic - _BROKER_COUNT_CACHE["checked"] < BROKER_TRUTH_REFRESH_SECONDS:
         return int(_BROKER_COUNT_CACHE["count"])
-    if not mt5.initialize(path=paper_executor.DEFAULT_TERMINAL):
-        raise RuntimeError(f"MT5 broker truth unavailable: {mt5.last_error()}")
+    initialized = False
+    last_error = None
+    for attempt in range(3):
+        initialized = bool(mt5.initialize(
+            path=paper_executor.DEFAULT_TERMINAL, timeout=5000
+        ))
+        if initialized:
+            break
+        last_error = mt5.last_error()
+        mt5.shutdown()
+        if attempt < 2:
+            time.sleep(0.25)
+    if not initialized:
+        raise RuntimeError(f"MT5 broker truth unavailable after retries: {last_error}")
     try:
         now = datetime.now(timezone.utc)
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)

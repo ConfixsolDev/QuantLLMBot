@@ -16,6 +16,7 @@ LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK = 2.5
 VOLATILITY_COOLDOWN_SECONDS = 300
 VOLATILITY_MOVE_1M = 5.0
 VOLATILITY_MOVE_2M = 7.0
+VOLATILITY_REARM_QUIET_SECONDS = 30.0
 STATE_FILE = Path(__file__).resolve().parent / "volatility-cooldown-state.json"
 _POST_TRADE = {"until_monotonic": 0.0, "label": ""}
 
@@ -94,6 +95,7 @@ class VolatilityDetector:
     def __init__(self) -> None:
         self._ticks: dict[str, deque[tuple[float, float]]] = {}
         self._active: dict[str, bool] = {}
+        self._quiet_since: dict[str, float] = {}
 
     def observe(self, symbol: str, timestamp: float, price: float) -> dict | None:
         rows = self._ticks.setdefault(symbol, deque())
@@ -108,8 +110,11 @@ class VolatilityDetector:
                 if move >= threshold:
                     triggers.append((seconds, threshold, move))
         if not triggers:
-            self._active[symbol] = False
+            quiet_since = self._quiet_since.setdefault(symbol, float(timestamp))
+            if timestamp - quiet_since >= VOLATILITY_REARM_QUIET_SECONDS:
+                self._active[symbol] = False
             return None
+        self._quiet_since.pop(symbol, None)
         if self._active.get(symbol):
             return None
         self._active[symbol] = True
