@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlparse
 import entry_policy
 from instrument_config import instrument_for
 import live_mapped_levels
+import opportunity_state
 import plan_ladder
 from execution_funnel import build_funnel
 from decision_liveness import (
@@ -2185,6 +2186,29 @@ def build_plan_snapshot() -> dict:
         planner["timeframe_ladder"] = plan_ladder.build_ladder_from_state(
             planner, live_price, (facts or {}).get("levels")
         )
+        if live_price:
+            closed_prices = {}
+            for timeframe, rows in ((facts or {}).get("recent_closed") or {}).items():
+                if not rows:
+                    continue
+                try:
+                    closed_prices[str(timeframe).upper()] = float(rows[-1]["close"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+            planner["opportunity_shadow"] = opportunity_state.build_opportunity_shadow(
+                (facts or {}).get("levels") or [],
+                live_price=float(live_price),
+                committed_side=opportunity_state.qwen_committed_side(planner),
+                closed_prices_by_timeframe=closed_prices,
+            )
+        else:
+            planner["opportunity_shadow"] = {
+                "version": opportunity_state.OPPORTUNITY_STATE_VERSION,
+                "mode": "shadow_only",
+                "execution_authority": False,
+                "decision": "wait",
+                "reason": "live_price_unavailable",
+            }
     except Exception:
         logging.exception("plan:funnel_failed")
         planner["execution_funnel"] = None
@@ -3348,6 +3372,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     limit=max(1, min(limit, 1000)),
                 )
             ).encode("utf-8")
+            self._headers()
+            self.wfile.write(payload)
+            return
+        if path == "/trade-journal":
+            query = parse_qs(parsed.query)
+            requested_symbol = str(query.get("symbol", [""])[0] or "").upper()
+            requested_result = str(query.get("result", [""])[0] or "").lower()
+            try:
+                limit = max(1, min(int(query.get("limit", ["100"])[0]), 1000))
+            except ValueError:
+                limit = 100
+            rows = MARKET_INTELLIGENCE.store.trade_journals(limit=limit)
+            if requested_symbol:
+                rows = [row for row in rows if str(row.get("symbol") or "").upper() == requested_symbol]
+            if requested_result in {"win", "loss", "breakeven"}:
+                rows = [row for row in rows if row.get("result") == requested_result]
+            payload = json.dumps({
+                "count": len(rows),
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "trades": rows,
+            }).encode("utf-8")
             self._headers()
             self.wfile.write(payload)
             return

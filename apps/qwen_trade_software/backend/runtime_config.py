@@ -14,6 +14,9 @@ from dataclasses import dataclass
 # Change this one constant when promoting the next trained model.
 DEFAULT_QWEN_MODEL = "qwen-trading-v004:latest"
 PRIMARY_MARKET_SYMBOL = os.environ.get("QWEN_PRIMARY_SYMBOL", "XAUUSDr")
+NEO4J_ENABLED = os.environ.get("QWEN_NEO4J_ENABLED", "").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 # All processes resolve the override identically at startup.
 ACTIVE_QWEN_MODEL = os.environ.get("QWEN_MODEL", DEFAULT_QWEN_MODEL)

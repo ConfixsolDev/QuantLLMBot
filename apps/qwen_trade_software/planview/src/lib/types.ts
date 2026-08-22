@@ -256,6 +256,62 @@ export interface TimeframeLadder {
   version: string;
 }
 
+export type OpportunityLocationState =
+  | "outside_zone"
+  | "approaching"
+  | "inside_zone"
+  | "armed"
+  | "triggered"
+  | "invalidated";
+
+export interface OpportunityActiveZone {
+  zone_id: string;
+  side: "buy" | "sell";
+  timeframe: string;
+  low: number;
+  high: number;
+  distance: number;
+  location_state: OpportunityLocationState;
+  role: string;
+  lifecycle_status: string;
+  structure_proven: boolean;
+  evidence_ids: string[];
+}
+
+export interface OpportunityBranch {
+  side: "buy" | "sell";
+  state: OpportunityLocationState;
+  committed: boolean;
+  zone: OpportunityActiveZone | null;
+  reason: string;
+  proof_timeframe: string | null;
+  proof_evidence_ids: string[];
+}
+
+export interface OpportunityShadow {
+  version: string;
+  mode: "shadow_only";
+  execution_authority: false;
+  committed_side?: "buy" | "sell" | "wait";
+  shadow_triggered_side?: "buy" | "sell" | null;
+  decision: "buy" | "sell" | "wait";
+  reason?: string;
+  branches?: {
+    buy: OpportunityBranch;
+    sell: OpportunityBranch;
+  };
+  active_zone_registry?: {
+    version: string;
+    mode: "shadow_only";
+    execution_authority: false;
+    live_price: number;
+    raw_zone_count: number;
+    deduplicated_zone_count: number;
+    selected_zone_count: number;
+    zones: OpportunityActiveZone[];
+  };
+}
+
 export interface PlannerState {
   updated_at_utc: string;
   symbol: string;
@@ -264,6 +320,7 @@ export interface PlannerState {
   day_branches?: DayBranches | null;
   execution_funnel?: ExecutionFunnel | null;
   timeframe_ladder?: TimeframeLadder | null;
+  opportunity_shadow?: OpportunityShadow | null;
   session_plan: SessionPlan | null;
   hourly_updates: HourlyUpdate[];
   session_verdicts: SessionVerdict[];
@@ -354,6 +411,46 @@ export interface MarketIntelligence {
     status?: string; updated_at_epoch?: number; replayed_events?: number;
     inserted_total?: number; dxy_broker_symbol?: string | null;
   };
+  graph_health?: {
+    status?: string; updated_at_epoch?: number;
+    projection?: { status?: string; selected?: number; projected?: number };
+    outbox?: { pending?: number; projected?: number; dead?: number };
+  };
+  graph_context?: GraphContext;
+}
+
+export interface GraphStructureEvidence {
+  id?: string; timeframe?: string; event_type?: string; event_time_utc?: string;
+  confirmation_time_utc?: string; knowledge_time_utc?: string;
+  evidence_id?: string; direction?: string; status?: string; mode?: string;
+  execution_authority?: boolean; detector?: string; rule_version?: string;
+  explanation?: string;
+  structure_label?: string; prior_structure?: string;
+  zone_id?: string; zone_kind?: string; zone_low?: number; zone_high?: number;
+  zone_status?: string; source_evidence_id?: string;
+}
+
+export interface GraphContext {
+  status?: string; as_of_utc?: string; known_as_of_utc?: string; age_seconds?: number;
+  mode?: string; packet_version?: string; packet_bytes?: number;
+  packet_budget_bytes?: number; within_packet_budget?: boolean; execution_authority?: boolean;
+  projection?: { pending?: number; projected?: number; dead?: number };
+  xauusd_all_timeframe_temporal_structure?: Array<{
+    timeframe?: string; trend_state?: string; forming_leg?: string;
+    auction_state?: string; range_location?: string; latest_structure?: string;
+    candle_seconds_remaining?: number | null; candle_percent_complete?: number | null;
+    freshness?: string; evidence_id?: string;
+    volume_confirmation?: { ratio?: number | null; sample_count?: number };
+  }>;
+  active_zone_positions?: Record<string, {
+    zone_id?: string; zone_low?: number; zone_high?: number; distance?: number;
+    contributing_timeframes?: string[]; primary_owning_timeframe?: string;
+    structural_proof?: string; history?: string; evidence_ids?: string[];
+  } | string | null>;
+  symbols?: Record<string, {
+    structure_evidence?: Record<string, GraphStructureEvidence[]>;
+    [key: string]: unknown;
+  }>;
 }
 
 export interface QwenTrace {

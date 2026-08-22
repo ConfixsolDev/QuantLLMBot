@@ -20,6 +20,11 @@ GoldFlow/Qwen demo-trading application.
 - `backend/session_planner.py` runs the session-hierarchy planner (day plan,
   session plans, hourly updates, session verdicts). Writes `planner-state.json`
   and archives to `tick_data/`. Supervised by `software_runtime.py`.
+- `backend/market_memory_worker.py` owns the immutable SQLite market-event
+  ledger and deterministic per-symbol/timeframe projections.
+- `backend/market_graph_worker.py` optionally projects that ledger into Neo4j
+  through a transactional outbox. It publishes bounded temporal/session and
+  cross-instrument context for Qwen but never participates in broker execution.
 - `backend/trade_manager.py` is the separate single-position management layer.
   It preserves the exact peak/giveback path and prior decisions, then validates
   reached-level rejection or thesis invalidation from completed M1/M5 evidence.
@@ -44,6 +49,42 @@ GoldFlow/Qwen demo-trading application.
 
 Set `QWEN_PLAN_GATING=1` to gate entries against the validated session plan
 (default off until planner has run for a few days).
+
+## Optional Neo4j market graph
+
+The complete installation, security, verification, recovery, and extension
+reference is [`NEO4J_OPERATIONS.md`](NEO4J_OPERATIONS.md).
+
+Neo4j is disabled by default. Install/run a Neo4j 5.x or compatible Aura
+database, install `backend/requirements.txt` into the live Python runtime, and
+set these process environment variables before starting the unified runtime:
+
+```powershell
+$env:QWEN_NEO4J_ENABLED = "1"
+$env:QWEN_NEO4J_URI = "bolt://127.0.0.1:7687"
+$env:QWEN_NEO4J_USER = "neo4j"
+$env:QWEN_NEO4J_PASSWORD = "<secret>"
+$env:QWEN_NEO4J_DATABASE = "neo4j"
+$env:QWEN_GRAPH_SYMBOLS = "XAUUSDr,DXY"
+```
+
+Additional Forex pairs are comma-separated in `QWEN_GRAPH_SYMBOLS`; graph
+labels and queries do not contain gold-specific logic. The worker creates
+constraints, backfills from `cache/market-intelligence.sqlite3`, performs
+idempotent batched writes, and maintains:
+
+- `cache/market-graph-health.json` — connection, projection lag, retries and
+  dead-letter count.
+- `cache/market-graph-context.json` — bounded local snapshot read by the
+  reviewer, avoiding a Neo4j network call in the entry hot path.
+
+If Neo4j is unavailable, SQLite collection, Qwen's baseline context, trade
+execution, management and broker protection continue unchanged. Run one
+diagnostic projection cycle with:
+
+```powershell
+C:\ProgramData\Miniconda3\python.exe backend\market_graph_worker.py --once
+```
 
 Runtime logs, proposal history, execution history, model files, lock files, and
 Python caches are intentionally excluded from Git.

@@ -151,6 +151,8 @@ class QwenTradeSoftware:
                 "30",
             ),
             "market_memory": ("market_memory_worker.py", "--interval", "2"),
+            "trade_journal": ("trade_journal_worker.py", "--interval", "15"),
+            "market_graph": ("market_graph_worker.py",),
             "paper_runner": ("paper_runner.py",),
             "session_planner": ("session_planner.py",),
         }
@@ -214,6 +216,10 @@ class QwenTradeSoftware:
             "30",
         )
         self._start_child("market_memory", "market_memory_worker.py", "--interval", "2")
+        self._start_child("trade_journal", "trade_journal_worker.py", "--interval", "15")
+        from runtime_config import NEO4J_ENABLED
+        if NEO4J_ENABLED:
+            self._start_child("market_graph", "market_graph_worker.py")
         self._start_child("paper_runner", "paper_runner.py")
         self._start_child("session_planner", "session_planner.py")
         logging.info("Complete software chain is ready")

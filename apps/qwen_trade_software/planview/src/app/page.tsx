@@ -12,6 +12,8 @@ import { PlanChart } from "@/components/PlanChart";
 import { TechnicalDetails } from "@/components/NarrativePanels";
 import { buildPlanViewModel } from "@/lib/viewModel";
 import { MarketIntelligencePanel } from "@/components/MarketIntelligencePanel";
+import { OpportunityShadowPanel } from "@/components/OpportunityShadowPanel";
+import Link from "next/link";
 
 const TIMEFRAMES = ["H4", "H1", "M15"] as const;
 
@@ -130,6 +132,8 @@ export default function PlanViewPage() {
       />
 
       <div className="flex flex-wrap gap-2">
+        <Link href="/trades" className="rounded bg-violet-900 px-3 py-1 text-sm text-violet-100 hover:bg-violet-800">Trade analysis</Link>
+        <Link href="/ideas" className="rounded bg-slate-800 px-3 py-1 text-sm text-slate-300 hover:bg-slate-700">Trade ideas</Link>
         {TIMEFRAMES.map((tf) => (
           <button
             key={tf}
@@ -187,6 +191,8 @@ export default function PlanViewPage() {
 
       {/* One home per fact: ladder = TF lean; day plan = bull/bear side by side. */}
       <TimeframeLadderPanel ladder={plan?.timeframe_ladder} />
+
+      <OpportunityShadowPanel opportunity={plan?.opportunity_shadow} />
 
       <MarketIntelligencePanel
         intelligence={snapshot?.market_intelligence}

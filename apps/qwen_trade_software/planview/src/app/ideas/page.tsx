@@ -2,13 +2,12 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { fetchLifecycle, fetchSnapshot, fetchTradeIdeas } from "@/lib/api";
+import { fetchTradeIdeas } from "@/lib/api";
 import {
   LOW_CONFIDENCE_FLOOR,
   useHideLowConfidence,
 } from "@/lib/hideLowConfidence";
-import type { LifecycleResponse, TradeIdeaRow, TradeIdeasResponse } from "@/lib/tradeIdeas";
-import type { Snapshot } from "@/lib/types";
+import type { TradeIdeaRow, TradeIdeasResponse } from "@/lib/tradeIdeas";
 import { describeTrigger, levelName } from "@/lib/translate";
 
 function fmt(n: number | null | undefined, digits = 2): string {
@@ -116,8 +115,6 @@ function OutcomeCell({ row }: { row: TradeIdeaRow }) {
 
 export default function TradeIdeasPage() {
   const [data, setData] = useState<TradeIdeasResponse | null>(null);
-  const [lifecycle, setLifecycle] = useState<LifecycleResponse | null>(null);
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [readyOnly, setReadyOnly] = useState(false);
   const [geometryOnly, setGeometryOnly] = useState(false);
@@ -136,18 +133,15 @@ export default function TradeIdeasPage() {
 
   const load = useCallback(async () => {
     try {
-      const results = await Promise.allSettled([
-        fetchTradeIdeas({ minConfidence, days: 2, readyOnly, limit: 400, symbol }),
-        fetchLifecycle(symbol),
-        fetchSnapshot(symbol),
-      ]);
-      if (results[0].status === "fulfilled") setData(results[0].value);
-      if (results[1].status === "fulfilled") setLifecycle(results[1].value);
-      if (results[2].status === "fulfilled") setSnapshot(results[2].value);
-      const failures = results
-        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-        .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
-      setError(failures.length ? failures.join(" · ") : null);
+      const result = await fetchTradeIdeas({
+        minConfidence,
+        days: 2,
+        readyOnly,
+        limit: 400,
+        symbol,
+      });
+      setData(result);
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load trade ideas");
     }
@@ -159,8 +153,6 @@ export default function TradeIdeasPage() {
     url.searchParams.set("symbol", next);
     window.history.replaceState({}, "", url);
     setData(null);
-    setLifecycle(null);
-    setSnapshot(null);
     setSymbol(next);
   }, [symbolDraft]);
 
@@ -264,57 +256,6 @@ export default function TradeIdeasPage() {
           {error} — restart the reviewer if `/trade-ideas` is 404 (new endpoint).
         </div>
       )}
-
-      <section className="grid gap-3 md:grid-cols-5">
-        <div className="card p-4">
-          <div className="text-xs uppercase tracking-wide text-slate-500">1 · Context</div>
-          <div className="mt-2 text-lg font-semibold text-slate-100">
-            {snapshot?.connected ? "Live" : "Disconnected"} · {fmt(snapshot?.price, 3)}
-          </div>
-          <div className="text-xs text-slate-400">{snapshot?.symbol || symbol} broker quote</div>
-        </div>
-        <div className="card p-4">
-          <div className="text-xs uppercase tracking-wide text-slate-500">2 · Zone memory</div>
-          <div className="mt-2 flex items-center gap-2">
-            <SideBadge side={lifecycle?.active_idea?.watching_side} />
-            <span className="font-medium text-slate-100">
-              {lifecycle?.active_idea?.watching_zone || "No active zone"}
-            </span>
-          </div>
-          <div className="mt-1 text-xs text-slate-400">
-            {lifecycle?.active_idea?.active_idea?.zone?.map((n) => fmt(n, 3)).join(" – ") || "—"}
-          </div>
-        </div>
-        <div className="card p-4">
-          <div className="text-xs uppercase tracking-wide text-slate-500">3 · Entry search</div>
-          <div className="mt-2 text-lg font-semibold text-slate-100">
-            {lifecycle?.active_idea?.state || "idle"}
-          </div>
-          <div className="text-xs text-slate-400">
-            {lifecycle?.approach?.assessment || "no approach"} · {lifecycle?.approach?.distance_trend || "—"} · distance {fmt(lifecycle?.approach?.current_distance, 3)}
-          </div>
-        </div>
-        <div className="card p-4">
-          <div className="text-xs uppercase tracking-wide text-slate-500">4 · Broker truth</div>
-          <div className={`mt-2 text-lg font-semibold ${(snapshot?.positions?.length || 0) > 0 ? "text-sky-300" : "text-emerald-300"}`}>
-            {(snapshot?.positions?.length || 0) > 0
-              ? `${snapshot?.positions?.length} open position(s)`
-              : "No open position"}
-          </div>
-          <div className="text-xs text-slate-400">
-            last executor: {snapshot?.paper_execution?.event || "—"} · {snapshot?.paper_execution?.reason || "—"}
-          </div>
-        </div>
-        <div className="card p-4">
-          <div className="text-xs uppercase tracking-wide text-slate-500">5 · Profit protection</div>
-          <div className={`mt-2 text-lg font-semibold ${snapshot?.profit_protection?.armed ? "text-amber-300" : "text-slate-300"}`}>
-            {snapshot?.profit_protection?.state || "Not armed"}
-          </div>
-          <div className="text-xs text-slate-400">
-            floor {fmt(snapshot?.profit_protection?.candidate_stop, 3)} · {fmt(snapshot?.profit_protection?.progress_r, 2)}R · locked ${fmt(snapshot?.profit_protection?.locked_cash, 2)}
-          </div>
-        </div>
-      </section>
 
       <div className="card overflow-x-auto p-0">
         <table className="min-w-full text-left text-sm">

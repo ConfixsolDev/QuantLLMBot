@@ -73,7 +73,7 @@ class MarketIntelligenceService:
                               "recent_retrievals": self.store.recent_retrievals(6)}
         return self.compact_snapshot()
 
-    def compact_snapshot(self) -> dict:
+    def compact_snapshot(self, include_graph: bool = False) -> dict:
         snap = self.last_snapshot or {}
         hierarchy = {}
         for tf, state in (snap.get("hierarchy") or {}).items():
@@ -82,9 +82,18 @@ class MarketIntelligenceService:
                     "state", "direction", "active_leg", "transition",
                     "invalidation_level_id", "latest_evidence_id", "structure_epoch",
                     "unresolved_condition")}
-        return {"status": snap.get("status", "starting"), "hierarchy": hierarchy,
+        graph = snap.get("graph_context", {"status": "unavailable"})
+        result = {"status": snap.get("status", "starting"), "hierarchy": hierarchy,
                 "dxy": snap.get("dxy", {}), "relationship": snap.get("relationship", {}),
-                "recent_transitions": (snap.get("recent_transitions") or [])[-4:]}
+                "recent_transitions": (snap.get("recent_transitions") or [])[-4:],
+                "worker_health": snap.get("worker_health", {}),
+                "graph_health": snap.get("graph_health", {}),
+                "neo4j_shadow_status": {key: graph.get(key) for key in (
+                    "status", "mode", "packet_version", "packet_bytes",
+                    "within_packet_budget", "age_seconds")}}
+        if include_graph:
+            result["graph_context"] = graph
+        return result
 
     def refresh_snapshot(self, symbol: str) -> dict:
         """Load worker-owned projections without collecting any market data."""
@@ -99,6 +108,26 @@ class MarketIntelligenceService:
             worker_health = json.loads(health_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             worker_health = {"status": "unavailable"}
+        graph_context = {"status": "unavailable"}
+        graph_health = {"status": "unavailable"}
+        graph_path = self.store.path.parent / "market-graph-context.json"
+        try:
+            graph_context = json.loads(graph_path.read_text(encoding="utf-8"))
+            as_of = datetime.fromisoformat(
+                str(graph_context.get("as_of_utc")).replace("Z", "+00:00")
+            )
+            age = max(0.0, (datetime.now(timezone.utc) - as_of).total_seconds())
+            graph_context["age_seconds"] = round(age, 3)
+            if age > 30:
+                graph_context["status"] = "stale"
+        except (OSError, ValueError):
+            pass
+        try:
+            graph_health = json.loads(
+                (self.store.path.parent / "market-graph-health.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            pass
         self.last_snapshot = {
             "status": "ready" if hierarchy else "starting",
             "symbol": symbol,
@@ -109,8 +138,13 @@ class MarketIntelligenceService:
             "recent_transitions": self.store.events(symbol, limit=6),
             "recent_retrievals": self.store.recent_retrievals(6),
             "worker_health": worker_health,
+            "graph_context": graph_context,
+            "graph_health": graph_health,
         }
-        return self.compact_snapshot()
+        # Neo4j remains shadow-only until the promotion gates in V2 pass.
+        # Website observability reads ``observability()`` and still receives
+        # the complete bounded graph packet; Qwen receives only this status.
+        return self.compact_snapshot(include_graph=False)
 
     def retrieve(self, symbol: str, requests: list[dict]) -> list[dict]:
         results = self.retrieval.execute(symbol, requests)

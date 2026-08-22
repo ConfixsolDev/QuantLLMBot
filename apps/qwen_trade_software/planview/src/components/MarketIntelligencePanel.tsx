@@ -16,6 +16,17 @@ export function MarketIntelligencePanel({
   const hierarchy = intelligence?.hierarchy ?? {};
   const dxy = intelligence?.dxy?.states ?? {};
   const retrievals = intelligence?.recent_retrievals ?? [];
+  const graph = intelligence?.graph_context;
+  const graphSymbol = Object.values(graph?.symbols ?? {})[0];
+  const structureEvidence = graphSymbol?.structure_evidence ?? {};
+  const recentStructure = Object.values(structureEvidence)
+    .flat()
+    .sort((a, b) => String(b.event_time_utc ?? "").localeCompare(String(a.event_time_utc ?? "")))
+    .slice(0, 10);
+  const temporalStructure = graph?.xauusd_all_timeframe_temporal_structure ?? [];
+  const zonePositions = Object.entries(graph?.active_zone_positions ?? {})
+    .filter(([key, zone]) => key !== "selection_rule" && zone && typeof zone === "object")
+    .map(([key, zone]) => ({ key, zone: zone as Record<string, unknown> }));
   return (
     <section className="space-y-3 rounded-lg border border-slate-700 bg-slate-900/60 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -70,6 +81,71 @@ export function MarketIntelligencePanel({
             {trace?.raw_response || "No Qwen response recorded yet."}
           </div>
         </div>
+      </div>
+
+      <div className="rounded border border-slate-800 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-medium text-gold">Neo4j market explanation</h3>
+            <p className="text-xs text-slate-500">
+              Closed-candle evidence only · shadow analysis · no execution authority
+            </p>
+          </div>
+          <span className="rounded bg-slate-950 px-2 py-1 text-xs text-slate-400">
+            Graph {value(graph?.status)} · {value(graph?.packet_bytes)} bytes · pending {value(graph?.projection?.pending)}
+          </span>
+        </div>
+        {temporalStructure.length > 0 ? (
+          <div className="mt-3 space-y-3">
+            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+              {temporalStructure.map((row) => (
+                <div key={row.timeframe} className="rounded bg-slate-950/70 p-2 text-xs">
+                  <div className="flex justify-between gap-2 text-slate-200">
+                    <span className="font-medium">{value(row.timeframe)} · {value(row.trend_state)}</span>
+                    <span className="text-slate-500">{value(row.freshness)}</span>
+                  </div>
+                  <div className="mt-1 text-slate-400">{value(row.auction_state)} · {value(row.range_location)}</div>
+                  <div className="mt-1 text-slate-500">{value(row.latest_structure)} · volume ratio {value(row.volume_confirmation?.ratio)}</div>
+                </div>
+              ))}
+            </div>
+            <div className="grid gap-2 lg:grid-cols-3">
+              {zonePositions.map(({ key, zone }) => (
+                <div key={key} className="rounded border border-slate-800 bg-slate-950/50 p-2 text-xs">
+                  <div className="font-medium text-slate-200">{key.replaceAll("_", " ")}</div>
+                  <div className="mt-1 text-slate-400">
+                    {value(zone.zone_low)}–{value(zone.zone_high)} · owner {value(zone.primary_owning_timeframe)}
+                  </div>
+                  <div className="mt-1 text-slate-500">{value(zone.structural_proof)} · {Array.isArray(zone.contributing_timeframes) ? zone.contributing_timeframes.join("/") : "—"}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : recentStructure.length > 0 ? (
+          <div className="mt-3 grid gap-2 lg:grid-cols-2">
+            {recentStructure.map((event) => (
+              <div key={event.id} className="rounded bg-slate-950/70 p-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-slate-200">
+                    {value(event.timeframe)} · {value(event.event_type)} {event.structure_label ? `· ${event.structure_label}` : ""}
+                  </span>
+                  <span className="text-slate-500">{value(event.status)}</span>
+                </div>
+                <div className="mt-1 text-slate-400">
+                  {event.explanation || (event.zone_kind ? `${event.zone_kind} ${value(event.zone_low)}–${value(event.zone_high)}` : value(event.direction))}
+                  {event.zone_status ? ` · ${event.zone_status}` : ""}
+                </div>
+                <div className="mt-1 truncate font-mono text-[10px] text-slate-600" title={event.evidence_id}>
+                  {value(event.event_time_utc)} · {value(event.evidence_id)}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 text-xs text-slate-500">
+            No projected structure labels yet. The deterministic backfill remains dry-run until the current graph queue is safe to extend.
+          </p>
+        )}
       </div>
 
       {retrievals.length > 0 && (

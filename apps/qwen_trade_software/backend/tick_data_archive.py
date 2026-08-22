@@ -139,6 +139,13 @@ def append_qwen_decision(
     if context:
         record["context"] = context
     append_tick_record("qwen-decisions", record)
+    # Graph memory is best-effort and compact. The JSONL record above remains
+    # authoritative even if SQLite is briefly locked or Neo4j is offline.
+    try:
+        from market_intelligence.decision_events import append_decision_event
+        append_decision_event(record)
+    except Exception:
+        logging.warning("decision graph memory unavailable", exc_info=True)
 
 
 def _line_count(path: Path) -> int:

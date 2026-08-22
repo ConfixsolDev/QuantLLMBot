@@ -33,6 +33,35 @@ challenge this architecture with evidence, but a proposed change becomes active
 only when this V2 document and the corresponding tested code are revised
 together.
 
+### Protected Qwen decision-authority boundary
+
+Qwen is the system's sole discretionary trading brain. Every normal trade
+judgment—including directional commitment, whether an opportunity is worth
+taking, selection among supplied valid levels, contextual entry qualification,
+and routine position-management judgment—must remain Qwen-led. No database,
+graph, detector, indicator, scoring engine, agent, retrieval library, or other
+tool may replace Qwen, silently originate a trade thesis, or promote its output
+into a trade decision.
+
+All other components exist to let Qwen reason with better evidence. Python and
+the data services calculate, validate, organize, relate, retrieve, compress,
+and explain deterministic facts. They supply Qwen with freshness-aware,
+time-bounded, provenance-carrying context across price, market structure,
+zones, sessions, instruments, decisions, and outcomes. They may enforce the
+existing hard safety, broker, risk, geometry, closed-candle, and execution
+invariants, but those controls are gates and circuit breakers—not a competing
+discretionary trader. They may veto an unsafe action or protect capital under
+the exact approved fallback rules; they may not create an ordinary entry or
+take over routine trade management while Qwen is available.
+
+This authority boundary is binding and protected. Research, code, an agent, or
+a newly installed capability cannot reinterpret it. It may be changed only
+after the human owner explicitly asks for and approves that architectural
+change, this V2 document is updated in place, and corresponding behavior is
+implemented and tested. Until then, every proposed subsystem must answer one
+question: how does it provide Qwen with clearer, more complete, and more
+context-aware evidence without becoming the decision maker?
+
 ### Directional-bias invariant
 
 The strategy maintains one directional conclusion for each opportunity:
@@ -104,17 +133,242 @@ calibrate confidence and patience but has no execution authority over gold.
 XAUUSD structure, mapped location, and completed XAUUSD trigger remain
 mandatory.
 
-Qwen may identify a precise evidence gap and request at most two allowlisted,
-read-only retrievals for completed candles, structure state/events, or DXY
-state. The application validates limits, audits the request/result, supplies
-one final follow-up packet, and forbids another retrieval round. Qwen never
-receives arbitrary SQL or database/broker write access.
+#### Optional Neo4j temporal relationship projection
+
+Neo4j is an optional, instrument-neutral projection of the SQLite evidence
+ledger. It organizes completed market events by instrument, timeframe, UTC
+time bucket, session phase, evidence provenance, and chronological succession
+so Python can assemble a smaller and more traceable packet for Qwen. Its
+purpose is to become a sophisticated data-provision and relationship layer:
+it connects candles, structure, zones, tests, sweeps, BOS/CHoCH/MSS,
+acceptance, invalidation, sessions, cross-market context, Qwen decisions, and
+trade outcomes into evidence paths that clearly explain the market to Qwen.
+It may rank retrieval relevance and expose historically similar, reviewed
+episodes, but every returned relationship remains context—not a signal or
+trade command.
+
+Neo4j is never the trading brain. It must not choose buy/sell/wait, invent a
+level, approve an entry, choose or change risk, submit an order, manage a
+position, or replace Qwen under any normal condition. It is not the numerical
+source of truth, a discretionary market judge, or an execution dependency.
+Qwen remains the sole discretionary judgment layer; SQLite and immutable
+source evidence remain authoritative for replayable facts, while runtime and
+broker controls retain their existing safety and execution responsibilities.
+
+The projection is populated through a transactional SQLite outbox and a
+separate `market_graph_worker.py` process. Appending an intelligence event and
+enqueuing its graph projection occur in one SQLite transaction. The graph
+worker performs idempotent, parameterized batch writes using stable external
+IDs, records a projection watermark and bounded retry state, and can rebuild
+the entire graph from the ledger. Neo4j unavailability may make graph context
+stale or unavailable, but it must never stop MT5 collection, deterministic
+structure updates, Qwen's baseline SQLite context, order execution, trade
+protection, or broker reconciliation.
+
+The graph stores compact `MarketEvent`, `Instrument`, `Timeframe`,
+`TimeBucket`, `SessionPhase`, and `MarketEpisode` nodes plus provenance and ordering
+relationships. Candle OHLCV arrays, tick history, indicators, statistical
+results, and broker truth stay in SQLite or their existing ledgers. Parent
+timeframe membership is represented through shared deterministic time buckets
+rather than materializing every possible parent-to-child candle edge. This
+keeps the model extensible to additional Forex pairs without embedding
+XAUUSD-specific labels or Cypher.
+
+Each newly recorded Qwen entry or management response also emits a bounded
+`qwen_decision` market event containing its decision state, model, confidence,
+episode/proposal reference, deduplicated evidence IDs, acknowledged epochs,
+and prompt/response hashes. Full prompt and raw response text stay in the
+existing immutable decision logs; Neo4j stores neither large prompts nor an
+independent copy of model truth. Decisions join the relevant `MarketEpisode`
+through stable proposal or position references so later retrieval can follow
+evidence -> decision -> episode without scanning unrelated JSONL files.
+Execution start, fill, close, and skip records emit the same bounded event form
+and update episode lifecycle status and outcome references. High-frequency path
+monitor samples remain in their existing numerical logs and are deliberately
+excluded from Neo4j.
+
+Python owns all writes and allowlisted reads. The worker publishes a bounded,
+atomically replaced graph-context snapshot and health file; the reviewer reads
+that local snapshot instead of placing a Neo4j network call in the entry hot
+path. Every graph record carries an external ID, UTC event time, evidence ID,
+payload hash, schema version, and detector/source provenance. Session intervals
+carry a versioned calendar identifier so daylight-saving or calendar changes
+can be rebuilt rather than silently rewriting history.
+
+Graph promotion is shadow-first. Initial success means complete idempotent
+projection, deterministic replay, bounded retrieval, correct multi-symbol
+isolation, lower evidence duplication, and acceptable projection lag. Better
+trading performance remains a separate claim requiring counterfactual Qwen
+replay and out-of-sample evaluation against the existing SQLite-only baseline.
+
+Historical candle authority is convention-explicit. M1, M15, M30, and H1 retain
+the maximum broker-available completed history with tick volume, real volume,
+and spread metadata. H4 is not accepted directly from a broker: it is
+deterministically aggregated from completed H1 candles on the 17:00
+`America/New_York` Forex trading-day anchor, including DST transitions. H4
+events carry `time_convention=new_york_1700_dst`, preventing incompatible broker
+boundaries from silently coexisting.
+
+The graph also maintains indexed `MarketLevel`, `LevelObservation`, and
+`StructureSnapshot` projections from the authoritative deterministic context
+cache. Levels retain symbol/timeframe, zone bounds, role, method, pattern, test
+count, source evidence, first/last seen, and distinct-snapshot recurrence.
+`evidence_confidence` is explicitly a Python-calculated data-quality score, not
+a probability of profitable direction. Qwen consumes only the bounded latest
+market-map snapshot and does not calculate or mutate graph state.
+
+Temporal retrieval is bitemporal. Every market event is filtered by both
+`event_time` (when it occurred) and `recorded_at` (when the system learned it),
+so replay cannot see later backfills. Level facts live on immutable
+`LevelObservation` snapshots and are selected as-of observation/valid time;
+mutable `MarketLevel` nodes are indexes, not historical truth. All lower-frame
+H4 containment uses versioned `new_york_1700_dst` buckets. Model selection stays
+in runtime configuration: the graph supplies an evidence-bounded assessment
+packet but never chooses, invokes, or replaces the decision model.
+
+Qwen may identify a precise evidence gap and request only allowlisted,
+read-only retrievals for completed candles, structure state/events, zones,
+sessions, or DXY state. The application validates the phase-specific limits
+defined below, audits every request and result, and returns neutral evidence.
+Qwen never receives arbitrary SQL, Cypher, or database/broker write access.
+
+#### Approved Neo4j market-memory and context contract
+
+The graph worker must compile raw Neo4j relationships into one compact,
+neutral, evidence-bounded packet; it must never pass the graph dump to Qwen.
+The packet is ordered as: (1) market clock and sessions, (2) XAUUSD temporal
+structure across D1/H4/H1/M30/M15/M5/M1, (3) three active zone positions,
+(4) structure and tick-volume participation, (5) compressed DXY
+cross-reference, and (6) conflicts, missing facts, and available RAG
+questions. Its byte ceiling is configurable and must be measured during shadow
+operation against the active model's context budget.
+
+All XAUUSD timeframes remain visible because movement is temporal and
+hierarchical rather than belonging to one isolated chart. D1/H4 describe the
+parent driver, H1/M30/M15 describe development, and M5/M1 describe its local
+expression and entry timing. Each row carries trend state, forming leg,
+nearest location, acceptance/rejection state, participation evidence, evidence
+freshness, and forming-candle time remaining and percent complete. Forming
+candles are context only; only completed owning-timeframe candles may prove
+structure. A rapid five-to-fifteen-minute move may therefore be explained as
+the expression or completion of a higher-timeframe leg rather than mislabeled
+as an M1-only event.
+
+Session context separates the evolving current session from immutable closed
+sessions. The current session carries time remaining and factual range,
+location, acceptance/rejection, and participation state for Qwen to interpret
+against D1/H4. The immediately previous session carries its completed bias,
+high, low, range, participation profile, and final acceptance/rejection facts.
+The previous two occurrences of the same named session contribute high, low,
+and range only when relevant to repeated-price structure. Each completed
+session receives one range/volatility-derived comparison tolerance at close;
+that tolerance is locked and shared across timeframe comparisons. Exact-price
+equality is never a market-structure rule.
+
+Price zone is the primary context and memory anchor. Overlapping or nested
+levels respected by multiple timeframes are consolidated into one price-area
+zone with a core overlap, wider investigation band, contributing timeframes,
+one highest owning timeframe, evidence by timeframe, and separate
+owning-timeframe invalidations. The highest-timeframe validity dominates;
+lower timeframes refine timing only. Coincident observations produced by one
+market movement count as one episode, not multiple votes. Qwen receives
+exactly three positions when available: the current or approaching focus zone,
+nearest proven support below, and nearest proven resistance above. Ranking is
+based on distance, highest owner, freshness, structural proof, session
+relevance, participation, and room to the opposing zone. Zone history is a
+neutral one-line sequence: formed, tests, latest response, current status, and
+unresolved condition.
+
+Volume fields are labeled as MT5 tick-volume participation proxies, never true
+buy/sell volume. For the active zone and timeframe structure, the compiler may
+provide bullish-candle average, bearish-candle average, their participation
+ratio, current participation versus timeframe/session average, and whether
+participation supports or contradicts the printed structure. Forming-candle
+volume must be elapsed-time adjusted and cannot prove structure.
+
+DXY uses the same temporal and participation vocabulary but is compressed to
+four or five lines: D1/H4 driver, H1/M30/M15 path, M5/M1 immediate expression,
+participation, and its neutral aligned/inverse/conflicting relationship to
+XAUUSD. It is regenerated only when its evidence epoch changes and remains a
+cross-reference without XAUUSD execution authority.
+
+`OPTIONAL_NEO4J_RAG_EVIDENCE` is a separate block that Qwen may use or ignore.
+Qwen selects only predefined question IDs: `ZONE_HISTORY`,
+`RESOLVE_TIMEFRAME_CONFLICT`, `ACCEPTANCE_REJECTION_PROOF`,
+`SIMILAR_MARKET_EPISODES`, `DXY_CROSS_REFERENCE`, and
+`SESSION_STRUCTURE_HISTORY`. Requests carry question ID, symbol, as-of time,
+focus-zone ID, and timeframes; both batch and sequential requests are allowed.
+Combined uncached budgets are five questions during context warmup, four
+during zone definition, and two during either trade decision or trade
+management. Cached answers do not consume budget while the evidence epoch is
+unchanged.
+
+RAG responses always use the same non-directional fields: exact predefined
+question, factual answer, supporting evidence, contradicting evidence,
+unresolved facts, evidence IDs and timestamps, freshness, truncation, and
+`execution_authority=false`. The broker must retrieve bullish and bearish
+evidence symmetrically. It must not return a recommendation, preferred side,
+confidence adjustment, or hidden decision relevance. Missing data returns
+`insufficient_evidence`; Qwen decides whether to proceed, wait, hold, or exit.
+The system logs the question, normalized failure reason, Qwen action and
+rationale, alternative evidence, decision/trade reference, and later outcome.
+Two occurrences of the same `question_id + missing evidence type + market
+phase` fingerprint create an improvement candidate, never an automatic graph,
+schema, strategy, or execution change.
+
+Episodic retrieval starts from active price zone, structure, and regime and
+returns a closest historical episode, a strong counterexample that resolved
+differently, an alternative relevant path, and unresolved differences. It
+does not produce a probability, automatic direction, or entry-context P&L
+statistics. Semantic memory is likewise zone-relevant and consolidated: only
+the single highest-relevance item matching the current zone, regime,
+timeframe hierarchy, and structural condition may enter the packet.
+
+Semantic memory lifecycle is `candidate -> probation -> established` or
+`retired`. An agent may create and promote a candidate into seven-calendar-day
+probation (approximately five trading days). During probation, simple unique
+episode counts are used: if contradictory episodes equal or exceed supporting
+episodes, the item automatically retires. Session is excluded from matching;
+instrument, timeframe hierarchy, regime, and structural condition are used.
+Nested multi-timeframe observations from one move count once. A retired item
+may return as a new version with a fresh probation while preserving failure
+history. Once an item survives probation it is human-locked: revision,
+retirement, deletion, or reactivation requires explicit human supervision.
+Lifecycle labels remain internal and do not bias Qwen.
+
+This compiler and memory contract is promoted shadow-first. Until its packet
+completeness, freshness, contradiction coverage, size, deterministic replay,
+and usefulness are validated, SQLite remains Qwen's baseline context path.
+Neo4j may become the primary context-memory provider only after that measured
+promotion; even then Qwen remains the sole discretionary trading brain and
+SQLite remains authoritative evidence.
 
 Model qualification and evidence freshness are independent. Qualification
 proves contract capability; it never suppresses projection refresh when a
 structure epoch changes. Website and logs expose structure epochs, DXY and
 relationship state, retrievals, prompt size, response latency, cited evidence,
 acknowledged epochs, and the bounded raw JSON response.
+
+#### Leakage-safe hourly structure supervision
+
+Historical quality review runs once per completed XAUUSD H1 market hour and
+reconstructs only facts knowable at that close across M1/M15/M30/H1/H4/D1.
+It jointly records active levels and zones, confirmed structure, XAUUSD-DXY
+relationship, parent-versus-child movement, and relative MT5 tick volume at
+level interactions. Missing timeframe coverage and absent deterministic graph
+labels are explicit defects; they must never be converted to a neutral view.
+
+Forward candles may be used only by a separate post-hoc supervision envelope
+to measure later direction, MFE/MAE, failed breaks, and context the live system
+failed to represent. Every such event is immutable and carries
+`mode=posthoc_supervised`, `uses_forward_visibility=true`,
+`execution_authority=false`, `eligible_for_live_context=false`, and
+`eligible_for_training=false`. Its compact `supervised_analysis` property may
+be projected to Neo4j for explanation and website observability, while the full
+dimension payload remains in SQLite. Live graph queries and Qwen decision
+packets must exclude this event type. Promotion into training or live context
+requires a separate leakage review, deterministic evaluation, and an approved
+in-place revision of this architecture.
 
 ### Modular market-structure provider boundary
 
@@ -1204,4 +1458,4 @@ Every problem has a testable success criterion:
 
 7. **Measure against baseline.** Every phase compares against the pre-change paper trade results. If a phase makes things worse, revert and investigate before proceeding.
 
-8. **The model is not the whole system.** Qwen is one component. The guard, the executor, the regime engine, the level detection — these are deterministic code that works without a model call. The model adds judgment to a mechanically sound framework.
+8. **Qwen is the sole discretionary brain, not the whole implementation.** The guard, executor, regime engine, level detection, SQLite, Neo4j, and retrieval services are deterministic support components. They compute facts, provide context, enforce approved safety, and execute validated instructions; they do not compete with Qwen for normal trade judgment. Qwen receives their mechanically sound evidence and remains the main driver for entries and routine management.

@@ -176,6 +176,7 @@ def _dated_log_files(base_name: str, days_back: int = 1) -> list[Path]:
 PATH_EVENTS = frozenset({"mt5_execution_monitor"})
 PATH_LOG = "paper-path"
 EXECUTION_LOG = "paper-executions"
+_EXECUTION_SYMBOLS: dict[str, str] = {}
 
 
 def append_event(event: dict) -> None:
@@ -198,6 +199,15 @@ def append_event(event: dict) -> None:
     Failures are logged with a full traceback, so this hides nothing; it only
     refuses to let bookkeeping kill trading.
     """
+    event = dict(event)
+    execution_id = event.get("execution_id")
+    symbol = event.get("symbol") or (event.get("plan") or {}).get("symbol")
+    if execution_id and symbol:
+        _EXECUTION_SYMBOLS[str(execution_id)] = str(symbol)
+    elif execution_id:
+        symbol = _EXECUTION_SYMBOLS.get(str(execution_id))
+    if symbol:
+        event["symbol"] = symbol
     base = PATH_LOG if event.get("event") in PATH_EVENTS else EXECUTION_LOG
     try:
         append_tick_record(base, event)
@@ -207,6 +217,14 @@ def append_event(event: dict) -> None:
             "Trading continues; this record is lost.",
             base, event.get("event"), event.get("execution_id"),
         )
+    if base == EXECUTION_LOG:
+        try:
+            from market_intelligence.execution_events import append_execution_event
+            append_execution_event(event)
+        except Exception:
+            logging.warning("execution graph memory unavailable", exc_info=True)
+    if execution_id and event.get("event") in {"mt5_execution_closed", "mt5_execution_skipped"}:
+        _EXECUTION_SYMBOLS.pop(str(execution_id), None)
 
 
 def load_proposal(proposal_id: str) -> dict:

@@ -9,6 +9,20 @@ PARENT = {"H4": "D1", "H1": "H4", "M30": "H1", "M15": "M30", "M5": "M15", "M1": 
 def reduce_event(previous: dict | None, event: dict) -> dict:
     """Pure reducer: identical ordered events always reproduce identical state."""
     payload = event.get("payload") or {}
+    # Historical structure labels are graph evidence only. They must not
+    # mutate the live materialized state or gain execution authority through
+    # a replay of the shared immutable ledger.
+    if payload.get("mode") == "shadow_only" or payload.get("execution_authority") is False:
+        return previous or {
+            "symbol": event["symbol"], "timeframe": event["timeframe"],
+            "parent_timeframe": PARENT.get(event["timeframe"]),
+            "direction": "unknown", "state": "unknown_balance",
+            "active_leg": "balance", "transition": None,
+            "invalidation_level_id": None, "latest_close": None,
+            "latest_evidence_id": None,
+            "unresolved_condition": "await completed authoritative candle",
+            "event_time_utc": event["event_time_utc"],
+        }
     prior = previous or {}
     direction = str(payload.get("direction") or payload.get("trend") or prior.get("direction") or "unknown")
     transition = payload.get("transition")

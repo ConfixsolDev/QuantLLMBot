@@ -1,5 +1,6 @@
 import type { CandlesResponse, PlannerState, Snapshot } from "./types";
 import type { LifecycleResponse, TradeIdeasResponse } from "./tradeIdeas";
+import type { TradeJournalResponse } from "./tradeJournal";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:48632";
@@ -56,4 +57,8 @@ export function fetchTradeIdeas(options?: {
 
 export function fetchLifecycle(symbol?: string): Promise<LifecycleResponse> {
   return fetchJson<LifecycleResponse>(withSymbol("/lifecycle", symbol));
+}
+
+export function fetchTradeJournal(limit = 200): Promise<TradeJournalResponse> {
+  return fetchJson<TradeJournalResponse>(`/trade-journal?limit=${limit}`);
 }

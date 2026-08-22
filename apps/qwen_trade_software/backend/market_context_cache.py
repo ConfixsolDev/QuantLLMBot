@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import MetaTrader5 as mt5
+from gpu_placement import require_gpu_residency
 from instrument_config import instrument_for
 
 import live_mapped_levels
@@ -136,6 +137,21 @@ def as_utc(value: datetime | str | int | float) -> datetime:
 
 def iso_utc(value: datetime | str | int | float) -> str:
     return as_utc(value).isoformat().replace("+00:00", "Z")
+
+
+def is_timeframe_open_aligned(timeframe: str, value: datetime | str | int | float) -> bool:
+    """Return whether a candle open follows the system's timeframe convention.
+
+    Intraday broker timeframes use UTC epoch alignment. H4 is deliberately
+    different: the architecture defines it from the 17:00 New York Forex-day
+    anchor, whose UTC offset changes with daylight saving time.
+    """
+    opened = as_utc(value)
+    if timeframe == "H4":
+        from market_intelligence.historical_backfill import ny_h4_start
+
+        return ny_h4_start(opened) == opened
+    return int(opened.timestamp()) % TIMEFRAME_SECONDS[timeframe] == 0
 
 
 def canonical_json(value: Any) -> str:
@@ -279,6 +295,8 @@ class OllamaClient:
         timeout: float | None = None,
         format_schema: dict | None = None,
     ) -> dict:
+        if prompt:
+            require_gpu_residency(self.model, owner="market_context_cache")
         payload: dict[str, Any] = {
             "model": self.model,
             "prompt": prompt,
@@ -402,7 +420,9 @@ class MT5MarketSource:
     @staticmethod
     def _start_for(timeframe: str, as_of: datetime) -> datetime:
         if timeframe in LOOKBACKS:
-            return as_of - LOOKBACKS[timeframe] - timedelta(
+            lookback = (max(LOOKBACKS[timeframe], LOOKBACKS["H4"])
+                        if timeframe == "H1" else LOOKBACKS[timeframe])
+            return as_of - lookback - timedelta(
                 seconds=TIMEFRAME_SECONDS[timeframe] * 2
             )
         day_start = as_of.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -440,6 +460,38 @@ class MT5MarketSource:
                     row = self._normalize_rate(self.symbol, timeframe, current[0], as_of)
                     if not row["is_complete"]:
                         forming[timeframe] = row
+        # One system-wide H4 convention: aggregate H1 on the 17:00 New York
+        # Forex-day anchor instead of accepting broker-dependent H4 boundaries.
+        from market_intelligence.historical_backfill import aggregate_ny_h4
+        h1_source = [*completed.get("H1", [])]
+        if forming.get("H1"):
+            h1_source.append(forming["H1"])
+        native = [{
+            **row, "open_time": datetime.fromisoformat(
+                row["open_time_utc"].replace("Z", "+00:00")),
+            "close_time": datetime.fromisoformat(
+                row["close_time_utc"].replace("Z", "+00:00")),
+        } for row in h1_source]
+        rebuilt = []
+        for row in aggregate_ny_h4(native, include_forming=True):
+            opened = row["open_time"]
+            rebuilt.append({
+                "evidence_id": f"candle:{self.symbol}:H4:new_york_1700_dst:"
+                               f"{opened:%Y-%m-%dT%H:%M:%SZ}",
+                "symbol": self.symbol, "timeframe": "H4",
+                "open_time_utc": iso_utc(opened), "close_time_utc": iso_utc(row["close_time"]),
+                "open": row["open"], "high": row["high"], "low": row["low"],
+                "close": row["close"], "tick_volume": row["tick_volume"],
+                "spread": row["spread"], "real_volume": row["real_volume"],
+                "is_complete": row["is_complete"], "source": "MT5_H1_AGGREGATED_NY",
+                "ingested_at_utc": iso_utc(utc_now()),
+            })
+        completed["H4"] = [row for row in rebuilt if row["is_complete"]]
+        active_h4 = [row for row in rebuilt if not row["is_complete"]]
+        if active_h4:
+            forming["H4"] = active_h4[-1]
+        else:
+            forming.pop("H4", None)
         return completed, forming
 
 
@@ -814,6 +866,35 @@ class MarketContextCache:
         ).fetchall()
         found = {row["timeframe"]: int(row["count"]) for row in rows}
         return {timeframe: found.get(timeframe, 0) for timeframe in TIMEFRAME_SECONDS}
+
+    def needs_canonical_h4_rebuild(self, symbol: str) -> bool:
+        row = self.connection.execute(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN source='MT5_H1_AGGREGATED_NY' THEN 1 ELSE 0 END) AS canonical "
+            "FROM completed_candles WHERE symbol=? AND timeframe='H4'",
+            (symbol,),
+        ).fetchone()
+        total = int(row["total"] or 0)
+        canonical = int(row["canonical"] or 0)
+        return total != canonical or canonical < MINIMUM_COUNTS["H4"]
+
+    def clear_h4_for_canonical_rebuild(self, symbol: str) -> int:
+        """Clear H4 so a deep H1 aggregation can replace it atomically by convention.
+
+        Existing canonical rows may have been built from a short incremental H1
+        slice, so retaining them can preserve partial OHLC geometry. A rebuild
+        therefore replaces the whole derived H4 series, not only legacy rows.
+        """
+        with self.connection:
+            cursor = self.connection.execute(
+                "DELETE FROM completed_candles WHERE symbol=? AND timeframe='H4'",
+                (symbol,),
+            )
+            self.connection.execute(
+                "DELETE FROM forming_candles WHERE symbol=? AND timeframe='H4'",
+                (symbol,),
+            )
+        return int(cursor.rowcount)
 
     def evidence_exists(self, evidence_id: str) -> bool:
         return self.connection.execute(
@@ -1654,7 +1735,7 @@ class ContextValidator:
     def gate_a(self, as_of: datetime) -> tuple[bool, list[str], dict]:
         failures: list[str] = []
         counts = {}
-        for timeframe, seconds in TIMEFRAME_SECONDS.items():
+        for timeframe in TIMEFRAME_SECONDS:
             rows = self.cache.completed(self.symbol, timeframe)
             counts[timeframe] = len(rows)
             if len(rows) < MINIMUM_COUNTS[timeframe]:
@@ -1666,7 +1747,7 @@ class ContextValidator:
             if opened != sorted(set(opened)):
                 failures.append(f"raw:{timeframe}:duplicate_or_non_monotonic")
             for row, timestamp in zip(rows, opened):
-                if int(timestamp.timestamp()) % seconds:
+                if not is_timeframe_open_aligned(timeframe, timestamp):
                     failures.append(f"raw:{timeframe}:misaligned:{row['evidence_id']}")
                     break
                 if not self._geometry(row):
@@ -1694,14 +1775,14 @@ class ContextValidator:
     ) -> tuple[bool, list[str], dict]:
         failures: list[str] = []
         counts = self.cache.completed_counts(self.symbol)
-        for timeframe, seconds in TIMEFRAME_SECONDS.items():
+        for timeframe in TIMEFRAME_SECONDS:
             if counts[timeframe] < MINIMUM_COUNTS[timeframe]:
                 failures.append(
                     f"raw:{timeframe}:count {counts[timeframe]} < {MINIMUM_COUNTS[timeframe]}"
                 )
             for row in incoming.get(timeframe, []):
                 opened = as_utc(row["open_time_utc"])
-                if int(opened.timestamp()) % seconds:
+                if not is_timeframe_open_aligned(timeframe, opened):
                     failures.append(f"raw:{timeframe}:misaligned:{row['evidence_id']}")
                 if not self._geometry(row):
                     failures.append(f"raw:{timeframe}:bad_ohlc:{row['evidence_id']}")
@@ -3436,7 +3517,21 @@ class QwenContextShadow:
         quote = self.source.quote()
         as_of = as_utc(quote.time_utc)
         starts = self.cache.incremental_starts(self.symbol, as_of)
+        rebuild_h4 = self.cache.needs_canonical_h4_rebuild(self.symbol)
+        if rebuild_h4:
+            # H4 is constructed from H1. Pull the full configured H4 horizon
+            # during migration instead of using the ordinary incremental H1
+            # start, which would only produce the newest one or two H4 bars.
+            starts["H1"] = self.source._start_for("H1", as_of)
         completed, forming = self.source.history(as_of, starts)
+        if rebuild_h4:
+            removed = self.cache.clear_h4_for_canonical_rebuild(self.symbol)
+            if removed:
+                logging.info(
+                    "Cleared %d H4 candles before canonical New York rebuild for %s",
+                    removed,
+                    self.symbol,
+                )
         inserted = {}
         for timeframe, rows in completed.items():
             inserted[timeframe] = self.cache.ingest_completed(rows)
@@ -3881,13 +3976,21 @@ def latest_entry_context(
             # Auto-upgrade: try to refresh the cache if it's blocked
             if auto_upgrade:
                 try:
-                    source = MT5MarketSource(symbol)
-                    source.connect()
-                    ollama = OllamaClient()
-                    shadow = QwenContextShadow(cache, source, ollama)
-                    # Run a context cycle to try to get to ready state
-                    new_manifest = shadow.run_once(run_qwen=True, benchmark_minute=True)
-                    source.close()
+                    # Do not race the dedicated context-cache worker. Entry,
+                    # management, and execution processes may all call this
+                    # reader concurrently while a rebuild is underway.
+                    with context_cycle_lock(timeout=0):
+                        source = MT5MarketSource(symbol)
+                        source.connect()
+                        try:
+                            ollama = OllamaClient()
+                            shadow = QwenContextShadow(cache, source, ollama)
+                            # Run a context cycle only when no worker owns it.
+                            new_manifest = shadow.run_once(
+                                run_qwen=True, benchmark_minute=True
+                            )
+                        finally:
+                            source.close()
                     # After run_once, check again
                     manifest = new_manifest if new_manifest.get("status") == "ready" else cache.latest_manifest(symbol)
                 except Exception as upgrade_error:
