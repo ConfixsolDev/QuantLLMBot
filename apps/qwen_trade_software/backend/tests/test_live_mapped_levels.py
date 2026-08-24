@@ -79,6 +79,41 @@ def test_leave_and_return_closed_m1_is_double_top():
     assert any(row["test_count"] >= 2 for row in highs)
 
 
+def test_m5_equivalence_band_counts_live_m1_second_top_without_future_m5_bars():
+    """Regression: 4670.437 -> 4669.034 must arm on the rejecting M1 close."""
+    m5_rows = _up_then_high(0, 4670.437, 4664.0)
+    last_m5_close = datetime.fromisoformat(
+        m5_rows[-1]["close_time_utc"].replace("Z", "+00:00")
+    )
+    opened = last_m5_close + timedelta(minutes=1)
+    closed_m1 = {
+        "evidence_id": "candle:XAUUSDr:M1:2026-08-24T12:41:00Z",
+        "open_time_utc": opened.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "close_time_utc": (opened + timedelta(minutes=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "open": 4663.352,
+        "high": 4669.034,
+        "low": 4661.234,
+        "close": 4665.418,
+        "tick_volume": 554,
+    }
+
+    levels = lml.build_from_completed(
+        {"M5": m5_rows}, closed_m1, closed_m1["close"]
+    )
+    top = next(
+        row
+        for row in levels
+        if row["timeframe"] == "M5"
+        and row["pattern"] == "double_top"
+        and row["zone_high"] == 4670.437
+    )
+    assert top["zone_low"] == 4668.437
+    assert top["test_count"] == 2
+    assert closed_m1["evidence_id"] in top["source_candle_ids"]
+
+
 def test_nearby_prefers_live_map_not_last_bar():
     live = {
         "level_id": "M5_LIVE_H_4323_0110",

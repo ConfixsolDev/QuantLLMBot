@@ -150,6 +150,34 @@ def cluster_swings(swings: list[dict], width: float) -> list[dict]:
     return zones
 
 
+def investigation_band(zone: dict, width: float) -> dict:
+    """Give a lone confirmed swing its one-sided equivalence band.
+
+    ``cluster_swings`` uses ``width`` to decide whether two *confirmed* swings
+    are equivalent.  Keeping a lone swing as a zero-width price meant a live
+    M1 return 1.4 points below an M5 high was not a test of that high even
+    though the configured M5 equivalence width was 2.0.  The second swing then
+    needed two future M5 candles before it could join the cluster, which is too
+    late for entry timing.
+
+    Resistance is investigated below its high and support above its low.  A
+    multi-swing cluster already has an observed band and is left unchanged.
+    """
+    members = list(zone.get("members") or [])
+    if len(members) != 1 or width <= 0:
+        return dict(zone)
+    expanded = dict(zone)
+    anchor = float(members[0]["price"])
+    expanded["anchor_price"] = anchor
+    if zone.get("kind") == "high":
+        expanded["zone_low"] = anchor - float(width)
+        expanded["zone_high"] = anchor
+    else:
+        expanded["zone_low"] = anchor
+        expanded["zone_high"] = anchor + float(width)
+    return expanded
+
+
 def count_visits(zone: dict, rows: list[dict]) -> tuple[int, bool]:
     """Distinct approaches. A second test requires a leave between visits."""
     tests = 0
@@ -174,6 +202,34 @@ def count_visits(zone: dict, rows: list[dict]) -> tuple[int, bool]:
                 elif kind == "low" and low > hi:
                     left_after_first = True
     return tests, left_after_first
+
+
+def include_live_m1_return(
+    zone: dict,
+    rows: list[dict],
+    closed_m1: dict | None,
+    tests: int,
+    left_after_first: bool,
+) -> tuple[int, bool]:
+    """Count a later closed M1 response as the live second zone visit.
+
+    Higher-timeframe mapped zones execute from a completed M1 response.  The
+    M1 close must be newer than the latest completed owner-timeframe candle so
+    the same visit is not counted twice after that candle closes.
+    """
+    if tests < 1 or not left_after_first or not closed_m1:
+        return tests, False
+    evidence_id = str(closed_m1.get("evidence_id") or "")
+    if evidence_id and any(str(row.get("evidence_id") or "") == evidence_id for row in rows):
+        return tests, False
+    m1_close = str(closed_m1.get("close_time_utc") or "")
+    latest_owner_close = max((str(row.get("close_time_utc") or "") for row in rows), default="")
+    if not m1_close or (latest_owner_close and m1_close <= latest_owner_close):
+        return tests, False
+    lo = float(zone["zone_low"])
+    hi = float(zone["zone_high"])
+    touching = float(closed_m1["low"]) <= hi and float(closed_m1["high"]) >= lo
+    return (tests + 1, True) if touching else (tests, False)
 
 
 def m1_failure_at_zone(zone: dict, closed_m1: dict | None) -> bool:
@@ -223,7 +279,10 @@ def _level_id(timeframe: str, zone: dict) -> str:
     if "T" in open_time:
         hhmm = open_time.split("T", 1)[1][:5].replace(":", "")
         stamp = f"_{hhmm}"
-    return f"{timeframe}_LIVE_{kind}_{int(round(_mid(zone['zone_low'], zone['zone_high'])))}{stamp}"
+    identity_price = float(
+        zone.get("anchor_price", _mid(zone["zone_low"], zone["zone_high"]))
+    )
+    return f"{timeframe}_LIVE_{kind}_{int(round(identity_price))}{stamp}"
 
 
 def zone_to_level(
@@ -289,10 +348,18 @@ def build_from_completed(
         swings = fractal_swings(rows, WING[timeframe], "high") + fractal_swings(
             rows, WING[timeframe], "low"
         )
-        for zone in cluster_swings(swings, width):
+        for raw_zone in cluster_swings(swings, width):
+            zone = investigation_band(raw_zone, width)
             tests, left = count_visits(zone, rows)
+            tests, live_m1_return = include_live_m1_return(
+                zone, rows, closed_m1, tests, left
+            )
             if tests < 1:
                 continue
+            if live_m1_return and closed_m1.get("evidence_id"):
+                zone = dict(zone)
+                zone["source_candle_ids"] = list(zone.get("source_candle_ids") or [])
+                zone["source_candle_ids"].append(closed_m1["evidence_id"])
             levels.append(
                 zone_to_level(
                     timeframe,

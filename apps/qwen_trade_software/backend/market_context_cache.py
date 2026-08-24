@@ -4075,13 +4075,15 @@ def latest_entry_context(
     path: Path | str = DEFAULT_DB,
     *,
     now: datetime | None = None,
-    auto_upgrade: bool = True,
+    auto_upgrade: bool = False,
 ) -> dict:
     """Return the current cache-qualified packet permitted to reach entry Qwen.
 
     Args:
-        auto_upgrade: If True and manifest is blocked, attempt to run_once()
-                      to refresh the cache before returning blocked status.
+        auto_upgrade: Explicit maintenance-only opt-in. If True and the
+                      manifest is blocked, attempt to run_once() to refresh
+                      the cache. Live readers must use the default so a cache
+                      recovery can never run model warmups in an entry path.
     """
     checked_at = as_utc(now or utc_now())
     cache = MarketContextCache(path)

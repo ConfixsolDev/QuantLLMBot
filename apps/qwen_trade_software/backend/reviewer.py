@@ -2758,7 +2758,7 @@ def _update_idea_lifecycle(
 def generate_dashboard_deal_sheet() -> dict:
     snapshot = read_json_safe(MANAGEMENT_STATE_FILE, DEFAULT_MANAGEMENT_STATE)
     symbol = str(snapshot.get("symbol") or "XAUUSDr")
-    entry_cache = latest_entry_context(symbol)
+    entry_cache = latest_entry_context(symbol, auto_upgrade=False)
     snapshot["entry_cache"] = entry_cache
     decision_levels = (
         cache_levels_for_decision(entry_cache)
@@ -3039,7 +3039,7 @@ def generate_dashboard_deal_sheet() -> dict:
         # answer and prevent a READY decision from trading a materially moved
         # market. WAIT assessments remain useful observations and are not
         # rewritten merely because another M1 candle closed.
-        post_qwen_cache = latest_entry_context(symbol)
+        post_qwen_cache = latest_entry_context(symbol, auto_upgrade=False)
         snapshot_freshness = decision_snapshot_freshness(facts, post_qwen_cache)
         review["decision_freshness"] = snapshot_freshness
         if (
@@ -3481,7 +3481,7 @@ def generate_automatic_deal_sheet() -> bool:
 def entry_event_snapshot() -> dict:
     """Return only state changes capable of altering an entry decision."""
     symbol = PRIMARY_MARKET_SYMBOL
-    cache = latest_entry_context(symbol)
+    cache = latest_entry_context(symbol, auto_upgrade=False)
     memory = MARKET_INTELLIGENCE.refresh_snapshot(symbol)
     hierarchy = memory.get("hierarchy") or {}
     dxy = ((memory.get("dxy") or {}).get("states") or {})

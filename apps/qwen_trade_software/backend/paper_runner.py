@@ -318,7 +318,9 @@ def proposal_runtime_failures(proposal: dict) -> list[str]:
     instrument = instrument_for(symbol)
     if not instrument.trade_enabled or instrument.context_only:
         failures.append(f"instrument_not_trade_enabled:{instrument.key}")
-    current = latest_entry_context(symbol)
+    # Execution is latency-critical. Cache recovery belongs to the dedicated
+    # worker and must never run Qwen warmups while a ready proposal is waiting.
+    current = latest_entry_context(symbol, auto_upgrade=False)
     if current.get("status") != "ready":
         failures.append("current_cache_not_ready")
         return failures

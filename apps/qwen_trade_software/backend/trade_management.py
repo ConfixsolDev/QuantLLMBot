@@ -233,7 +233,9 @@ def _live_mapped_chart_prices(symbol: str) -> dict:
     """Same live swing map the entry model sees, for the management UI."""
     cache_levels = {}
     try:
-        entry = latest_entry_context(symbol)
+        # Chart enrichment must remain read-only and cannot delay protection
+        # by launching a full cache/model recovery cycle.
+        entry = latest_entry_context(symbol, auto_upgrade=False)
     except Exception:
         entry = {}
     if str(entry.get("status") or "") == "ready":
