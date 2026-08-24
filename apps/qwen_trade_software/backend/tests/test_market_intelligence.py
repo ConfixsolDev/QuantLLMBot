@@ -1,4 +1,5 @@
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from market_intelligence.projection import reduce_event, relationship_state
 from market_intelligence.retrieval import RetrievalBroker
@@ -30,6 +31,20 @@ def test_event_ledger_is_idempotent_and_projection_replays(tmp_path: Path):
     after = store.projection("XAUUSDr", "H1")
     assert after["direction"] == "bearish"
     assert after["structure_epoch"] == before["structure_epoch"]
+
+
+def test_shared_store_serializes_dashboard_reads_with_projection_writes(tmp_path: Path):
+    store = IntelligenceStore(tmp_path / "memory.sqlite3")
+    first = event(suffix="1")
+    store.append_event(first)
+    store.put_projection("XAUUSDr", "H1", reduce_event(None, first), first["event_id"])
+
+    def read_snapshot(_):
+        return store.events("XAUUSDr", limit=6), store.projections("XAUUSDr")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(read_snapshot, range(100)))
+    assert all(rows and projections.get("H1") for rows, projections in results)
 
 
 def test_relationship_never_grants_dxy_execution_authority():
@@ -70,6 +85,23 @@ def test_independent_collector_backfills_every_unseen_candle_in_order(tmp_path: 
     events = store.events("XAUUSDr", "M1", 20)
     assert [row["evidence_id"] for row in events] == ["M1_0", "M1_1", "M1_2", "M1_3"]
     assert store.projection("XAUUSDr", "M1")["latest_evidence_id"] == "M1_3"
+
+
+def test_changed_source_payload_appends_audited_correction_event(tmp_path: Path):
+    store = IntelligenceStore(tmp_path / "memory.sqlite3")
+    original = [{
+        "evidence_id": "H4_1", "open_time_utc": "2026-08-24T01:00:00Z",
+        "close_time_utc": "2026-08-24T05:00:00Z", "open": 100,
+        "high": 105, "low": 99, "close": 104, "tick_volume": 10,
+        "spread": 2, "real_volume": 0, "source": "MT5_H1_AGGREGATED_NY",
+        "time_convention": "new_york_1700_dst", "constituent_count": 4,
+    }]
+    assert ingest_bars(store, "XAUUSDr", "H4", original) == 1
+    assert ingest_bars(store, "XAUUSDr", "H4", [{**original[0], "open": 98, "low": 97}]) == 1
+    events = store.events("XAUUSDr", "H4", 10)
+    assert [row["event_type"] for row in events] == ["candle_closed", "candle_corrected"]
+    assert events[-1]["payload"]["corrected_event_id"].endswith(":close")
+    assert store.projection("XAUUSDr", "H4")["latest_close"] == 104
 
 
 def test_late_historical_backfill_does_not_roll_projection_backward(tmp_path: Path):

@@ -46,7 +46,19 @@ def ny_h4_start(opened_utc: datetime) -> datetime:
     return (anchor + timedelta(hours=slot * 4)).astimezone(UTC)
 
 
-def aggregate_ny_h4(h1_rows: list[dict], *, include_forming: bool = False) -> list[dict]:
+def aggregate_ny_h4(
+    h1_rows: list[dict],
+    *,
+    include_forming: bool = False,
+    as_of: datetime | None = None,
+) -> list[dict]:
+    """Aggregate only complete, contiguous H1 sets into immutable H4 bars.
+
+    A wall-clock New York H4 slot can contain three, four, or five UTC H1
+    constituents across a DST boundary. Time alone therefore cannot certify a
+    completed aggregate; every expected UTC H1 open must also be present.
+    """
+    observed_at = (as_of or datetime.now(UTC)).astimezone(UTC)
     groups: dict[datetime, list[dict]] = {}
     for row in h1_rows:
         groups.setdefault(ny_h4_start(row["open_time"]), []).append(row)
@@ -54,7 +66,17 @@ def aggregate_ny_h4(h1_rows: list[dict], *, include_forming: bool = False) -> li
     for opened, rows in sorted(groups.items()):
         rows.sort(key=lambda row: row["open_time"])
         closed = (opened.astimezone(NEW_YORK) + timedelta(hours=4)).astimezone(UTC)
-        complete = closed <= datetime.now(UTC)
+        expected_opens = set()
+        expected = opened
+        while expected < closed:
+            expected_opens.add(expected)
+            expected += timedelta(hours=1)
+        actual_opens = {
+            row["open_time"].astimezone(UTC)
+            for row in rows
+            if opened <= row["open_time"].astimezone(UTC) < closed
+        }
+        complete = closed <= observed_at and actual_opens == expected_opens
         if not complete and not include_forming:
             continue
         result.append({

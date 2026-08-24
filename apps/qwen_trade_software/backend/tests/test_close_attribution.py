@@ -39,11 +39,13 @@ DEAL_ENTRY_OUT = 1
 
 
 def _deal(position_id, entry, profit=0.0, commission=0.0, comment="", volume=0.5,
-          price=4330.0):
+          price=4330.0, ticket=10, order=20, time=1787563000,
+          time_msc=1787563000000):
     return types.SimpleNamespace(
         position_id=position_id, entry=entry, profit=profit,
         commission=commission, swap=0.0, fee=0.0, comment=comment,
-        volume=volume, price=price,
+        volume=volume, price=price, ticket=ticket, order=order,
+        time=time, time_msc=time_msc,
     )
 
 
@@ -162,6 +164,50 @@ def test_broker_comment_wins_over_the_decision_log(executor):
     assert outcome["reason"] == "managed_or_safety_sl", (
         "the stop fired; a stale close decision must not relabel it"
     )
+
+
+def test_partial_and_final_exit_deals_are_aggregated(executor):
+    pe, fake = executor
+    fake.history_deals_get = lambda *a, **k: (
+        _deal(555, DEAL_ENTRY_IN, commission=-1.33, volume=0.19, ticket=1),
+        _deal(
+            555, DEAL_ENTRY_OUT, profit=17.12, volume=0.04,
+            price=4637.573, comment="QWEN_PROTECT_FRONT_25", ticket=2,
+            time_msc=1787563018085,
+        ),
+        _deal(
+            555, DEAL_ENTRY_OUT, profit=84.20, volume=0.15,
+            price=4636.24, comment="[sl 4636.240]", ticket=3,
+            time_msc=1787563106637,
+        ),
+    )
+    fills = [{"order": 555, "deal": 1, "price": 4641.853, "volume": 0.19}]
+
+    outcome = pe.realized_execution_outcome(fills, SINCE)
+
+    assert outcome["gross_pnl"] == pytest.approx(101.32)
+    assert outcome["net_pnl"] == pytest.approx(99.99)
+    assert outcome["exit_deal_count"] == 2
+    assert [leg["kind"] for leg in outcome["exit_legs"]] == ["partial", "final"]
+    assert outcome["exit_legs"][0]["remaining_volume"] == pytest.approx(0.15)
+    assert outcome["exit_legs"][1]["remaining_volume"] == pytest.approx(0.0)
+    assert outcome["reason"] == "managed_or_safety_sl"
+
+
+def test_owned_position_survives_partial_close_comment_change(executor):
+    pe, fake = executor
+    fake.positions_get = lambda **kwargs: (
+        types.SimpleNamespace(
+            ticket=555,
+            magic=pe.QWEN_MAGIC,
+            comment="QWEN_PROTECT_FRONT_25",
+        ),
+    )
+
+    live = pe.owned_positions("XAUUSDr", "demo-abcdef12", {555})
+
+    assert len(live) == 1
+    assert live[0].ticket == 555
 
 
 def test_manager_lookup_reads_the_decision_log(tmp_path, monkeypatch):

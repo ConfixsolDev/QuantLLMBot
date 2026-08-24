@@ -59,6 +59,15 @@ export function fetchLifecycle(symbol?: string): Promise<LifecycleResponse> {
   return fetchJson<LifecycleResponse>(withSymbol("/lifecycle", symbol));
 }
 
-export function fetchTradeJournal(limit = 200): Promise<TradeJournalResponse> {
-  return fetchJson<TradeJournalResponse>(`/trade-journal?limit=${limit}`);
+export function fetchTradeJournal(options?: {
+  limit?: number;
+  startUtc?: string;
+  endUtc?: string;
+}): Promise<TradeJournalResponse> {
+  const params = new URLSearchParams({
+    limit: String(options?.limit ?? 200),
+  });
+  if (options?.startUtc) params.set("start_utc", options.startUtc);
+  if (options?.endUtc) params.set("end_utc", options.endUtc);
+  return fetchJson<TradeJournalResponse>(`/trade-journal?${params.toString()}`);
 }

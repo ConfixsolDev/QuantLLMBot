@@ -1,6 +1,11 @@
 ﻿$ErrorActionPreference = "Stop"
 $reviewerRoot = "E:\QuantLLMBot\apps\qwen_trade_software\backend"
-$pythonw = "C:\ProgramData\Miniconda3\pythonw.exe"
+$localPythonw = Join-Path $reviewerRoot ".venv\Scripts\pythonw.exe"
+$pythonw = if (Test-Path -LiteralPath $localPythonw) {
+    $localPythonw
+} else {
+    "C:\ProgramData\Miniconda3\pythonw.exe"
+}
 $runtime = Join-Path $reviewerRoot "software_runtime.py"
 $starterLog = Join-Path $reviewerRoot "logs\start-reviewer.log"
 $dashboardHealth = "http://127.0.0.1:48632/snapshot"

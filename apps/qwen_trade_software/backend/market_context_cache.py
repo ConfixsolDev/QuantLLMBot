@@ -13,7 +13,6 @@ import hashlib
 import inspect
 import json
 import logging
-import logging.handlers
 import msvcrt
 import os
 import re
@@ -31,6 +30,7 @@ from gpu_placement import require_gpu_residency
 from instrument_config import instrument_for
 
 import live_mapped_levels
+import process_logging
 from runtime_config import PRIMARY_MARKET_SYMBOL, model_for_role
 
 
@@ -55,6 +55,19 @@ CACHE_DIR = APP_DIR / "cache"
 DEFAULT_DB = CACHE_DIR / "market_context.sqlite3"
 MODEL_LOCK_FILE = CACHE_DIR / "qwen-model.lock"
 CONTEXT_CYCLE_LOCK_FILE = CACHE_DIR / "context-cycle.lock"
+CONTEXT_MODEL_TIMEOUT_SECONDS = max(
+    15, min(int(os.environ.get("QWEN_CONTEXT_MODEL_TIMEOUT_SECONDS", "60")), 90)
+)
+QUALIFICATION_MODEL_TIMEOUT_SECONDS = max(
+    60,
+    min(
+        int(os.environ.get("QWEN_CONTEXT_QUALIFICATION_TIMEOUT_SECONDS", "300")),
+        300,
+    ),
+)
+CONTEXT_MODEL_LOCK_TIMEOUT_SECONDS = max(
+    0.05, min(float(os.environ.get("QWEN_CONTEXT_MODEL_LOCK_TIMEOUT_SECONDS", "2")), 5.0)
+)
 # The knowledge store (core_skill.md, sop.md, etc.) now lives at the app's
 # own root -- APP_DIR.parents[2] resolves to that root the same way the git
 # HEAD lookup elsewhere in this file already does, so this needs no
@@ -316,9 +329,12 @@ class OllamaClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with model_generation_lock():
+        effective_timeout = (
+            CONTEXT_MODEL_TIMEOUT_SECONDS if timeout is None else max(1.0, float(timeout))
+        )
+        with model_generation_lock(timeout=CONTEXT_MODEL_LOCK_TIMEOUT_SECONDS):
             started = time.perf_counter()
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib.request.urlopen(request, timeout=effective_timeout) as response:
                 result = json.loads(response.read().decode("utf-8"))
             result["client_wall_duration_ns"] = int(
                 (time.perf_counter() - started) * 1_000_000_000
@@ -473,7 +489,7 @@ class MT5MarketSource:
                 row["close_time_utc"].replace("Z", "+00:00")),
         } for row in h1_source]
         rebuilt = []
-        for row in aggregate_ny_h4(native, include_forming=True):
+        for row in aggregate_ny_h4(native, include_forming=True, as_of=as_of):
             opened = row["open_time"]
             rebuilt.append({
                 "evidence_id": f"candle:{self.symbol}:H4:new_york_1700_dst:"
@@ -580,6 +596,17 @@ class MarketContextCache:
             );
             CREATE INDEX IF NOT EXISTS idx_completed_tf_time
                 ON completed_candles(symbol, timeframe, open_time_utc);
+            CREATE TABLE IF NOT EXISTS completed_candle_corrections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                evidence_id TEXT NOT NULL,
+                corrected_at_utc TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                changed_fields_json TEXT NOT NULL,
+                prior_row_json TEXT NOT NULL,
+                corrected_row_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_candle_corrections_evidence
+                ON completed_candle_corrections(evidence_id, corrected_at_utc);
             CREATE TABLE IF NOT EXISTS forming_candles (
                 symbol TEXT NOT NULL,
                 timeframe TEXT NOT NULL,
@@ -777,6 +804,61 @@ class MarketContextCache:
             "unchanged": unchanged,
             "metadata_corrections": metadata_corrections,
         }
+
+    def repair_derived_h4(self, rows: Iterable[dict]) -> list[dict]:
+        """Audit and replace H4 rows produced by the former partial-H1 bug.
+
+        This narrow migration never applies to broker-native candles or any
+        timeframe other than the deterministic New York H4 aggregate.
+        """
+        repaired: list[dict] = []
+        canonical_source = "MT5_H1_AGGREGATED_NY"
+        with self.connection:
+            for raw in rows:
+                row = self._candle_storage(raw)
+                if row["timeframe"] != "H4" or row["source"] != canonical_source:
+                    continue
+                existing = self.connection.execute(
+                    "SELECT * FROM completed_candles WHERE symbol=? AND timeframe='H4' "
+                    "AND open_time_utc=?",
+                    (row["symbol"], row["open_time_utc"]),
+                ).fetchone()
+                if not existing or existing["row_hash"] == row["row_hash"]:
+                    continue
+                if existing["source"] != canonical_source:
+                    continue
+                changed = [
+                    field for field in COMPLETED_IMMUTABLE_FIELDS
+                    if existing[field] != row[field]
+                ]
+                if not changed:
+                    continue
+                prior = {key: existing[key] for key in existing.keys()}
+                self.connection.execute(
+                    "INSERT INTO completed_candle_corrections "
+                    "(evidence_id,corrected_at_utc,reason,changed_fields_json,"
+                    "prior_row_json,corrected_row_json) VALUES (?,?,?,?,?,?)",
+                    (
+                        row["evidence_id"], iso_utc(utc_now()),
+                        "partial_h1_aggregate_migration_v1", canonical_json(changed),
+                        canonical_json(prior), canonical_json(row),
+                    ),
+                )
+                self.connection.execute(
+                    "UPDATE completed_candles SET close_time_utc=?,open=?,high=?,low=?,"
+                    "close=?,tick_volume=?,spread=?,real_volume=?,source=?,ingested_at_utc=?,"
+                    "evidence_id=?,row_hash=? WHERE symbol=? AND timeframe='H4' "
+                    "AND open_time_utc=?",
+                    (
+                        row["close_time_utc"], row["open"], row["high"], row["low"],
+                        row["close"], row["tick_volume"], row["spread"],
+                        row["real_volume"], row["source"], row["ingested_at_utc"],
+                        row["evidence_id"], row["row_hash"], row["symbol"],
+                        row["open_time_utc"],
+                    ),
+                )
+                repaired.append({"evidence_id": row["evidence_id"], "changed_fields": changed})
+        return repaired
 
     def upsert_forming(self, rows: Iterable[dict]) -> int:
         count = 0
@@ -2200,6 +2282,20 @@ class QwenContextShadow:
             )
         }
 
+    @staticmethod
+    def _should_run_warmup(
+        *, gate_a: bool, needs_warmup: bool, run_qwen: bool
+    ) -> bool:
+        """Keep steady-state deterministic projection independent of Qwen.
+
+        The supervised cache worker deliberately runs with ``--no-qwen``.
+        A structural epoch change must not override that boundary: doing so
+        can publish new deterministic objects before a long model warmup
+        finishes, leaving entry paired with an older readiness manifest.
+        Explicit qualification cycles may still run the warmup.
+        """
+        return gate_a and needs_warmup and run_qwen
+
     def _qualification_is_valid(self, model_digest: str | None) -> bool:
         certificate = self.cache.object("context_qualification", self.symbol)
         return bool(
@@ -2323,7 +2419,7 @@ class QwenContextShadow:
             prompt,
             num_ctx=8192,
             num_predict=300,
-            timeout=None,
+            timeout=QUALIFICATION_MODEL_TIMEOUT_SECONDS,
             format_schema={
                 "type": "object",
                 "properties": {
@@ -2610,7 +2706,7 @@ class QwenContextShadow:
             prompt,
             num_ctx=8192,
             num_predict=1024,
-            timeout=None,
+            timeout=QUALIFICATION_MODEL_TIMEOUT_SECONDS,
             format_schema=schema,
         )
         response, raw, parse_failures = parse_model_json(result)
@@ -2927,7 +3023,7 @@ class QwenContextShadow:
                 # 550 truncated mid-evidence_ids (~1320 chars). v005 still
                 # cut the same JSON at ~1335 chars under 1024; 2048 is the floor.
                 num_predict=2048,
-                timeout=None,
+                timeout=QUALIFICATION_MODEL_TIMEOUT_SECONDS,
                 format_schema=structural_schema,
             )
             response, raw, parse_failures = parse_model_json(structural_result)
@@ -3139,7 +3235,7 @@ class QwenContextShadow:
                     session_prompt,
                     num_ctx=8192,
                     num_predict=1024,
-                    timeout=None,
+                    timeout=QUALIFICATION_MODEL_TIMEOUT_SECONDS,
                     format_schema=session_schema,
                 )
                 session_response, session_raw, session_parse_failures = parse_model_json(
@@ -3410,7 +3506,7 @@ class QwenContextShadow:
             prompt,
             num_ctx=8192,
             num_predict=2048,
-            timeout=None,
+            timeout=QUALIFICATION_MODEL_TIMEOUT_SECONDS,
             format_schema=challenge_schema,
         )
         response, raw, parse_failures = parse_model_json(result)
@@ -3523,6 +3619,16 @@ class QwenContextShadow:
             # during migration instead of using the ordinary incremental H1
             # start, which would only produce the newest one or two H4 bars.
             starts["H1"] = self.source._start_for("H1", as_of)
+        else:
+            # H4 is derived, so the ordinary H1 incremental window (latest H1
+            # minus one hour) is insufficient to rebuild a complete four-hour
+            # aggregate. Always include the prior New York H4 slot; this also
+            # handles the three/five-hour UTC span at DST transitions.
+            from market_intelligence.historical_backfill import ny_h4_start
+
+            current_h4 = ny_h4_start(as_of)
+            previous_h4 = ny_h4_start(current_h4 - timedelta(microseconds=1))
+            starts["H1"] = min(starts["H1"], previous_h4)
         completed, forming = self.source.history(as_of, starts)
         if rebuild_h4:
             removed = self.cache.clear_h4_for_canonical_rebuild(self.symbol)
@@ -3532,6 +3638,15 @@ class QwenContextShadow:
                     removed,
                     self.symbol,
                 )
+        h4_repairs = self.cache.repair_derived_h4(completed.get("H4", []))
+        if h4_repairs:
+            logging.warning("Repaired derived H4 rows: %s", canonical_json(h4_repairs))
+            process_logging.structured_event(
+                "derived_h4_repair",
+                level=logging.WARNING,
+                count=len(h4_repairs),
+                repairs=h4_repairs,
+            )
         inserted = {}
         for timeframe, rows in completed.items():
             inserted[timeframe] = self.cache.ingest_completed(rows)
@@ -3599,12 +3714,6 @@ class QwenContextShadow:
         challenge_failures: list[str] = []
         challenge_metrics: dict = {}
         structural_analysis = self.cache.object("structural_analysis", self.symbol)
-        structural_epoch_changed = not (
-            structural_analysis
-            and structural_analysis.get("model_digest") == model_info.get("digest")
-            and structural_analysis["payload"].get("acknowledged_epochs", {}).get("structural")
-            == structure["cache_epoch"]
-        )
         needs_warmup = not (
             structural_analysis
             and structural_analysis.get("model_digest") == model_info.get("digest")
@@ -3623,24 +3732,30 @@ class QwenContextShadow:
                 for row in playbooks["payload"].get("playbooks", [])
             )
         )
-        if (
-            gate_a
-            and needs_warmup
-            # Qualification proves model/contract capability. It must never
-            # freeze market interpretation. The always-on --no-qwen worker may
-            # therefore refresh once on a genuine D1/H4/H1 epoch change, while
-            # ordinary session/minute churn keeps the low-cost no-Qwen path.
-            and (run_qwen or structural_epoch_changed)
+        if self._should_run_warmup(
+            gate_a=gate_a, needs_warmup=needs_warmup, run_qwen=run_qwen
         ):
-            _, playbooks, warmup_failures = self._run_warmup(
-                structure,
-                levels,
-                session,
-                playbooks,
-                model_info.get("digest"),
-                playbook_hash,
-                as_of,
-            )
+            try:
+                _, playbooks, warmup_failures = self._run_warmup(
+                    structure,
+                    levels,
+                    session,
+                    playbooks,
+                    model_info.get("digest"),
+                    playbook_hash,
+                    as_of,
+                )
+            except Exception as error:
+                # A qualification attempt may fail, but it must still reach
+                # manifest publication with the current deterministic epochs.
+                # Readers then see one coherent blocked snapshot instead of a
+                # stale ready manifest paired with newer cache objects.
+                logging.warning(
+                    "Qwen context warmup failed: %s", error, exc_info=True
+                )
+                warmup_failures = [
+                    f"warmup:{type(error).__name__}:{str(error)[:180]}"
+                ]
 
         started = time.perf_counter()
         # Warmup can take minutes; recompute raw_hash so the minute packet is
@@ -4159,6 +4274,45 @@ def get_cached_completed_bars(
     return out
 
 
+def latest_observer_facts(
+    symbol: str = "XAUUSDr",
+    path: Path | str = DEFAULT_DB,
+    *,
+    now: datetime | None = None,
+) -> dict:
+    """Return deterministic observer inputs without entry qualification.
+
+    The observer needs current closed bars, levels, and session facts; it must
+    never trigger or wait for the entry-path Qwen qualification cycle.
+    """
+    checked_at = as_utc(now or utc_now())
+    cache = MarketContextCache(path)
+    try:
+        levels = cache.object("levels", symbol)
+        session = cache.object("session", symbol)
+        latest_m5 = cache.latest_completed(symbol, "M5", 1)
+        if not levels or not session or not latest_m5:
+            return {"status": "blocked", "reason": "deterministic_facts_missing"}
+        closed_at = as_utc(latest_m5[-1]["close_time_utc"])
+        if checked_at - closed_at > timedelta(minutes=15):
+            return {
+                "status": "blocked",
+                "reason": "deterministic_m5_stale",
+                "latest_m5_close_utc": iso_utc(closed_at),
+            }
+        return {
+            "status": "ready",
+            "validated_at_utc": iso_utc(checked_at),
+            "levels_epoch": levels.get("cache_epoch"),
+            "session_epoch": session.get("cache_epoch"),
+            "levels": (levels.get("payload") or {}).get("levels", []),
+            "session": session.get("payload") or {},
+            "latest_m5_close_utc": iso_utc(closed_at),
+        }
+    finally:
+        cache.close()
+
+
 def get_cached_m1_bars(
     symbol: str | None = None,
     count: int = 120,
@@ -4169,12 +4323,9 @@ def get_cached_m1_bars(
 
 
 def run_service(args: argparse.Namespace) -> None:
-    handler = logging.handlers.TimedRotatingFileHandler(
-        filename=LOG_DIR / "market-context-cache.log", when="midnight", encoding="utf-8"
+    process_logging.configure(
+        LOG_DIR / "market-context-cache.log", owner="market_context_cache"
     )
-    handler.suffix = "%Y-%m-%d"
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
     source = MT5MarketSource(args.symbol)
     source.connect()
     cache = MarketContextCache(args.db)
@@ -4182,6 +4333,7 @@ def run_service(args: argparse.Namespace) -> None:
     try:
         shadow = QwenContextShadow(cache, source, ollama, Path(args.store_root))
         while True:
+            cycle_started = time.monotonic()
             try:
                 with context_cycle_lock():
                     manifest = shadow.run_once(
@@ -4194,8 +4346,24 @@ def run_service(args: argparse.Namespace) -> None:
                     manifest["status"],
                     manifest["failures"],
                 )
-            except Exception:
+                process_logging.structured_event(
+                    "context_cycle",
+                    status=manifest["status"],
+                    failures=manifest["failures"],
+                    validated_at_utc=manifest.get("validated_at_utc"),
+                    duration_ms=round((time.monotonic() - cycle_started) * 1000, 2),
+                    ingestion=(manifest.get("metrics") or {}).get("ingestion"),
+                )
+            except Exception as error:
                 logging.exception("Context shadow cycle failed")
+                process_logging.structured_event(
+                    "context_cycle",
+                    level=logging.ERROR,
+                    status="error",
+                    error_type=type(error).__name__,
+                    error=str(error),
+                    duration_ms=round((time.monotonic() - cycle_started) * 1000, 2),
+                )
                 if args.once:
                     raise
             if args.once:

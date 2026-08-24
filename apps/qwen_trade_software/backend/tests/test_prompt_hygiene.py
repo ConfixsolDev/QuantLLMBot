@@ -49,6 +49,7 @@ MODEL_FACING_SECTIONS = (
     "qwen_cached_entry",
     "qwen_dual_side_entry",
     "qwen_trade_management",
+    "qwen_intraday_observer",
 )
 
 

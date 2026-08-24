@@ -75,6 +75,105 @@ def test_sqlite_journal_is_idempotent(tmp_path):
         assert rows[0]["idea_summary"] == "Buy mapped support rejection"
         assert rows[0]["loss_reasons"]
         assert rows[0]["qwen_analysis_status"] == "pending"
+        assert rows[0]["exit_legs"] == []
+    finally:
+        store.db.close()
+
+
+def test_partial_exit_legs_round_trip_to_journal(tmp_path):
+    path = tmp_path / "journal.sqlite3"
+    close = losing_close()
+    close["proposal_id"] = "paper-test-partial"
+    close["execution_id"] = "demo-test-partial"
+    close["gross_pnl"] = 101.32
+    close["costs"] = -1.33
+    close["net_pnl"] = 99.99
+    close["exit_legs"] = [
+        {
+            "kind": "partial", "deal": 2, "volume": 0.04,
+            "price": 4637.573, "net_pnl": 17.12,
+            "comment": "QWEN_PROTECT_FRONT_25",
+            "closed_at_utc": "2026-08-24T09:16:58.085000+00:00",
+            "remaining_volume": 0.15,
+        },
+        {
+            "kind": "final", "deal": 3, "volume": 0.15,
+            "price": 4636.24, "net_pnl": 84.20,
+            "comment": "[sl 4636.240]",
+            "closed_at_utc": "2026-08-24T09:18:26.637000+00:00",
+            "remaining_volume": 0.0,
+        },
+    ]
+    journal_closed_trade(close, proposal(), path)
+    store = IntelligenceStore(path)
+    try:
+        row = store.trade_journals()[0]
+        assert row["net_pnl"] == 99.99
+        assert [leg["kind"] for leg in row["exit_legs"]] == ["partial", "final"]
+    finally:
+        store.db.close()
+
+
+def test_changed_broker_facts_queue_fresh_qwen_analysis(tmp_path):
+    path = tmp_path / "journal.sqlite3"
+    close = losing_close()
+    close["proposal_id"] = "paper-test-reconciled"
+    journal_closed_trade(close, proposal(), path)
+    store = IntelligenceStore(path)
+    try:
+        store.update_trade_qwen_analysis(
+            "paper-test-reconciled",
+            {
+                "summary": "Old partial result",
+                "entry_assessment": "old",
+                "management_assessment": "old",
+                "what_worked": [],
+                "what_failed": [],
+                "likely_loss_reasons": [],
+                "lesson": "old",
+                "confidence": 60,
+            },
+            "complete",
+            "qwen-test",
+        )
+    finally:
+        store.db.close()
+
+    corrected = dict(close)
+    corrected["net_pnl"] = 99.99
+    corrected["gross_pnl"] = 101.32
+    corrected["exit_legs"] = [{
+        "kind": "final", "deal": 3, "volume": 0.5,
+        "price": 4636.24, "net_pnl": 101.32,
+    }]
+    journal_closed_trade(corrected, proposal(), path)
+    store = IntelligenceStore(path)
+    try:
+        row = store.trade_journals()[0]
+        assert row["qwen_analysis_status"] == "pending"
+        assert row["qwen_analysis"] is None
+        assert row["qwen_analysis_model"] is None
+    finally:
+        store.db.close()
+
+
+def test_trade_journals_can_filter_one_utc_window(tmp_path):
+    path = tmp_path / "journal.sqlite3"
+    first = losing_close()
+    journal_closed_trade(first, proposal(), path)
+    second = losing_close()
+    second["proposal_id"] = "paper-test-next-day"
+    second["execution_id"] = "demo-test-next-day"
+    second["created_at_utc"] = "2026-08-22T06:58:05+00:00"
+    second_proposal = proposal()
+    journal_closed_trade(second, second_proposal, path)
+    store = IntelligenceStore(path)
+    try:
+        rows = store.trade_journals(
+            start_utc="2026-08-21T00:00:00+00:00",
+            end_utc="2026-08-22T00:00:00+00:00",
+        )
+        assert [row["proposal_id"] for row in rows] == ["paper-test-loss"]
     finally:
         store.db.close()
 

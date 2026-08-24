@@ -28,6 +28,8 @@ from __future__ import annotations
 import logging
 import os
 import logging.handlers
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 FORMAT = "%(asctime)s %(levelname)s %(message)s"
@@ -42,6 +44,26 @@ DISABLE_ENV = "QWEN_DISABLE_FILE_LOGGING"
 # Which module currently owns the root logger. Exposed for tests and for
 # diagnosing "why is this line in that file" without guessing at import order.
 OWNER: str | None = None
+
+
+def structured_event(event: str, *, level: int = logging.INFO, **fields: object) -> None:
+    """Write one stable JSON event while retaining the ordinary process log.
+
+    The ``EVENT`` marker makes these records cheap to grep without forcing all
+    existing human-readable diagnostics through a disruptive format migration.
+    Field ordering is stable so diffs and operational comparisons remain useful.
+    """
+    payload = {
+        "event": str(event),
+        "owner": OWNER,
+        "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+        **fields,
+    }
+    logging.log(
+        level,
+        "EVENT %s",
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+    )
 
 
 def configure(log_path: Path, owner: str, level: int = logging.INFO) -> logging.Handler:

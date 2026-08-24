@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import logging.handlers
 import os
+import socket
 import time
 import uuid
 from pathlib import Path
@@ -17,20 +17,19 @@ from market_graph.config import graph_config, graph_context_path, graph_health_p
 from market_graph.projector import GraphProjector
 from market_graph.market_state import load_current_market_state
 from market_intelligence.store import IntelligenceStore
+import process_logging
 
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_DB = APP_DIR / "cache" / "market-intelligence.sqlite3"
 MARKET_CONTEXT_DB = APP_DIR / "cache" / "market_context.sqlite3"
 LOG_DIR = APP_DIR / "logs"
+SINGLETON_PORT = 48637
 
 
 def configure_logging() -> None:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.handlers.TimedRotatingFileHandler(
-        LOG_DIR / "market-graph-worker.log", when="midnight", encoding="utf-8"
+    process_logging.configure(
+        LOG_DIR / "market-graph-worker.log", owner="market_graph"
     )
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
 def atomic_json(path: Path, payload: dict, attempts: int = 5) -> bool:
@@ -56,6 +55,19 @@ def atomic_json(path: Path, payload: dict, attempts: int = 5) -> bool:
 
 def run(db_path: Path, once: bool = False) -> None:
     configure_logging()
+    singleton = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        singleton.bind(("127.0.0.1", SINGLETON_PORT))
+        singleton.listen(1)
+    except OSError as error:
+        process_logging.structured_event(
+            "worker_singleton_conflict",
+            level=logging.ERROR,
+            worker="market_graph",
+            port=SINGLETON_PORT,
+            error=str(error),
+        )
+        return
     config = graph_config
     if not config.enabled:
         atomic_json(graph_health_path(APP_DIR), {
@@ -63,8 +75,29 @@ def run(db_path: Path, once: bool = False) -> None:
             "updated_at_epoch": time.time(),
         })
         return
-    store = IntelligenceStore(db_path)
-    store.enqueue_unprojected_graph_events()
+    store = None
+    while store is None:
+        try:
+            store = IntelligenceStore(db_path)
+            store.enqueue_unprojected_graph_events()
+        except Exception as error:
+            process_logging.structured_event(
+                "graph_store_startup",
+                level=logging.WARNING,
+                status="retrying",
+                error_type=type(error).__name__,
+                error=str(error),
+            )
+            if once:
+                return
+            time.sleep(config.interval_seconds)
+    process_logging.structured_event(
+        "worker_started",
+        worker="market_graph",
+        port=SINGLETON_PORT,
+        schema_version=config.schema_version,
+        interval_seconds=config.interval_seconds,
+    )
     while True:
         graph = None
         try:
@@ -72,8 +105,11 @@ def run(db_path: Path, once: bool = False) -> None:
             graph.ensure_schema()
             projector = GraphProjector(store, graph, config)
             logging.info("graph connection ready")
+            process_logging.structured_event("graph_connection", status="ready")
+            last_health_log = 0.0
             while True:
                 started = time.monotonic()
+                context = None
                 result = projector.project_once()
                 graph.upsert_market_state(load_current_market_state(MARKET_CONTEXT_DB, config.symbols))
                 stats = store.graph_outbox_stats()
@@ -98,6 +134,20 @@ def run(db_path: Path, once: bool = False) -> None:
                     health["context_error"] = str(error)
                     logging.warning("graph context publication failed", exc_info=True)
                 atomic_json(graph_health_path(APP_DIR), health)
+                if result.get("selected") or time.monotonic() - last_health_log >= 30:
+                    process_logging.structured_event(
+                        "graph_cycle",
+                        status=health["status"],
+                        selected=int(result.get("selected", 0)),
+                        projected=int(result.get("projected", 0)),
+                        pending=int(stats.get("pending", 0)),
+                        dead=int(stats.get("dead", 0)),
+                        packet_bytes=(health.get("context_compiler") or {}).get("packet_bytes"),
+                        story_memory_status=(context.get("qwen_intraday_story_memory") or {}).get("status")
+                        if context is not None else "context_error",
+                        duration_ms=round((time.monotonic() - started) * 1000, 2),
+                    )
+                    last_health_log = time.monotonic()
                 if result["status"] == "error":
                     logging.warning("graph projection failed: %s", result.get("error"))
                 if once:
@@ -108,6 +158,13 @@ def run(db_path: Path, once: bool = False) -> None:
                 time.sleep(max(0.05, target_interval - (time.monotonic() - started)))
         except Exception as error:
             logging.exception("market graph worker unavailable")
+            process_logging.structured_event(
+                "graph_connection",
+                level=logging.ERROR,
+                status="unavailable",
+                error_type=type(error).__name__,
+                error=str(error),
+            )
             atomic_json(graph_health_path(APP_DIR), {
                 "status": "unavailable",
                 "updated_at_epoch": time.time(),

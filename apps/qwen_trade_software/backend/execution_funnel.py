@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-FUNNEL_VERSION = "1.0"
+FUNNEL_VERSION = "1.1"
 
 # Refusal codes rendered with friendlier wording for the screen. The raw code is
 # always kept alongside so the log stays greppable.
@@ -117,6 +117,71 @@ def _count_proposals(log_dir: Path, day: str) -> tuple[int, int, Counter]:
     return total, ready, waits
 
 
+def _closed_trade_results(log_dir: Path, day: str) -> list[float]:
+    """Return one complete broker-backed result per proposal for *day*.
+
+    ``paper-runner.log`` is an operational log, so process restarts and journal
+    repairs can legitimately repeat a completion message.  The execution JSONL
+    is the durable ledger.  A later complete record for the same proposal
+    supersedes an earlier record (notably after partial-close reconciliation).
+    Terminal records without fills are refusals, not closed trades.
+    """
+    path = log_dir / f"paper-executions-{day}.jsonl"
+    latest_by_proposal: dict[str, float] = {}
+    try:
+        handle = path.open(encoding="utf-8", errors="ignore")
+    except OSError:
+        return []
+
+    with handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if row.get("event") != "mt5_execution_closed":
+                continue
+            if not row.get("fills") or row.get("pnl_is_complete") is not True:
+                continue
+            proposal_id = str(row.get("proposal_id") or "").strip()
+            if not proposal_id:
+                continue
+            try:
+                net_pnl = float(row["net_pnl"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            latest_by_proposal[proposal_id] = net_pnl
+    return list(latest_by_proposal.values())
+
+
+def _execution_stage_counts(log_dir: Path, day: str) -> tuple[int, int] | None:
+    """Count unique broker attempts and fills, or ``None`` without a ledger."""
+    path = log_dir / f"paper-executions-{day}.jsonl"
+    if not path.exists():
+        return None
+    attempted: set[str] = set()
+    filled: set[str] = set()
+    try:
+        handle = path.open(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    with handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            proposal_id = str(row.get("proposal_id") or "").strip()
+            if not proposal_id:
+                continue
+            event = row.get("event")
+            if event == "mt5_execution_started":
+                attempted.add(proposal_id)
+            elif event == "mt5_fill":
+                filled.add(proposal_id)
+    return len(attempted), len(filled)
+
+
 def build_funnel(log_dir: Path | str, day: str | None = None,
                  now: datetime | None = None) -> ExecutionFunnel:
     """Assemble the funnel from artifacts already on disk."""
@@ -125,12 +190,16 @@ def build_funnel(log_dir: Path | str, day: str | None = None,
     runner = _read_lines(log_dir / "paper-runner.log", day.replace("-", "-"))
 
     total, ready, waits = _count_proposals(log_dir, day)
-    attempted = runner.count("Starting validated proposal")
+    execution_counts = _execution_stage_counts(log_dir, day)
+    if execution_counts is None:
+        attempted = runner.count("Starting validated proposal")
+        filled = runner.count("structural bracket:") + runner.count("fixed_3_5")
+    else:
+        attempted, filled = execution_counts
     refused_codes = Counter(
         re.findall(r"entry refused by structural geometry: (\S+)", runner)
     )
-    filled = runner.count("structural bracket:") + runner.count("fixed_3_5")
-    pnl = [float(x) for x in re.findall(r"net_pnl=(-?[0-9.]+)", runner)]
+    pnl = _closed_trade_results(log_dir, day)
 
     stages = [
         FunnelStage("Proposals", total, "entry decisions produced"),

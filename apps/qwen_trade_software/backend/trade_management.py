@@ -68,6 +68,10 @@ from review_shared import (
     write_json_atomic,
 )
 from runtime_config import PRIMARY_MARKET_SYMBOL, model_for_role
+from intraday_observer.contracts import (
+    CONTRACT_VERSION as INTRADAY_OBSERVER_CONTRACT,
+    read_for_trader as read_intraday_observer,
+)
 
 MANAGEMENT_MODEL = model_for_role("management")
 from tick_data_archive import append_qwen_decision, append_tick_record
@@ -93,6 +97,7 @@ from trade_manager import (
 import os
 
 INTERVAL_SECONDS = int(os.environ.get("QWEN_REVIEW_INTERVAL_SECONDS", "30"))
+INTRADAY_OBSERVER_PROMOTED = os.environ.get("QWEN_INTRADAY_OBSERVER_LIVE", "0") == "1"
 # The executor installs a generic +/-5.0-price symmetric safety bracket at
 # entry, not Qwen's own reference SL/TP (considered and explicitly rejected
 # on 2026-08-06 -- Qwen's own levels are often too tight to use as the
@@ -112,13 +117,9 @@ EXECUTION_MONITOR_BY_ID: dict[str, dict] = {}
 # new day's file.
 PAPER_EXECUTION_TAIL_STATE = {"path": None, "offset": 0}
 
-# ── Mechanical trailing stop (30s management cycle) ─────────────────────
-# Mirrors paper_executor.py's tick-level trailing stop but runs on the 30s
-# management cadence.  This is the ONLY profit protection for the entire
-# lifetime of the position after the executor's monitor loop exits.
-#
-# The thresholds match paper_executor.py so there is a single, consistent
-# profit-protection policy across both phases.
+# Trade-path state used by the completed-M1 Qwen management review. Fast
+# broker protection is owned independently by profit_protection.py at tick
+# cadence; this process must not duplicate or race that stop ladder.
 
 # Peak favorable price move tracked per ticket across management cycles.
 # Cleared by reconcile_position_state when the position closes.
@@ -871,14 +872,28 @@ def apply_confirmed_protection(position, decision: dict, facts: dict) -> list:
     new_tp = old_tp
     if sl_reference:
         candidate_sl = float(sl_reference["price"])
-        # A validated structural invalidation may be tighter or wider than the
-        # temporary entry bracket. It is authoritative once M1+M5 acceptance
-        # has passed the deterministic management contract.
-        if valid_level_for_position(position, candidate_sl, "sl"):
+        # Management may only reduce broker risk. Initial structural bracket
+        # correction is handled separately by initial_rebracket().
+        tighter = (
+            not old_sl
+            or (position.type == mt5.POSITION_TYPE_BUY and candidate_sl > old_sl)
+            or (position.type != mt5.POSITION_TYPE_BUY and candidate_sl < old_sl)
+        )
+        if tighter and valid_level_for_position(position, candidate_sl, "sl"):
             new_sl = candidate_sl
     if tp_reference:
         candidate_tp = float(tp_reference["price"])
-        if valid_level_for_position(position, candidate_tp, "tp"):
+        tracked = management_policy.Position(
+            side="buy" if position.type == mt5.POSITION_TYPE_BUY else "sell",
+            entry_price=float(position.price_open), stop_loss=old_sl,
+            take_profit=old_tp, volume=float(position.volume), opened_at=0.0,
+            frame=None,
+        )
+        adjustment = management_policy.propose_target(
+            tracked, candidate_tp, price=float(position.price_current),
+            level_id=decision.get("next_target_ref"),
+        )
+        if adjustment.accepted and valid_level_for_position(position, candidate_tp, "tp"):
             new_tp = candidate_tp
     if new_sl == old_sl and new_tp == old_tp:
         return []
@@ -1241,6 +1256,17 @@ def review_positions() -> None:
         prior_management=recent_management_history(int(position.ticket)),
         regime_context=regime,
     )
+    # Read-only, versioned context from the independent market-story observer.
+    # It has no execution authority and cannot modify the immutable trade idea.
+    facts["intraday_observer"] = (
+        read_intraday_observer(primary_symbol)
+        if INTRADAY_OBSERVER_PROMOTED
+        else {
+            "status": "shadow_only",
+            "contract_version": INTRADAY_OBSERVER_CONTRACT,
+            "execution_authority": False,
+        }
+    )
     protection = read_json_safe(PROTECTION_STATE_FILE, {})
     if int(protection.get("ticket") or 0) != int(position.ticket):
         protection = {}
@@ -1254,7 +1280,12 @@ def review_positions() -> None:
         }
     latest_management_candle = facts.get("latest_completed_m1")
     if not latest_management_candle:
-        raise RuntimeError("No completed M1 candle is available for management.")
+        logging.warning(
+            "Management review deferred ticket=%s reason=no_completed_m1; "
+            "broker bracket and profit protection remain active",
+            position.ticket,
+        )
+        return
     if LAST_MANAGED_M1_BY_TICKET.get(position.ticket) == latest_management_candle:
         logging.info(
             "Position %s already managed for %s",

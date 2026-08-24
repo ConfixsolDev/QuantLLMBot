@@ -96,14 +96,13 @@ def test_probe_failure_never_raises(rs, monkeypatch):
 
 def _reviewer(monkeypatch):
     import reviewer
-    reviewer._GPU_GATE_STATE.update({"checked_at": 0.0, "ok": True, "alarmed_at": 0.0})
+    reviewer._GPU_GATE_STATE.update({"checked_at": 0.0, "ok": False, "alarmed_at": 0.0})
     return reviewer
 
 
 def test_entry_is_skipped_on_cpu(monkeypatch):
     """A late entry is worthless: the proposal has expired and price moved."""
     rv = _reviewer(monkeypatch)
-    monkeypatch.setattr(rv, "REQUIRE_GPU", True)
     monkeypatch.setattr(rv, "gpu_residency",
                         lambda: {"state": "cpu", "vram_share": 0.0, "detail": "x"})
     assert rv.gpu_ready_for_entry() is False
@@ -111,30 +110,18 @@ def test_entry_is_skipped_on_cpu(monkeypatch):
 
 def test_entry_runs_on_gpu(monkeypatch):
     rv = _reviewer(monkeypatch)
-    monkeypatch.setattr(rv, "REQUIRE_GPU", True)
     monkeypatch.setattr(rv, "gpu_residency",
                         lambda: {"state": "gpu", "vram_share": 1.0, "detail": "x"})
     assert rv.gpu_ready_for_entry() is True
 
 
-def test_gate_fails_open_when_the_probe_cannot_answer(monkeypatch):
-    """Refusing to trade because a diagnostic endpoint timed out would be a
-    worse failure than the one being guarded against."""
+def test_gate_fails_closed_when_placement_cannot_be_proven(monkeypatch):
     rv = _reviewer(monkeypatch)
-    monkeypatch.setattr(rv, "REQUIRE_GPU", True)
     for state in ("unknown", "unloaded"):
         rv._GPU_GATE_STATE["checked_at"] = 0.0
         monkeypatch.setattr(rv, "gpu_residency",
                             lambda s=state: {"state": s, "vram_share": None, "detail": ""})
-        assert rv.gpu_ready_for_entry() is True, state
-
-
-def test_the_override_exists_and_works(monkeypatch):
-    rv = _reviewer(monkeypatch)
-    monkeypatch.setattr(rv, "REQUIRE_GPU", False)
-    monkeypatch.setattr(rv, "gpu_residency",
-                        lambda: {"state": "cpu", "vram_share": 0.0, "detail": "x"})
-    assert rv.gpu_ready_for_entry() is True
+        assert rv.gpu_ready_for_entry() is False, state
 
 
 def test_model_identity_has_one_runtime_source_of_truth():
@@ -159,18 +146,14 @@ def test_model_identity_has_one_runtime_source_of_truth():
     )
 
 
-def test_management_is_never_gated_on_placement():
-    """Management looks after money already at risk.
-
-    Blocking it because inference is slow would turn a performance problem into
-    an unprotected position. It reports placement and carries on -- and the
-    deterministic guard can act without the model at all.
-    """
+def test_management_uses_the_shared_gpu_only_generation_boundary():
     source = (BACKEND / "trade_management.py").read_text(encoding="utf-8")
     assert "require_gpu(" in source, "management should report placement"
     assert "gpu_ready_for_entry" not in source, (
-        "management must never gate its cycle on GPU placement"
+        "management uses review_shared.ollama_generate, not the entry gate"
     )
+    shared = (BACKEND / "review_shared.py").read_text(encoding="utf-8")
+    assert "require_gpu_residency(" in shared
 
 
 def test_the_quoted_ttl_matches_the_real_one():
@@ -180,18 +163,10 @@ def test_the_quoted_ttl_matches_the_real_one():
     a number that stopped being true -- which is exactly the kind of misleading
     log line this whole batch has been removing.
     """
-    import ast
+    import paper_runner
+    import reviewer
 
-    def const(module: str, name: str):
-        tree = ast.parse((BACKEND / module).read_text(encoding="utf-8"))
-        for node in tree.body:
-            if isinstance(node, ast.Assign):
-                for t in node.targets:
-                    if isinstance(t, ast.Name) and t.id == name:
-                        return ast.literal_eval(node.value)
-        raise AssertionError(f"{name} not found in {module}")
-
-    assert const("reviewer.py", "PROPOSAL_TTL_SECONDS_FOR_ALARM") == \
-           const("paper_runner.py", "MAX_PROPOSAL_AGE_SECONDS"), (
+    assert reviewer.PROPOSAL_TTL_SECONDS_FOR_ALARM == \
+           paper_runner.MAX_PROPOSAL_AGE_SECONDS, (
         "the TTL quoted in the GPU alarm has drifted from the real proposal TTL"
     )

@@ -14,6 +14,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import process_logging
+
 
 class QwenTradeSoftware:
     """Start and supervise every component required by the local application."""
@@ -23,7 +25,12 @@ class QwenTradeSoftware:
     RUNTIME_LOG = LOG_DIR / "software-runtime.log"
     LOCK_FILE = APP_DIR / "software-runtime.lock"
 
-    PYTHON = Path(r"C:\ProgramData\Miniconda3\python.exe")
+    _LOCAL_PYTHON = APP_DIR / ".venv" / "Scripts" / "python.exe"
+    PYTHON = (
+        _LOCAL_PYTHON
+        if _LOCAL_PYTHON.exists()
+        else Path(r"C:\ProgramData\Miniconda3\python.exe")
+    )
     MT5 = Path(r"C:\Program Files\MetaTrader 5\terminal64.exe")
     OLLAMA_APP = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama app.exe"
 
@@ -34,12 +41,10 @@ class QwenTradeSoftware:
 
     def __init__(self) -> None:
         self.LOG_DIR.mkdir(parents=True, exist_ok=True)
-        logging.basicConfig(
-            filename=self.RUNTIME_LOG,
-            level=logging.INFO,
-            format="%(asctime)s %(levelname)s %(message)s",
-        )
+        process_logging.configure(self.RUNTIME_LOG, owner="software_runtime")
         self.children: dict[str, subprocess.Popen] = {}
+        self.child_started_at: dict[str, float] = {}
+        self.child_restarts: dict[str, int] = {}
         self.stopping = False
         self.lock_handle = None
 
@@ -127,7 +132,15 @@ class QwenTradeSoftware:
             stderr=subprocess.DEVNULL,
             creationflags=self._hidden_flags(),
         )
+        self.child_started_at[name] = time.monotonic()
         logging.info("Started %s pid=%s", name, self.children[name].pid)
+        process_logging.structured_event(
+            "child_started",
+            child=name,
+            pid=self.children[name].pid,
+            script=script,
+            restart_count=self.child_restarts.get(name, 0),
+        )
 
     @staticmethod
     def _child_command(name: str) -> tuple[str, ...]:
@@ -155,6 +168,7 @@ class QwenTradeSoftware:
             "market_graph": ("market_graph_worker.py",),
             "paper_runner": ("paper_runner.py",),
             "session_planner": ("session_planner.py",),
+            "intraday_observer": ("intraday_observer_worker.py",),
         }
         return commands[name]
 
@@ -168,6 +182,7 @@ class QwenTradeSoftware:
 
     def start(self) -> None:
         self._acquire_singleton()
+        logging.info("Runtime Python: %s", self.PYTHON)
         from tick_data_archive import sync_all_archives, write_all_day_manifests, write_day_manifest
 
         synced = sync_all_archives()
@@ -222,6 +237,7 @@ class QwenTradeSoftware:
             self._start_child("market_graph", "market_graph_worker.py")
         self._start_child("paper_runner", "paper_runner.py")
         self._start_child("session_planner", "session_planner.py")
+        self._start_child("intraday_observer", "intraday_observer_worker.py")
         logging.info("Complete software chain is ready")
 
     def run_forever(self) -> None:
@@ -230,6 +246,17 @@ class QwenTradeSoftware:
             for name, process in tuple(self.children.items()):
                 if process.poll() is not None:
                     logging.error("%s exited with code %s; restarting", name, process.returncode)
+                    uptime = time.monotonic() - self.child_started_at.get(name, time.monotonic())
+                    self.child_restarts[name] = self.child_restarts.get(name, 0) + 1
+                    process_logging.structured_event(
+                        "child_exited",
+                        level=logging.ERROR,
+                        child=name,
+                        pid=process.pid,
+                        return_code=process.returncode,
+                        uptime_seconds=round(uptime, 2),
+                        restart_count=self.child_restarts[name],
+                    )
                     self._start_child(name, *self._child_command(name))
             if not self._http_ok(self.OLLAMA_HEALTH):
                 logging.error("Ollama health check failed")

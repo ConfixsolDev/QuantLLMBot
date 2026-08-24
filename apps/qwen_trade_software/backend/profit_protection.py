@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import socket
 import time
 from datetime import datetime, timezone
@@ -15,10 +16,10 @@ from cooldown_manager import (
 )
 from entry_safety import temporal_protection_window
 import process_logging
-from profit_protection_policy import evaluate
+from profit_protection_policy import FRONT_LAYER_VOLUME_FRACTION, evaluate
 from review_shared import (
     LOG_DIR, PROTECTION_STATE_FILE, QWEN_MAGIC, connect_mt5, gold_market_open,
-    is_qwen_owned, write_json_atomic,
+    is_qwen_owned, read_json_safe, write_json_atomic,
 )
 from tick_data_archive import append_tick_record
 from runtime_config import PRIMARY_MARKET_SYMBOL
@@ -66,16 +67,41 @@ def _audit(position, decision, event: str, **extra) -> None:
     write_json_atomic(PROTECTION_STATE_FILE, record)
 
 
-def _close(position, price: float):
+def _close(
+    position, price: float, volume: float | None = None,
+    *, comment: str = "QWEN_PROTECT_CLOSE",
+):
     is_buy = position.type == mt5.POSITION_TYPE_BUY
     return mt5.order_send({
         "action": mt5.TRADE_ACTION_DEAL, "position": position.ticket,
-        "symbol": position.symbol, "volume": position.volume,
+        "symbol": position.symbol, "volume": float(volume or position.volume),
         "type": mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY,
         "price": price, "deviation": 20, "magic": QWEN_MAGIC,
-        "comment": "QWEN_PROTECT_CLOSE", "type_time": mt5.ORDER_TIME_GTC,
+        "comment": comment, "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     })
+
+
+def _partial_volume(original_volume: float, current_volume: float, info) -> float:
+    """Return a broker-valid close volume that leaves a tradable remainder."""
+    step = float(getattr(info, "volume_step", 0.01) or 0.01)
+    minimum = float(getattr(info, "volume_min", step) or step)
+    requested = float(original_volume) * FRONT_LAYER_VOLUME_FRACTION
+    close_volume = math.floor((requested + step * 1e-9) / step) * step
+    maximum_close = float(current_volume) - minimum
+    close_volume = min(close_volume, maximum_close)
+    close_volume = math.floor((close_volume + step * 1e-9) / step) * step
+    if close_volume < minimum:
+        return 0.0
+    decimals = max(0, len(f"{step:.10f}".rstrip("0").split(".")[-1]))
+    return round(close_volume, decimals)
+
+
+def _order_succeeded(result) -> bool:
+    return bool(result) and getattr(result, "retcode", None) in {
+        getattr(mt5, "TRADE_RETCODE_DONE", 10009),
+        getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010),
+    }
 
 
 def supervise_once(now: float | None = None) -> None:
@@ -109,15 +135,36 @@ def supervise_once(now: float | None = None) -> None:
             continue
         is_buy = position.type == mt5.POSITION_TYPE_BUY
         current = float(tick.bid if is_buy else tick.ask)
-        state = STATE.setdefault(int(position.ticket), {
-            "peak": current, "atr": 0.0, "atr_at": 0.0,
-            "heartbeat_at": 0.0, "last_state": None,
-            "initial_risk": abs(float(position.price_open) - float(position.sl or 0.0)),
-        })
+        ticket = int(position.ticket)
+        if ticket not in STATE:
+            prior = read_json_safe(PROTECTION_STATE_FILE, {})
+            same_position = int(prior.get("ticket") or 0) == ticket
+            STATE[ticket] = {
+                "peak": float(prior.get("peak") or current)
+                if same_position else current,
+                "atr": float(prior.get("atr") or 0.0)
+                if same_position else 0.0,
+                "atr_at": now if same_position and prior.get("atr") else 0.0,
+                "heartbeat_at": 0.0, "last_state": None,
+                "initial_risk": float(prior.get("initial_risk") or 0.0)
+                if same_position else abs(
+                    float(position.price_open) - float(position.sl or 0.0)
+                ),
+                "original_volume": float(prior.get("original_volume") or position.volume)
+                if same_position else float(position.volume),
+                "front_layer_closed": bool(prior.get("front_layer_closed"))
+                if same_position else False,
+            }
+        state = STATE[ticket]
         state["peak"] = max(state["peak"], current) if is_buy else min(state["peak"], current)
-        if not state["atr"] or now - state["atr_at"] >= 10.0:
-            state["atr"] = _atr_m1(position.symbol)
-            state["atr_at"] = now
+        # Freeze the first usable ATR for this position.  Recalculating the
+        # ruler while a trade is moving makes the same price path produce
+        # different floors and can silently tighten the ladder.
+        if not state["atr"]:
+            observed_atr = _atr_m1(position.symbol)
+            if observed_atr > 0:
+                state["atr"] = observed_atr
+                state["atr_at"] = now
         decision = evaluate(
             side="buy" if is_buy else "sell", entry=float(position.price_open),
             current=current, peak=float(state["peak"]), broker_sl=float(position.sl or 0.0),
@@ -133,9 +180,43 @@ def supervise_once(now: float | None = None) -> None:
             _audit(position, decision, "state" if changed else "heartbeat",
                    quote_time_msc=getattr(tick, "time_msc", None),
                    risk_cash=round(decision.initial_risk * float(position.volume) * 100, 2),
-                   locked_cash=round(decision.locked_move * float(position.volume) * 100, 2))
+                   locked_cash=round(decision.locked_move * float(position.volume) * 100, 2),
+                   atr_frozen=True,
+                   peak=float(state["peak"]),
+                   original_volume=float(state["original_volume"]),
+                   front_layer_closed=bool(state["front_layer_closed"]))
             state["last_state"] = decision.state
             state["heartbeat_at"] = now
+        if (
+            decision.front_crossed
+            and not state["front_layer_closed"]
+        ):
+            close_volume = _partial_volume(
+                float(state["original_volume"]), float(position.volume), info
+            )
+            if close_volume > 0:
+                result = _close(
+                    position, current, close_volume,
+                    comment="QWEN_PROTECT_FRONT_25",
+                )
+                succeeded = _order_succeeded(result)
+                if succeeded:
+                    state["front_layer_closed"] = True
+                _audit(
+                    position, decision, "front_layer_close",
+                    requested_price=current, requested_volume=close_volume,
+                    succeeded=succeeded,
+                    peak=float(state["peak"]),
+                    original_volume=float(state["original_volume"]),
+                    front_layer_closed=succeeded,
+                    retcode=getattr(result, "retcode", None),
+                    comment=getattr(result, "comment", str(mt5.last_error())),
+                )
+                if succeeded:
+                    refreshed = mt5.positions_get(ticket=position.ticket) or ()
+                    if not refreshed:
+                        continue
+                    position = refreshed[0]
         if not decision.should_modify:
             continue
         candidate = round(float(decision.candidate_stop), int(info.digits))

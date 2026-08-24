@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from .cross_market import discover_dxy_symbol
 from .projection import TIMEFRAMES, reduce_event
+from .store import digest
 
 
 def _mt5_timeframe(mt5, timeframe: str):
@@ -68,13 +69,29 @@ def ingest_bars(store, logical_symbol: str, timeframe: str, bars: list[dict]) ->
                         "direction": direction_at(bars, index)},
         }
         if not store.append_event(event):
-            continue
+            existing = store.event(event_id)
+            corrected_hash = digest(event["payload"])
+            if not existing or existing.get("payload_hash") == corrected_hash:
+                continue
+            correction_id = f"{event_id}:correction:{corrected_hash}"
+            event = {
+                **event,
+                "event_id": correction_id,
+                "event_type": "candle_corrected",
+                "payload": {
+                    **event["payload"],
+                    "corrected_event_id": event_id,
+                    "correction_reason": "source_payload_changed_after_audited_rebuild",
+                },
+            }
+            if not store.append_event(event):
+                continue
         prior = store.projection(logical_symbol, timeframe)
         # Historical backfill belongs in the ledger but must not roll the live
         # materialized view backward. Startup replay sorts by event time.
         if not prior or str(event["event_time_utc"]) >= str(prior.get("event_time_utc") or ""):
             state = reduce_event(prior, event)
-            store.put_projection(logical_symbol, timeframe, state, event_id)
+            store.put_projection(logical_symbol, timeframe, state, event["event_id"])
         inserted += 1
     return inserted
 

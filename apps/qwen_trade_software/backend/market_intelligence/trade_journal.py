@@ -131,6 +131,7 @@ def build_journal(close: dict, proposal: dict | None = None) -> dict:
         "close_comments": close.get("close_comments") or [],
         "manager_close_decision": close.get("manager_close_decision"),
         "pnl_is_complete": close.get("pnl_is_complete"),
+        "exit_legs": close.get("exit_legs") or [],
     }
     source_hash = hashlib.sha256(canonical({
         "close": close, "proposal_id": proposal_id, "secured": secured,
@@ -173,6 +174,7 @@ def build_journal(close: dict, proposal: dict | None = None) -> dict:
         "evidence_ids_json": canonical(evidence),
         "plan_json": canonical(plan),
         "outcome_json": canonical(outcome),
+        "exit_legs_json": canonical(close.get("exit_legs") or []),
         "source_hash": source_hash,
         "created_at_utc": now,
         "updated_at_utc": now,

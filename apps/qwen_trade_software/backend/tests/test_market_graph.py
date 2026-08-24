@@ -52,6 +52,28 @@ def test_cache_clears_all_h4_before_canonical_rebuild(tmp_path: Path):
     cache.connection.close()
 
 
+def test_cache_audits_and_repairs_only_canonical_derived_h4(tmp_path: Path):
+    cache = MarketContextCache(tmp_path / "context.sqlite3")
+    base = {
+        "symbol": "XAUUSDr", "timeframe": "H4",
+        "open_time_utc": "2026-08-24T01:00:00Z",
+        "close_time_utc": "2026-08-24T05:00:00Z",
+        "open": 100.0, "high": 102.0, "low": 99.0, "close": 101.0,
+        "tick_volume": 10, "spread": 2, "real_volume": 0,
+        "is_complete": True, "source": "MT5_H1_AGGREGATED_NY",
+        "evidence_id": "candle:XAUUSDr:H4:new_york_1700_dst:2026-08-24T01:00:00Z",
+    }
+    cache.ingest_completed([base])
+    repaired = cache.repair_derived_h4([{**base, "open": 98.0, "low": 97.0}])
+    assert repaired[0]["changed_fields"] == ["open", "low"]
+    assert cache.completed("XAUUSDr", "H4")[0]["open"] == 98.0
+    audit = cache.connection.execute(
+        "SELECT reason FROM completed_candle_corrections"
+    ).fetchone()
+    assert audit["reason"] == "partial_h1_aggregate_migration_v1"
+    cache.connection.close()
+
+
 def test_new_york_h4_aggregates_ohlc_and_volume():
     rows = []
     for hour in range(22, 26):
@@ -65,6 +87,21 @@ def test_new_york_h4_aggregates_ohlc_and_volume():
     assert candle["open"] == 22 and candle["close"] == 26
     assert candle["tick_volume"] == 40 and candle["real_volume"] == 8
     assert candle["constituent_count"] == 4
+
+
+def test_new_york_h4_does_not_certify_partial_constituent_set():
+    opened = datetime(2026, 1, 7, 22, 0, tzinfo=timezone.utc)
+    rows = [{
+        "open_time": opened + timedelta(hours=hour),
+        "open": 100 + hour, "high": 102 + hour, "low": 99 + hour,
+        "close": 101 + hour, "tick_volume": 10, "real_volume": 0,
+        "spread": 2, "symbol": "XAUUSDr",
+    } for hour in range(2)]
+    as_of = opened + timedelta(hours=6)
+    assert aggregate_ny_h4(rows, as_of=as_of) == []
+    forming = aggregate_ny_h4(rows, include_forming=True, as_of=as_of)
+    assert len(forming) == 1
+    assert forming[0]["is_complete"] is False
 
 
 def test_level_confidence_is_bounded_and_evidence_based():

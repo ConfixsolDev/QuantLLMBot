@@ -11,7 +11,11 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from market_context_cache import MarketContextCache, QwenContextShadow  # noqa: E402
+from market_context_cache import (  # noqa: E402
+    QUALIFICATION_MODEL_TIMEOUT_SECONDS,
+    MarketContextCache,
+    QwenContextShadow,
+)
 
 
 def _cache() -> MarketContextCache:
@@ -69,6 +73,16 @@ def test_heal_overrides_no_qwen_on_digest_mismatch():
     finally:
         cache.close()
         Path(cache.path).unlink(missing_ok=True)
+
+
+def test_steady_state_structural_change_never_overrides_no_qwen():
+    assert not QwenContextShadow._should_run_warmup(
+        gate_a=True, needs_warmup=True, run_qwen=False
+    )
+    assert QwenContextShadow._should_run_warmup(
+        gate_a=True, needs_warmup=True, run_qwen=True
+    )
+    assert 60 <= QUALIFICATION_MODEL_TIMEOUT_SECONDS <= 300
 
 
 def test_heal_respects_cooldown_after_failed_cycle():

@@ -20,6 +20,17 @@ GoldFlow/Qwen demo-trading application.
 - `backend/session_planner.py` runs the session-hierarchy planner (day plan,
   session plans, hourly updates, session verdicts). Writes `planner-state.json`
   and archives to `tick_data/`. Supervised by `software_runtime.py`.
+- `backend/intraday_observer/` is an independent, non-executing Qwen notebook.
+  It reconstructs today's closed M5 path, confirmed HH/HL/LH/LL sequence and
+  level-touch episodes, then publishes only the versioned, freshness-checked
+  `qwen-intraday-observer/v1` story. It runs shadow-only by default; after
+  measured promotion, `QWEN_INTRADAY_OBSERVER_LIVE=1` lets entry and management
+  consume the story read-only without granting it execution authority. Each
+  story also enters SQLite's transactional graph outbox and projects into
+  Neo4j as linked story, confirmed-swing, level-read, episode and evidence
+  nodes; the observer never writes to Neo4j directly. It reads deterministic
+  levels/session/M5 facts without depending on the entry-Qwen qualification
+  manifest, and separately records GPU-lock deferral versus Qwen timeout.
 - `backend/market_memory_worker.py` owns the immutable SQLite market-event
   ledger and deterministic per-symbol/timeframe projections.
 - `backend/market_graph_worker.py` optionally projects that ledger into Neo4j
@@ -78,6 +89,11 @@ idempotent batched writes, and maintains:
 - `cache/market-graph-context.json` — bounded local snapshot read by the
   reviewer, avoiding a Neo4j network call in the entry hot path.
 
+An empty but connected story graph reports `ready_empty`; `unavailable` is
+reserved for a graph connection or query failure. Process logs include
+grep-friendly `EVENT {json}` records for worker lifecycle, cycle duration,
+cache failures, Neo4j outbox lag, packet size, and observer-story readiness.
+
 If Neo4j is unavailable, SQLite collection, Qwen's baseline context, trade
 execution, management and broker protection continue unchanged. Run one
 diagnostic projection cycle with:
@@ -114,8 +130,12 @@ reviewer. A successful exact challenge stores a certificate bound to the
 qualification-contract version and Qwen model digest. Deterministic refreshes
 reuse that certificate while independently validating current data, levels,
 sessions, playbooks, and minute deltas. A `blocked` result is intentional
-whenever any hard provenance,
-localization, playbook, residency, or compact-response gate fails; it never
+whenever any hard provenance, localization, playbook, residency, or
+compact-response gate fails. The supervised `--no-qwen` path never launches a
+structural warmup after an epoch change, and an explicit qualification failure
+publishes a blocked manifest with the current epochs instead of leaving stale
+ready provenance. Explicit qualification model calls have a bounded five-minute
+timeout (`QWEN_CONTEXT_QUALIFICATION_TIMEOUT_SECONDS`); it never
 silently enables execution.
 
 ## Qwen model download

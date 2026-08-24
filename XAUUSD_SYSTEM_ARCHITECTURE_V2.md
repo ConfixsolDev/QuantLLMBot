@@ -90,6 +90,17 @@ silently redo an earlier phase's job.
    lifecycle. A zone is a location to observe, never an order by itself. Its
    lifetime is distinct from an entry-trigger lifetime: it may remain armed
    through a later price revisit within a bounded session window.
+   A Qwen `ready` decision is fail-closed unless it names the complete entry
+   zone, structural invalidation, and target. Runtime may validate those names
+   but may not synthesize missing geometry, substitute a nearby zone, or move
+   the entry away from the active idea. Buy anchors require a confirmed support
+   response; sell anchors require a confirmed resistance response.
+   The model/runtime transport boundary is owned by `entry_contract.py`, not by
+   strategy doctrine. Qwen emits one flat, fully required wire object because
+   the live Ollama decoder does not reliably enforce nested requirements. The
+   adapter converts that wire object into the internal execution plan before
+   strategy validation. Strategy updates may change judgment instructions but
+   may not change transport fields, sentinel rules, or fail-closed validation.
 3. **Qualify the entry at the zone.** Code requires price inside the zone, a
    completed M1 probe-and-failure response in the planned direction, and price
    at the plan's optimal zone edge. Direction, zone, target and structural
@@ -343,9 +354,95 @@ Neo4j may become the primary context-memory provider only after that measured
 promotion; even then Qwen remains the sole discretionary trading brain and
 SQLite remains authoritative evidence.
 
+#### Independent Qwen intraday-observer boundary
+
+The live system runs `apps/qwen_trade_software/backend/intraday_observer/` as a
+separately supervised, non-executing service. It reconstructs the completed UTC
+day from cached M5 candles, confirms pivots only after closed bars exist on both
+sides, labels the resulting H/L/HH/HL/LH/LL/EH/EL sequence, groups consecutive
+level touches into single market episodes, and verifies each bounded nearby
+zone through completed closes. These deterministic facts remain authoritative.
+
+The observer uses the configured Qwen context role with its own dedicated
+prompt to write one compact market story at each completed half-hour and after
+a material confirmed structure or level-state change. It may describe the
+observed path, compare the prior story with new evidence, label zone clarity,
+and name the next fact to verify. It may not emit a trade bias, confidence,
+entry, stop, target, management action, or order. Explanations of what drove a
+move are limited to supplied acceptance/rejection, displacement, retracement,
+session, and participation evidence; unknown market motives remain unknown.
+Its deterministic input reader is independent of the entry-Qwen qualification
+manifest: current levels, session state, and fresh completed M5 evidence are
+sufficient to prepare a review. The Qwen response is capped at three important
+level reads and a 320-token budget so the notebook remains subordinate to live
+entry and management latency.
+
+The only integration surface is the versioned
+`qwen-intraday-observer/v1` JSON contract. Entry and management read a bounded,
+symbol-matched, freshness-checked projection with
+`execution_authority=false`; they cannot invoke or mutate the observer. Invalid,
+future-dated, cross-symbol, version-mismatched, or older-than-45-minute state
+fails closed as unavailable/stale. Qwen remains the sole discretionary trading
+brain and must judge the observer notebook against current authoritative facts.
+The observer never waits for an occupied shared model lock and starts only when
+its capped 30-second inference window plus a five-second safety margin fits
+before the next M1 boundary. Reflection therefore yields to an active Qwen call
+and cannot run unbounded across the next completed-candle decision.
+The worker checks every ten seconds so its startup phase cannot permanently
+miss all eligible M1 windows. Lock contention and inference timeout are logged
+as distinct deferral reasons.
+The service starts in shadow mode: it generates, persists, and logs stories but
+entry and management receive only `status=shadow_only`. Promotion into their
+live prompts requires measured replay/forward validation and the explicit
+deployment flag `QWEN_INTRADAY_OBSERVER_LIVE=1`; the flag changes context
+visibility only and grants the observer no execution authority.
+
+Every completed observer response also becomes one immutable, replay-safe
+`intraday_story` event in the authoritative SQLite intelligence ledger. The
+existing transactional outbox—never the observer itself—projects graph schema
+V3 into Neo4j. Projection creates an `IntradayStory` node linked to its
+`MarketEvent`, `MarketEpisode`, `Instrument`, and `EvidenceRef` nodes; ordered
+`IntradaySwing` children preserve the confirmed H/L/HH/HL/LH/LL/EH/EL path;
+`IntradayLevelRead` children preserve deterministic touch episodes, latest
+closed response, current relation, Qwen clarity, price story, and next
+verification. When the referenced `MarketLevel` already exists, the level read
+links to it rather than creating a competing level identity.
+
+Neo4j retrieval returns the latest bounded story history by symbol and as-of
+knowledge time. The graph compiler includes only the latest compact story,
+eight confirmed swings, and four verified level reads in the shadow packet;
+older stories remain queryable in Neo4j without inflating every Qwen context.
+It explicitly preserves `execution_authority=false` and
+`eligible_for_live_context=false`. SQLite/outbox replay remains authoritative;
+Neo4j outage, lag, duplication, or rebuild cannot stop the observer or trading.
+Direct observer-to-Neo4j writes and model-authored Cypher remain prohibited.
+
+Observer, graph, and protection workers own distinct loopback singleton ports;
+the full restart procedure must stop all supervised worker entrypoints so an
+orphan cannot compete with its replacement. A derived H4 candle becomes
+immutable only when every expected H1 constituent for its DST-aware New York
+slot is present. Shared SQLite connections serialize reads and writes.
+
+Operational health and content availability are separate: a connected graph
+with no observer story reports `ready_empty`; `shadow_ready` means a bounded
+story exists; `stale` means the newest story exceeded its freshness contract;
+and `unavailable` is reserved for connection or query failure. Runtime,
+observer, context-cache, and graph logs retain human diagnostics and also emit
+single-line `EVENT` JSON containing process ownership, status, reason/error,
+duration, restart count, projection lag, outbox counts, packet bytes, and story
+memory status as applicable. These fields are the performance audit contract.
+
 Model qualification and evidence freshness are independent. Qualification
 proves contract capability; it never suppresses projection refresh when a
-structure epoch changes. Website and logs expose structure epochs, DXY and
+structure epoch changes. The supervised `--no-qwen` cache worker must never
+override that boundary to run a structural warmup: current deterministic
+objects and their readiness manifest are published coherently while the prior
+model/contract qualification certificate remains reusable. An explicit
+qualification failure must still publish a blocked manifest carrying the
+current epochs; it may not leave an older ready manifest paired with newer
+objects. Explicit qualification history, warmup, playbook, session, and
+challenge calls may each take up to five minutes; this allowance never applies
+to the continuously supervised `--no-qwen` projection path. Website and logs expose structure epochs, DXY and
 relationship state, retrievals, prompt size, response latency, cited evidence,
 acknowledged epochs, and the bounded raw JSON response.
 
@@ -1016,7 +1113,31 @@ def displacement_at_level(
 
 #### Component D: Guard as Timeout Safety Net (Fix for P03, P04)
 
-**Design principle:** Qwen owns ALL trade management decisions. The guard is a circuit breaker that protects capital when Qwen is unavailable.
+**Design principle:** Qwen owns all discretionary trade-management decisions.
+The guard and tick protection worker are deterministic safety mechanisms, not
+competing trading brains. The guard protects capital when Qwen is unavailable;
+the tick worker enforces the already-approved protection ladder without waiting
+for inference.
+
+#### Relaxed protected-runner ladder and TP authority
+
+The profit-protection worker freezes the first valid M1 ATR for each position
+and retains the existing whole-position MFE/ATR broker-stop policy. It adds no
+aggressive partial layer below 1.50 ATR MFE. At 1.50 ATR, a virtual front stop
+protects 25% of original volume at a 0.25 ATR gap and advances only in 0.25 ATR
+MFE steps. The remaining 75% keeps the existing broker floor until 2.00 ATR;
+from 2.00 ATR it may use a stepped floor 0.50 ATR behind MFE, but only when that
+floor tightens the stop already accepted by the broker. A front-floor breach
+closes the 25% layer once. The worker never moves TP.
+
+Qwen may keep, extend, or reduce TP to an exact supplied named level. Extension
+requires completed M1+M5 continuation acceptance. Reduction requires the latest
+completed adverse M1, a weakening or target-response thesis state, and
+`target_deterioration_confirmed`; the new TP must remain beyond the current
+executable price or the request fails closed. Qwen can never loosen SL. Invalid,
+stale, timed-out, or unsupported output leaves the current TP unchanged. The
+management loop evaluates at most once per newly completed M1, preventing
+intra-candle TP oscillation while deterministic tick protection remains fast.
 
 The guard fires ONLY when:
 1. **Hard invalidation** — M1+M5 both closed beyond planned_invalidation (always active, even if Qwen is responsive — this is a stop-loss, not a management decision)
@@ -1423,6 +1544,7 @@ Every problem has a testable success criterion:
 | P19 | No range detection | Range detected when price bounces 3+ times between M5 levels | Replay known ranging sessions |
 | P20 | No transitions | Breakout detected within 2 M5 candles of range boundary break | Replay known breakout events |
 | P21 | Closed response missed by stale playbook | 100% of replayed probe-and-close fixtures appear in `structural_responses` on the next decision | Replay identical normalized fixtures for XAUUSD and a non-gold price scale |
+| P22 | Stateless intraday interpretation | Observer reproduces confirmed swing sequence and level-touch episodes exactly on replay; fresh notebook is present on >95% of open-session Qwen decisions | Replay five trading days, compare observer facts to immutable M5 evidence, and count fresh contract attachment in decision logs |
 
 ---
 
@@ -1439,6 +1561,7 @@ Every problem has a testable success criterion:
 | Curriculum doesn't stick in 7B model | MEDIUM | Qwen 7B has limited capacity. Keep regime vocabulary simple (4 states). Don't teach complex conditional logic — Python handles complexity, Qwen judges quality. |
 | Build drift accumulates further | LOW | Freeze after Phase 1 (foundation). Freeze again after Phase 2 (guard). Two intermediate freezes, not one at the end. |
 | Mechanical zone response overrules context | HIGH | Detector reports printed structure only; Qwen retains directional/context judgment and executor retains risk/geometry gates. |
+| Observer story anchors later Qwen decisions | HIGH | Deterministic facts stay authoritative; prior story is explicitly challenged; notebook is bounded, expires after 45 minutes, carries no execution authority, and is measured against the no-notebook baseline before promotion. |
 
 ---
 

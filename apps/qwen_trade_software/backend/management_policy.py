@@ -2,9 +2,9 @@
 
 The entry invalidation is immutable after fill. Management may close early on
 confirmed invalidation or tighten the stop behind newly completed structure,
-but it may never increase the risk accepted at entry. Targets may be extended
-after confirmed continuation; reducing a target is expressed as a close
-decision instead of silently rewriting the original reward geometry.
+but it may never increase the risk accepted at entry. Qwen may move a target in
+either direction to an exact supplied level after deterministic evidence
+validation; a reduced target must remain beyond the executable price.
 
 Pure functions only. No MT5, no model call, no I/O.
 """
@@ -28,7 +28,7 @@ TARGET_POLICY_EXTEND_ONLY = "extend_only"
 
 # Live professional-capital-protection regime.
 STOP_POLICY = STOP_POLICY_TIGHTEN_ONLY
-TARGET_POLICY = TARGET_POLICY_EXTEND_ONLY
+TARGET_POLICY = TARGET_POLICY_FULL
 
 # Solvency rail. Applies regardless of policy: the live stop may never place
 # more than this multiple of the originally accepted risk at stake.

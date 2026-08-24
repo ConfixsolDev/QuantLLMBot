@@ -129,8 +129,78 @@ def graph_row(event: dict, schema_version: int, calendar_version: str) -> dict:
         "decision_type", "decision_state", "confidence", "summary", "model",
         "execution_id", "event_name", "reason", "side", "entry_price",
         "exit_price", "net_pnl", "gross_pnl", "mfe", "mae", "duration_seconds",
+        "market_story", "sequence_explanation", "drivers_so_far",
+        "contradicting_evidence", "prior_view_status", "prior_view_reason",
+        "next_focus", "observer_contract_version", "observer_fingerprint",
+        "trigger", "day_open", "day_high", "day_low", "day_close",
+        "day_net_move", "day_range", "structure_method",
+        "deterministic_structure_state",
     ) if payload.get(key) is not None}
     buckets = time_buckets(event["symbol"], occurred, event["timeframe"])
+    intraday_story = None
+    if event.get("event_type") == "intraday_story":
+        story_id = event["event_id"]
+        swings = []
+        for index, swing in enumerate((payload.get("structure_sequence") or [])[-12:]):
+            swings.append({
+                "id": f"{story_id}:swing:{index}:{swing.get('evidence_id') or 'none'}",
+                "ordinal": index,
+                "label": swing.get("label"),
+                "kind": swing.get("kind"),
+                "price": swing.get("price"),
+                "time_utc": swing.get("time_utc"),
+                "evidence_id": swing.get("evidence_id"),
+            })
+        level_reads = []
+        for level in (payload.get("level_reads") or [])[:12]:
+            level_id = str(level.get("level_id") or "")
+            if not level_id:
+                continue
+            level_reads.append({
+                "id": f"{story_id}:level:{level_id}",
+                **{key: level.get(key) for key in (
+                    "level_id", "timeframe", "role", "price", "zone_low", "zone_high",
+                    "touch_episodes_today", "last_touch_utc", "latest_closed_response",
+                    "current_relation", "qwen_quality", "qwen_price_story",
+                    "next_verification",
+                )},
+            })
+        intraday_story = {
+            "id": story_id,
+            "event_id": event["event_id"],
+            "episode_id": payload.get("episode_id"),
+            "symbol": event["symbol"],
+            "as_of_utc": iso_utc(occurred),
+            "recorded_at_utc": event["recorded_at_utc"],
+            "state": payload.get("state"),
+            "market_story": payload.get("market_story"),
+            "sequence_explanation": payload.get("sequence_explanation"),
+            "drivers_so_far": payload.get("drivers_so_far"),
+            "contradicting_evidence": payload.get("contradicting_evidence"),
+            "prior_view_status": payload.get("prior_view_status"),
+            "prior_view_reason": payload.get("prior_view_reason"),
+            "next_focus": payload.get("next_focus"),
+            "model": payload.get("model"),
+            "mode": payload.get("mode"),
+            "execution_authority": bool(payload.get("execution_authority")),
+            "eligible_for_live_context": bool(payload.get("eligible_for_live_context")),
+            "contract_version": payload.get("observer_contract_version"),
+            "fingerprint": payload.get("observer_fingerprint"),
+            "trigger": payload.get("trigger"),
+            "day_open": payload.get("day_open"),
+            "day_high": payload.get("day_high"),
+            "day_low": payload.get("day_low"),
+            "day_close": payload.get("day_close"),
+            "day_net_move": payload.get("day_net_move"),
+            "day_range": payload.get("day_range"),
+            "structure_method": payload.get("structure_method"),
+            "deterministic_structure_state": payload.get("deterministic_structure_state"),
+            "evidence_ids": list(dict.fromkeys(
+                str(value) for value in (payload.get("evidence_ids") or []) if value
+            ))[:24],
+            "swings": swings,
+            "level_reads": level_reads,
+        }
     return {
         "event_id": event["event_id"],
         "symbol": event["symbol"],
@@ -154,4 +224,5 @@ def graph_row(event: dict, schema_version: int, calendar_version: str) -> dict:
         "buckets": buckets,
         "bucket_edges": bucket_edges(buckets),
         "session": session_phase(occurred, calendar_version),
+        "intraday_story": intraday_story,
     }

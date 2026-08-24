@@ -14,6 +14,20 @@ export interface QwenTradeAnalysis {
   confidence: number;
 }
 
+export interface TradeExitLeg {
+  kind: "partial" | "final";
+  deal?: number | null;
+  order?: number | null;
+  volume: number;
+  price: number;
+  gross_pnl?: number | null;
+  costs?: number | null;
+  net_pnl?: number | null;
+  comment?: string | null;
+  closed_at_utc?: string | null;
+  remaining_volume?: number | null;
+}
+
 export interface TradeJournalRow {
   proposal_id: string;
   execution_id?: string | null;
@@ -53,6 +67,7 @@ export interface TradeJournalRow {
   qwen_analysis_status: "pending" | "retry" | "complete";
   qwen_analyzed_at_utc?: string | null;
   qwen_analysis_model?: string | null;
+  exit_legs: TradeExitLeg[];
 }
 
 export interface TradeJournalResponse {

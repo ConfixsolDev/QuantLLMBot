@@ -15,6 +15,9 @@ SCHEMA_QUERIES = (
     "CREATE CONSTRAINT market_level_key IF NOT EXISTS FOR (n:MarketLevel) REQUIRE n.key IS UNIQUE",
     "CREATE CONSTRAINT level_observation_id IF NOT EXISTS FOR (n:LevelObservation) REQUIRE n.id IS UNIQUE",
     "CREATE CONSTRAINT structure_snapshot_id IF NOT EXISTS FOR (n:StructureSnapshot) REQUIRE n.id IS UNIQUE",
+    "CREATE CONSTRAINT intraday_story_id IF NOT EXISTS FOR (n:IntradayStory) REQUIRE n.id IS UNIQUE",
+    "CREATE CONSTRAINT intraday_swing_id IF NOT EXISTS FOR (n:IntradaySwing) REQUIRE n.id IS UNIQUE",
+    "CREATE CONSTRAINT intraday_level_read_id IF NOT EXISTS FOR (n:IntradayLevelRead) REQUIRE n.id IS UNIQUE",
     "CREATE INDEX market_event_lookup IF NOT EXISTS FOR (n:MarketEvent) ON (n.symbol,n.timeframe,n.event_time)",
     "CREATE INDEX market_event_evidence IF NOT EXISTS FOR (n:MarketEvent) ON (n.evidence_id)",
 )
@@ -78,6 +81,67 @@ UNWIND $edges AS edge
 MATCH (previous:MarketEvent {id: edge.previous_id})
 MATCH (current:MarketEvent {id: edge.current_id})
 MERGE (previous)-[:NEXT_EVENT]->(current)
+"""
+
+UPSERT_INTRADAY_STORIES = """
+UNWIND $stories AS row
+MATCH (event:MarketEvent {id:row.event_id})
+MERGE (story:IntradayStory {id:row.id})
+SET story.symbol=row.symbol,story.as_of_utc=datetime(row.as_of_utc),
+    story.recorded_at_utc=datetime(row.recorded_at_utc),story.state=row.state,
+    story.market_story=row.market_story,story.sequence_explanation=row.sequence_explanation,
+    story.drivers_so_far=row.drivers_so_far,
+    story.contradicting_evidence=row.contradicting_evidence,
+    story.prior_view_status=row.prior_view_status,story.prior_view_reason=row.prior_view_reason,
+    story.next_focus=row.next_focus,story.model=row.model,story.mode=row.mode,
+    story.execution_authority=row.execution_authority,
+    story.eligible_for_live_context=row.eligible_for_live_context,
+    story.contract_version=row.contract_version,story.fingerprint=row.fingerprint,
+    story.trigger=row.trigger,story.day_open=row.day_open,story.day_high=row.day_high,
+    story.day_low=row.day_low,story.day_close=row.day_close,
+    story.day_net_move=row.day_net_move,story.day_range=row.day_range,
+    story.structure_method=row.structure_method,
+    story.deterministic_structure_state=row.deterministic_structure_state
+MERGE (story)-[:DERIVED_FROM_EVENT]->(event)
+MERGE (instrument:Instrument {symbol:row.symbol})
+MERGE (story)-[:FOR_INSTRUMENT]->(instrument)
+FOREACH (_ IN CASE WHEN row.episode_id IS NULL THEN [] ELSE [1] END |
+  MERGE (episode:MarketEpisode {id:row.episode_id})
+  MERGE (story)-[:DESCRIBES_EPISODE]->(episode))
+FOREACH (evidenceId IN row.evidence_ids |
+  MERGE (evidence:EvidenceRef {id:evidenceId})
+  MERGE (story)-[:SUPPORTED_BY]->(evidence))
+FOREACH (swing IN row.swings |
+  MERGE (node:IntradaySwing {id:swing.id})
+  SET node.ordinal=swing.ordinal,node.label=swing.label,node.kind=swing.kind,
+      node.price=swing.price,node.time_utc=swing.time_utc,node.evidence_id=swing.evidence_id
+  MERGE (story)-[:HAS_CONFIRMED_SWING {ordinal:swing.ordinal}]->(node)
+  FOREACH (_ IN CASE WHEN swing.evidence_id IS NULL THEN [] ELSE [1] END |
+    MERGE (evidence:EvidenceRef {id:swing.evidence_id})
+    MERGE (node)-[:EVIDENCED_BY]->(evidence)))
+FOREACH (levelRead IN row.level_reads |
+  MERGE (levelReadNode:IntradayLevelRead {id:levelRead.id})
+  SET levelReadNode.level_id=levelRead.level_id,
+      levelReadNode.timeframe=levelRead.timeframe,
+      levelReadNode.role=levelRead.role,levelReadNode.price=levelRead.price,
+      levelReadNode.zone_low=levelRead.zone_low,levelReadNode.zone_high=levelRead.zone_high,
+      levelReadNode.touch_episodes_today=levelRead.touch_episodes_today,
+      levelReadNode.last_touch_utc=levelRead.last_touch_utc,
+      levelReadNode.latest_closed_response=levelRead.latest_closed_response,
+      levelReadNode.current_relation=levelRead.current_relation,
+      levelReadNode.qwen_quality=levelRead.qwen_quality,
+      levelReadNode.qwen_price_story=levelRead.qwen_price_story,
+      levelReadNode.next_verification=levelRead.next_verification
+  MERGE (story)-[:HAS_LEVEL_READ]->(levelReadNode))
+"""
+
+LINK_INTRADAY_LEVELS = """
+UNWIND $stories AS row
+UNWIND row.level_reads AS levelRead
+MATCH (levelReadNode:IntradayLevelRead {id:levelRead.id})
+OPTIONAL MATCH (level:MarketLevel {symbol:row.symbol,level_id:levelRead.level_id})
+FOREACH (_ IN CASE WHEN level IS NULL THEN [] ELSE [1] END |
+  MERGE (levelReadNode)-[:REFERS_TO_LEVEL]->(level))
 """
 
 DELETE_EVENT_BUCKET_EDGES = """
@@ -244,6 +308,41 @@ CALL (symbol) {
 RETURN symbol,levels,structures
 """
 
+INTRADAY_STORY_QUERY = """
+UNWIND $symbols AS symbol
+CALL (symbol) {
+  MATCH (story:IntradayStory {symbol:symbol})
+  WHERE story.as_of_utc <= datetime($as_of)
+    AND story.recorded_at_utc <= datetime($known_as_of)
+  WITH story ORDER BY story.as_of_utc DESC
+  LIMIT $story_limit
+  CALL (story) {
+    OPTIONAL MATCH (story)-[edge:HAS_CONFIRMED_SWING]->(swing:IntradaySwing)
+    WITH edge,swing ORDER BY edge.ordinal
+    RETURN collect(CASE WHEN swing IS NULL THEN null ELSE
+      swing{.*} END) AS raw_swings
+  }
+  CALL (story) {
+    OPTIONAL MATCH (story)-[:HAS_LEVEL_READ]->(levelReadNode:IntradayLevelRead)
+    WITH levelReadNode ORDER BY levelReadNode.touch_episodes_today DESC,
+                                 levelReadNode.timeframe,levelReadNode.level_id
+    RETURN collect(CASE WHEN levelReadNode IS NULL THEN null ELSE
+      levelReadNode{.*} END) AS raw_levels
+  }
+  RETURN collect(story{.*,
+                       as_of_utc:toString(story.as_of_utc),
+                       swings:[item IN raw_swings WHERE item IS NOT NULL],
+                       level_reads:[item IN raw_levels WHERE item IS NOT NULL]}) AS stories
+}
+RETURN symbol,stories
+"""
+
+INTRADAY_STORY_AVAILABILITY_QUERY = """
+UNWIND $symbols AS symbol
+OPTIONAL MATCH (story:IntradayStory {symbol:symbol})
+RETURN symbol,count(story) AS story_count
+"""
+
 
 class Neo4jMarketGraph:
     def __init__(self, driver, database: str) -> None:
@@ -261,6 +360,7 @@ class Neo4jMarketGraph:
             auth=(config.user, config.password),
             connection_timeout=3.0,
             max_connection_pool_size=8,
+            notifications_min_severity="WARNING",
         )
         driver.verify_connectivity()
         return cls(driver, config.database)
@@ -280,6 +380,14 @@ class Neo4jMarketGraph:
             event_ids=[row["event_id"] for row in rows], database_=self.database,
         )
         self.driver.execute_query(UPSERT_EVENTS, rows=rows, database_=self.database)
+        stories = [row["intraday_story"] for row in rows if row.get("intraday_story")]
+        if stories:
+            self.driver.execute_query(
+                UPSERT_INTRADAY_STORIES, stories=stories, database_=self.database
+            )
+            self.driver.execute_query(
+                LINK_INTRADAY_LEVELS, stories=stories, database_=self.database
+            )
         edges = list({(edge["child_id"], edge["parent_id"]): edge
                       for row in rows for edge in row["bucket_edges"]}.values())
         if edges:
@@ -354,4 +462,19 @@ class Neo4jMarketGraph:
             target = result["symbols"].setdefault(record["symbol"], {})
             target["market_levels"] = record["levels"]
             target["market_structure"] = record["structures"]
+        availability, _, _ = self.driver.execute_query(
+            INTRADAY_STORY_AVAILABILITY_QUERY,
+            symbols=list(symbols), database_=self.database,
+        )
+        available_symbols = [
+            record["symbol"] for record in availability if int(record["story_count"]) > 0
+        ]
+        story_map = {symbol: [] for symbol in symbols}
+        if available_symbols:
+            stories, _, _ = self.driver.execute_query(
+                INTRADAY_STORY_QUERY, symbols=available_symbols, as_of=market_as_of,
+                known_as_of=knowledge_as_of, story_limit=6, database_=self.database,
+            )
+            story_map.update({record["symbol"]: record["stories"] for record in stories})
+        result["intraday_stories"] = story_map
         return result

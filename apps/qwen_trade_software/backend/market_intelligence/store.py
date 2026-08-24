@@ -116,6 +116,7 @@ class IntelligenceStore:
                     evidence_ids_json TEXT NOT NULL,
                     plan_json TEXT NOT NULL,
                     outcome_json TEXT NOT NULL,
+                    exit_legs_json TEXT NOT NULL DEFAULT '[]',
                     source_hash TEXT NOT NULL,
                     qwen_analysis_json TEXT,
                     qwen_analysis_status TEXT NOT NULL DEFAULT 'pending',
@@ -137,12 +138,22 @@ class IntelligenceStore:
                 "qwen_analysis_status": "TEXT NOT NULL DEFAULT 'pending'",
                 "qwen_analyzed_at_utc": "TEXT",
                 "qwen_analysis_model": "TEXT",
+                "exit_legs_json": "TEXT NOT NULL DEFAULT '[]'",
             }
             for column, declaration in migrations.items():
                 if column not in existing:
                     self.db.execute(
                         f"ALTER TABLE trade_journal ADD COLUMN {column} {declaration}"
                     )
+
+    def _fetchone(self, sql: str, params: tuple | list = ()) -> sqlite3.Row | None:
+        """Serialize reads on the shared connection used by dashboard threads."""
+        with self.lock:
+            return self.db.execute(sql, params).fetchone()
+
+    def _fetchall(self, sql: str, params: tuple | list = ()) -> list[sqlite3.Row]:
+        with self.lock:
+            return self.db.execute(sql, params).fetchall()
 
     def upsert_trade_journal(self, journal: dict) -> None:
         """Materialize one closed trade; replaying the same close is safe."""
@@ -157,13 +168,28 @@ class IntelligenceStore:
             "secured_at_utc", "exit_reason", "attribution_source",
             "holding_seconds", "loss_reasons_json", "evidence_ids_json",
             "plan_json", "outcome_json", "source_hash", "created_at_utc",
-            "updated_at_utc",
+            "updated_at_utc", "exit_legs_json",
         )
         placeholders = ",".join("?" for _ in columns)
-        updates = ",".join(
+        fact_updates = [
             f"{column}=excluded.{column}" for column in columns
             if column not in {"proposal_id", "created_at_utc"}
-        )
+        ]
+        # Broker reconciliation can add a late partial/final exit leg after a
+        # journal row was already analyzed.  Preserve analysis only while the
+        # authoritative source hash is unchanged; otherwise queue a new review
+        # so Qwen cannot describe stale P&L or an incomplete exit path.
+        fact_updates.extend((
+            "qwen_analysis_json=CASE WHEN trade_journal.source_hash != excluded.source_hash "
+            "THEN NULL ELSE trade_journal.qwen_analysis_json END",
+            "qwen_analysis_status=CASE WHEN trade_journal.source_hash != excluded.source_hash "
+            "THEN 'pending' ELSE trade_journal.qwen_analysis_status END",
+            "qwen_analyzed_at_utc=CASE WHEN trade_journal.source_hash != excluded.source_hash "
+            "THEN NULL ELSE trade_journal.qwen_analyzed_at_utc END",
+            "qwen_analysis_model=CASE WHEN trade_journal.source_hash != excluded.source_hash "
+            "THEN NULL ELSE trade_journal.qwen_analysis_model END",
+        ))
+        updates = ",".join(fact_updates)
         with self.lock, self.db:
             self.db.execute(
                 f"INSERT INTO trade_journal ({','.join(columns)}) VALUES ({placeholders}) "
@@ -171,15 +197,35 @@ class IntelligenceStore:
                 tuple(journal.get(column) for column in columns),
             )
 
-    def trade_journals(self, limit: int = 100) -> list[dict]:
-        rows = self.db.execute(
-            "SELECT * FROM trade_journal ORDER BY exit_time_utc DESC LIMIT ?",
-            (max(1, min(int(limit), 10000)),),
-        ).fetchall()
+    def trade_journals(
+        self,
+        limit: int = 100,
+        *,
+        start_utc: str | None = None,
+        end_utc: str | None = None,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if start_utc:
+            clauses.append("julianday(exit_time_utc) >= julianday(?)")
+            params.append(start_utc)
+        if end_utc:
+            clauses.append("julianday(exit_time_utc) < julianday(?)")
+            params.append(end_utc)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(max(1, min(int(limit), 10000)))
+        rows = self._fetchall(
+            f"SELECT * FROM trade_journal{where} "
+            "ORDER BY exit_time_utc DESC LIMIT ?",
+            tuple(params),
+        )
         output = []
         for row in rows:
             item = dict(row)
-            for field in ("loss_reasons_json", "evidence_ids_json", "plan_json", "outcome_json"):
+            for field in (
+                "loss_reasons_json", "evidence_ids_json", "plan_json",
+                "outcome_json", "exit_legs_json",
+            ):
                 item[field.removesuffix("_json")] = json.loads(item.pop(field))
             raw_analysis = item.pop("qwen_analysis_json", None)
             item["qwen_analysis"] = json.loads(raw_analysis) if raw_analysis else None
@@ -187,11 +233,11 @@ class IntelligenceStore:
         return output
 
     def pending_trade_journals(self, limit: int = 10) -> list[dict]:
-        rows = self.db.execute(
+        rows = self._fetchall(
             "SELECT * FROM trade_journal WHERE qwen_analysis_status IN ('pending','retry') "
             "ORDER BY exit_time_utc LIMIT ?",
             (max(1, min(int(limit), 100)),),
-        ).fetchall()
+        )
         return [dict(row) for row in rows]
 
     def update_trade_qwen_analysis(
@@ -275,7 +321,7 @@ class IntelligenceStore:
 
     def graph_outbox_batch(self, limit: int = 200, max_attempts: int = 8) -> list[dict]:
         """Return pending graph events in ledger order with their prior event ID."""
-        priority = self.db.execute(
+        priority = self._fetchone(
             """SELECT e.timeframe,
                       CASE
                         WHEN json_extract(e.payload_json,'$.mode')='posthoc_supervised' THEN 3
@@ -291,10 +337,10 @@ class IntelligenceStore:
                           WHEN 'M30' THEN 3 WHEN 'M15' THEN 4 WHEN 'M1' THEN 5
                           ELSE 6 END LIMIT 1""",
             (max(1, int(max_attempts)),),
-        ).fetchone()
+        )
         if not priority:
             return []
-        rows = self.db.execute(
+        rows = self._fetchall(
             """
             SELECT o.sequence AS outbox_sequence,o.attempts,e.*
             FROM graph_projection_outbox o
@@ -310,13 +356,13 @@ class IntelligenceStore:
             (max(1, int(max_attempts)), priority["timeframe"],
              priority["projection_priority"],
              max(1, min(int(limit), 10000))),
-        ).fetchall()
+        )
         result = []
         previous_by_symbol: dict[str, str | None] = {}
         for row in rows:
             symbol = str(row["symbol"])
             if symbol not in previous_by_symbol:
-                prior = self.db.execute(
+                prior = self._fetchone(
                     """SELECT p.event_id FROM intelligence_events p
                        JOIN graph_projection_outbox po ON po.event_id=p.event_id
                        WHERE po.status='projected' AND p.symbol=? AND p.timeframe=?
@@ -331,7 +377,7 @@ class IntelligenceStore:
                     (symbol, priority["timeframe"], row["event_time_utc"],
                      row["event_time_utc"], row["sequence"],
                      priority["projection_priority"]),
-                ).fetchone()
+                )
                 previous_by_symbol[symbol] = prior["event_id"] if prior else None
             previous = previous_by_symbol[symbol]
             result.append({
@@ -379,14 +425,14 @@ class IntelligenceStore:
             )
 
     def graph_outbox_stats(self) -> dict:
-        rows = self.db.execute(
+        rows = self._fetchall(
             "SELECT status,COUNT(*) AS count FROM graph_projection_outbox GROUP BY status"
-        ).fetchall()
+        )
         counts = {row["status"]: row["count"] for row in rows}
-        watermark = self.db.execute(
+        watermark = self._fetchone(
             "SELECT MAX(projected_at_utc) AS value FROM graph_projection_outbox "
             "WHERE status='projected'"
-        ).fetchone()
+        )
         return {
             "pending": int(counts.get("pending", 0)),
             "projected": int(counts.get("projected", 0)),
@@ -403,7 +449,7 @@ class IntelligenceStore:
             params.append(timeframe)
         sql += " ORDER BY sequence DESC LIMIT ?"
         params.append(limit)
-        rows = self.db.execute(sql, params).fetchall()
+        rows = self._fetchall(sql, params)
         return [
             {
                 "event_id": row["event_id"], "symbol": row["symbol"],
@@ -414,6 +460,21 @@ class IntelligenceStore:
             }
             for row in reversed(rows)
         ]
+
+    def event(self, event_id: str) -> dict | None:
+        row = self._fetchone(
+            "SELECT * FROM intelligence_events WHERE event_id=?", (event_id,)
+        )
+        if not row:
+            return None
+        return {
+            "event_id": row["event_id"], "symbol": row["symbol"],
+            "timeframe": row["timeframe"], "event_type": row["event_type"],
+            "event_time_utc": row["event_time_utc"],
+            "evidence_id": row["evidence_id"],
+            "payload": json.loads(row["payload_json"]),
+            "payload_hash": row["payload_hash"],
+        }
 
     def put_projection(self, symbol: str, timeframe: str, state: dict, last_event_id: str | None) -> dict:
         epoch = f"structure-{symbol}-{timeframe}-{digest(state)}"
@@ -429,30 +490,38 @@ class IntelligenceStore:
         return {**state, "structure_epoch": epoch, "updated_at_utc": now}
 
     def projection(self, symbol: str, timeframe: str) -> dict | None:
-        row = self.db.execute(
+        row = self._fetchone(
             "SELECT * FROM structure_projections WHERE symbol=? AND timeframe=?",
             (symbol, timeframe),
-        ).fetchone()
+        )
         if not row:
             return None
+        raw_state = row["state_json"]
+        if not isinstance(raw_state, (str, bytes, bytearray)) or not raw_state:
+            return None
         return {
-            **json.loads(row["state_json"]),
+            **json.loads(raw_state),
             "structure_epoch": row["structure_epoch"],
             "last_event_id": row["last_event_id"],
             "updated_at_utc": row["updated_at_utc"],
         }
 
     def projections(self, symbol: str) -> dict[str, dict]:
-        rows = self.db.execute(
+        rows = self._fetchall(
             "SELECT timeframe FROM structure_projections WHERE symbol=?", (symbol,)
-        ).fetchall()
-        return {row["timeframe"]: self.projection(symbol, row["timeframe"]) for row in rows}
+        )
+        result = {}
+        for row in rows:
+            projection = self.projection(symbol, row["timeframe"])
+            if projection is not None:
+                result[row["timeframe"]] = projection
+        return result
 
     def last_event_id(self, symbol: str, timeframe: str) -> str | None:
-        row = self.db.execute(
+        row = self._fetchone(
             "SELECT last_event_id FROM structure_projections WHERE symbol=? AND timeframe=?",
             (symbol, timeframe),
-        ).fetchone()
+        )
         return str(row["last_event_id"]) if row and row["last_event_id"] else None
 
     def record_retrieval(self, request_id: str, symbol: str, request: dict, result: dict, status: str) -> None:
@@ -464,10 +533,10 @@ class IntelligenceStore:
             )
 
     def recent_retrievals(self, limit: int = 10) -> list[dict]:
-        rows = self.db.execute(
+        rows = self._fetchall(
             "SELECT * FROM retrieval_audit ORDER BY requested_at_utc DESC LIMIT ?",
             (max(1, min(limit, 50)),),
-        ).fetchall()
+        )
         return [{"request_id": r["request_id"], "symbol": r["symbol"],
                  "requested_at_utc": r["requested_at_utc"], "status": r["status"],
                  "request": json.loads(r["request_json"]),

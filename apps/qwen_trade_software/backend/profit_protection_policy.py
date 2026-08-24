@@ -7,6 +7,7 @@ latency-sensitive minimum protection floor and can never widen broker risk.
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+import math
 
 
 ARM_R = 0.50
@@ -17,6 +18,17 @@ COST_SPREADS = 3.0
 SECURE_COSTS_R = 0.65
 LOCK_1R = 0.30
 LOCK_1_5R = 0.45
+
+# The runner ladder is deliberately late.  The existing whole-position
+# protection remains authoritative; this adds a small virtual front layer only
+# after a meaningful favorable move and gives the broker-held remainder more
+# room.  ATR is frozen by the worker when the position is first observed.
+FRONT_LAYER_VOLUME_FRACTION = 0.25
+FRONT_LAYER_START_ATR = 1.50
+WIDE_LAYER_START_ATR = 2.00
+LADDER_STEP_ATR = 0.25
+FRONT_GAP_ATR = 0.25
+WIDE_GAP_ATR = 0.50
 
 
 @dataclass(frozen=True)
@@ -36,6 +48,12 @@ class ProtectionDecision:
     trail_distance: float
     locked_move: float
     costs_buffer: float
+    mfe_atr: float
+    ladder_step_atr: float
+    front_layer_active: bool
+    front_candidate_stop: float | None
+    front_crossed: bool
+    wide_candidate_stop: float | None
 
     def record(self) -> dict:
         return asdict(self)
@@ -75,6 +93,35 @@ def evaluate(*, side: str, entry: float, current: float, peak: float,
             candidate = max(candidate, floor) if is_buy else min(candidate, floor)
         locked_move = max(0.0, candidate - entry if is_buy else entry - candidate)
 
+    mfe_atr = mfe / atr if atr > 0 else 0.0
+    stepped_mfe_atr = (
+        math.floor((mfe_atr + 1e-9) / LADDER_STEP_ATR) * LADDER_STEP_ATR
+        if atr > 0 else 0.0
+    )
+    front_active = stepped_mfe_atr >= FRONT_LAYER_START_ATR
+    front_candidate = None
+    if front_active:
+        locked_atr = stepped_mfe_atr - FRONT_GAP_ATR
+        front_candidate = (
+            entry + locked_atr * atr if is_buy else entry - locked_atr * atr
+        )
+    wide_candidate = None
+    if stepped_mfe_atr >= WIDE_LAYER_START_ATR:
+        locked_atr = stepped_mfe_atr - WIDE_GAP_ATR
+        wide_candidate = (
+            entry + locked_atr * atr if is_buy else entry - locked_atr * atr
+        )
+        # The stepped 75% floor may tighten the existing deterministic floor,
+        # but it can never loosen a stop already accepted by the broker.
+        candidate = wide_candidate if candidate is None else (
+            max(candidate, wide_candidate) if is_buy
+            else min(candidate, wide_candidate)
+        )
+        locked_move = max(
+            locked_move,
+            candidate - entry if is_buy else entry - candidate,
+        )
+
     # Parent-candle close and shock modes do not force-close losing trades.
     # They secure true break-even as soon as current profit covers execution
     # costs, then normal target/trailing logic remains in control.
@@ -90,7 +137,7 @@ def evaluate(*, side: str, entry: float, current: float, peak: float,
     # must not appear to regress merely because live price dipped below the
     # arming threshold. The broker stop remains the monotonic source of truth.
     broker_locked_move = broker_sl - entry if is_buy else entry - broker_sl
-    if broker_sl and broker_locked_move >= costs_buffer:
+    if broker_sl and broker_locked_move + point * 0.5 >= costs_buffer:
         armed = True
         locked_move = max(locked_move, broker_locked_move)
 
@@ -102,15 +149,27 @@ def evaluate(*, side: str, entry: float, current: float, peak: float,
     crossed = bool(candidate is not None and (
         current <= candidate if is_buy else current >= candidate
     ))
+    front_crossed = bool(front_candidate is not None and (
+        current <= front_candidate if is_buy else current >= front_candidate
+    ))
     state = "structural_risk"
     if armed:
-        state = "costs_secured" if locked_move >= costs_buffer else "protection_armed"
+        state = (
+            "costs_secured"
+            if locked_move + point * 0.5 >= costs_buffer
+            else "protection_armed"
+        )
         if progress_r >= 1.0:
             state = "profit_secured"
         if crossed:
             state = "protection_crossed"
     return ProtectionDecision(
-        state, armed, tighter, crossed, candidate, mfe, current_move, giveback,
-        initial_risk, progress_r, atr, arm_distance, trail_distance,
-        locked_move, costs_buffer,
+        state=state, armed=armed, should_modify=tighter, crossed=crossed,
+        candidate_stop=candidate, mfe=mfe, current_move=current_move,
+        giveback=giveback, initial_risk=initial_risk, progress_r=progress_r,
+        atr=atr, arm_distance=arm_distance, trail_distance=trail_distance,
+        locked_move=locked_move, costs_buffer=costs_buffer, mfe_atr=mfe_atr,
+        ladder_step_atr=stepped_mfe_atr, front_layer_active=front_active,
+        front_candidate_stop=front_candidate, front_crossed=front_crossed,
+        wide_candidate_stop=wide_candidate,
     )

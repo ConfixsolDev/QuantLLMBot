@@ -22,7 +22,7 @@ class GraphConfig:
     batch_size: int
     interval_seconds: float
     max_attempts: int
-    schema_version: int = 2
+    schema_version: int = 3
     session_calendar_version: str = "utc-research-v1"
 
     @classmethod
@@ -42,7 +42,7 @@ class GraphConfig:
             batch_size=max(1, min(int(os.environ.get("QWEN_NEO4J_BATCH_SIZE", "250")), 10000)),
             interval_seconds=max(0.25, float(os.environ.get("QWEN_NEO4J_INTERVAL", "2"))),
             max_attempts=max(1, int(os.environ.get("QWEN_NEO4J_MAX_ATTEMPTS", "8"))),
-            schema_version=2,
+            schema_version=3,
         )
 
     def public(self) -> dict:

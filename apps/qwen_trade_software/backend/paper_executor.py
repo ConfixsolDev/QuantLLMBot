@@ -56,23 +56,17 @@ ZONE_ARMED_MAX_SECONDS = max(
 # the distance. Set QWEN_STRUCTURAL_BRACKET=0 to fall back to the flat $3/$5.
 STRUCTURAL_BRACKET_ENABLED = os.environ.get("QWEN_STRUCTURAL_BRACKET", "1") != "0"
 
-# RESEARCH POLICY (2026-08-20): keep the protected fallback enabled by default
-# during the next few months of research.  A structural path can lose because
-# it is wrong in a different way; retaining the fixed bracket gives us a safe,
-# comparable control sample instead of prematurely optimizing around one loss
-# direction.  This is research behaviour, not proof of positive expectancy.
-# Set QWEN_ENFORCE_HTF_MICRO_BRACKET=1 when the collected evidence supports
-# enforcing the stricter HTF-only rule.
+# Fail closed for H1+ theses. Controlled research replays may explicitly set
+# QWEN_ENFORCE_HTF_MICRO_BRACKET=0 to measure the counterfactual fallback.
 ENFORCE_HTF_MICRO_BRACKET = (
-    os.environ.get("QWEN_ENFORCE_HTF_MICRO_BRACKET", "0") == "1"
+    os.environ.get("QWEN_ENFORCE_HTF_MICRO_BRACKET", "1") == "1"
 )
 
 # Geometry verdicts that *can* refuse entry rather than degrading to $3/$5.
 #
-# 2026-08-11: default OFF for a two-day observation window. Level-distance /
-# reward:risk rejects were skipping most ready ideas (HTF min TP, R:R < 1.2,
-# wrong-side target). We need live fills to learn what to block; set
-# QWEN_SKIP_ON_GEOMETRY=1 to restore the hard skip list.
+# Geometry is fail-closed by default. A controlled replay may explicitly set
+# QWEN_SKIP_ON_GEOMETRY=0 to collect counterfactual observations, but the live
+# runner must not turn a rejected structural plan into a broker order.
 _GEOMETRY_SKIP_CANDIDATES = frozenset({
     trade_geometry.GeometryReason.REWARD_RISK_TOO_LOW,
     trade_geometry.GeometryReason.STOP_TOO_WIDE,
@@ -82,7 +76,7 @@ _GEOMETRY_SKIP_CANDIDATES = frozenset({
 })
 SKIP_ON_GEOMETRY_REJECTION = (
     _GEOMETRY_SKIP_CANDIDATES
-    if os.environ.get("QWEN_SKIP_ON_GEOMETRY", "0") == "1"
+    if os.environ.get("QWEN_SKIP_ON_GEOMETRY", "1") == "1"
     else frozenset()
 )
 
@@ -572,14 +566,28 @@ def execution_comment(execution_id: str) -> str:
     return f"{QWEN_COMMENT_PREFIX}_{execution_id[-8:]}"
 
 
-def owned_positions(symbol: str, execution_id: str):
+def owned_positions(
+    symbol: str,
+    execution_id: str,
+    position_ids: set[int] | None = None,
+):
+    """Return this execution's still-live positions, including partial closes.
+
+    MT5 may replace a position's original entry comment with the most recent
+    partial-close comment.  Ticket identity is therefore authoritative once a
+    fill exists; the comment remains only the fast path.
+    """
     expected_comment = execution_comment(execution_id)
+    known_positions = position_ids or set()
     positions = mt5.positions_get(symbol=symbol) or ()
     return tuple(
         position
         for position in positions
         if position.magic == QWEN_MAGIC
-        and str(position.comment) == expected_comment
+        and (
+            str(position.comment) == expected_comment
+            or int(position.ticket) in known_positions
+        )
     )
 
 
@@ -695,6 +703,40 @@ def realized_execution_outcome(fills: list[dict], since: datetime) -> dict:
         float(deal.commission) + float(deal.swap) + float(deal.fee)
         for deal in matched
     )
+    original_volume = sum(float(fill.get("volume") or 0.0) for fill in fills)
+    remaining_volume = original_volume
+    exit_legs = []
+    for deal in sorted(
+        exits,
+        key=lambda row: (int(getattr(row, "time_msc", 0) or 0), int(row.ticket)),
+    ):
+        volume = float(deal.volume)
+        remaining_volume = max(0.0, remaining_volume - volume)
+        leg_costs = float(deal.commission) + float(deal.swap) + float(deal.fee)
+        time_msc = int(getattr(deal, "time_msc", 0) or 0)
+        time_seconds = float(getattr(deal, "time", 0) or 0)
+        closed_at_utc = None
+        if time_msc:
+            closed_at_utc = datetime.fromtimestamp(
+                time_msc / 1000.0, timezone.utc
+            ).isoformat()
+        elif time_seconds:
+            closed_at_utc = datetime.fromtimestamp(
+                time_seconds, timezone.utc
+            ).isoformat()
+        exit_legs.append({
+            "kind": "final" if remaining_volume <= 1e-8 else "partial",
+            "deal": int(deal.ticket),
+            "order": int(deal.order),
+            "volume": volume,
+            "price": float(deal.price),
+            "gross_pnl": float(deal.profit),
+            "costs": leg_costs,
+            "net_pnl": float(deal.profit) + leg_costs,
+            "comment": str(deal.comment),
+            "closed_at_utc": closed_at_utc,
+            "remaining_volume": remaining_volume,
+        })
     return {
         "reason": reason,
         "exit_price": exit_price,
@@ -707,6 +749,7 @@ def realized_execution_outcome(fills: list[dict], since: datetime) -> dict:
         # than read them as a flat zero.
         "pnl_is_complete": bool(exits),
         "exit_deal_count": len(exits),
+        "exit_legs": exit_legs,
         # How we know who closed it: "broker_comment", "manager_decision_log",
         # or None when nobody claimed it.
         "attribution_source": (
@@ -1340,7 +1383,11 @@ def _run(args) -> dict:
                 )
 
             if fills:
-                live_positions = owned_positions(args.symbol, execution_id)
+                live_positions = owned_positions(
+                    args.symbol,
+                    execution_id,
+                    {int(fill["order"]) for fill in fills if fill.get("order")},
+                )
                 pnl = sum(float(position.profit) for position in live_positions)
                 minimum_pnl = min(minimum_pnl, pnl)
                 peak_pnl = max(peak_pnl, pnl)
@@ -1462,6 +1509,7 @@ def _run(args) -> dict:
                         # indistinguishable from a genuine zero-P&L trade.
                         "pnl_is_complete": outcome["pnl_is_complete"],
                         "exit_deal_count": outcome["exit_deal_count"],
+                        "exit_legs": outcome["exit_legs"],
                         "attribution_source": outcome["attribution_source"],
                         "manager_close_decision": outcome["manager_close_decision"],
                         # Which version of the system produced this result.

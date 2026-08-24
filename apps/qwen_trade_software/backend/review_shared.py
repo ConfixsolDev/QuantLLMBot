@@ -31,6 +31,11 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 
+from gpu_placement import (
+    GpuPlacementRequired,
+    gpu_residency as probe_gpu_residency,
+    require_gpu_residency,
+)
 from market_context_cache import DEFAULT_STORE_ROOT, model_generation_lock
 from runtime_config import (
     ACTIVE_QWEN_MODEL, DEFAULT_QWEN_MODEL, PRIMARY_MARKET_SYMBOL,
@@ -226,6 +231,7 @@ def _ollama_generate_raw(
     prompt: str, keep_alive=-1, timeout=45, num_predict=160, num_ctx=4096,
     format_schema: dict | None = None,
     model: str | None = None,
+    lock_timeout: float | None = None,
 ) -> dict:
     import urllib.request
 
@@ -251,7 +257,7 @@ def _ollama_generate_raw(
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with model_generation_lock():
+    with model_generation_lock(timeout=lock_timeout):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
@@ -260,19 +266,25 @@ def ollama_generate(
     prompt: str, keep_alive=-1, timeout=45, num_predict=160, num_ctx=4096,
     format_schema: dict | None = None,
     model: str | None = None,
+    lock_timeout: float | None = None,
 ) -> dict:
     # Empty-prompt warm/unload paths use _ollama_generate_raw / warm_model /
     # unload_model. Real decision calls must not run while gold is not quoting.
+    selected_model = model or MODEL
     if prompt:
         market = gold_market_open()
         if not market.get("open"):
             raise RuntimeError(
                 f"Qwen call blocked; market closed ({market.get('reason')})"
             )
+        require_gpu_residency(
+            selected_model,
+            owner="review_shared.ollama_generate",
+            opener=urllib.request.urlopen,
+        )
 
     from io_performance_log import log_qwen_generate
 
-    selected_model = model or MODEL
     return log_qwen_generate(
         model=selected_model,
         prompt=prompt,
@@ -289,6 +301,7 @@ def ollama_generate(
             num_ctx=num_ctx,
             format_schema=format_schema,
             model=selected_model,
+            lock_timeout=lock_timeout,
         ),
     )
 
@@ -300,37 +313,7 @@ def gpu_residency(model: str = MODEL) -> dict:
     float|None, "detail": str}. Never raises -- a residency probe must not be
     able to stop trading, only to describe it.
     """
-    try:
-        with urllib.request.urlopen(OLLAMA_PS, timeout=5) as response:
-            running = json.loads(response.read().decode("utf-8")).get("models", [])
-    except Exception as error:
-        return {"state": "unknown", "vram_share": None, "detail": str(error)}
-
-    resident = next(
-        (
-            row for row in running
-            if row.get("name") == model
-            or str(row.get("name") or "").startswith(model.split(":")[0])
-        ),
-        None,
-    )
-    if not resident:
-        return {"state": "unloaded", "vram_share": None, "detail": "not resident"}
-
-    size = float(resident.get("size") or 0)
-    vram = float(resident.get("size_vram") or 0)
-    share = (vram / size) if size > 0 else 0.0
-    if vram <= 0:
-        state = "cpu"
-    elif share >= MIN_VRAM_SHARE:
-        state = "gpu"
-    else:
-        state = "mixed"
-    return {
-        "state": state,
-        "vram_share": round(share, 3),
-        "detail": f"{vram/1e9:.1f}GB of {size/1e9:.1f}GB in VRAM",
-    }
+    return probe_gpu_residency(model, opener=urllib.request.urlopen)
 
 
 def require_gpu(owner: str = "") -> dict:
@@ -374,6 +357,14 @@ def require_gpu(owner: str = "") -> dict:
 def warm_model() -> None:
     ollama_generate("", keep_alive=-1)
     residency = require_gpu("warm_model")
+    if residency["state"] != "gpu":
+        try:
+            unload_model()
+        finally:
+            raise GpuPlacementRequired(
+                f"Qwen GPU-only warm failed: {MODEL} is {residency['state']} "
+                f"({residency['detail']})"
+            )
     logging.info(
         "Qwen model loaded and pinned: %s (%s)", MODEL, residency["state"]
     )

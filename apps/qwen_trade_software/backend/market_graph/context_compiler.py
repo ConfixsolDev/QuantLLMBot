@@ -155,6 +155,56 @@ def _session_block(raw: dict, xau: dict, as_of: datetime) -> dict:
             ], "exact_price_equality_used": False}
 
 
+def _intraday_story_block(raw: dict, symbol: str) -> dict:
+    stories = (raw.get("intraday_stories") or {}).get(symbol) or []
+    compact = []
+    for story in stories[:1]:
+        compact.append({
+            "story_id": story.get("id"),
+            "as_of_utc": story.get("as_of_utc"),
+            "state": story.get("state"),
+            "market_story": str(story.get("market_story") or "")[:320],
+            "sequence_explanation": str(story.get("sequence_explanation") or "")[:220],
+            "drivers_so_far": str(story.get("drivers_so_far") or "")[:220],
+            "contradicting_evidence": str(story.get("contradicting_evidence") or "")[:180],
+            "prior_view_status": story.get("prior_view_status"),
+            "next_focus": str(story.get("next_focus") or "")[:180],
+            "deterministic_structure_state": story.get("deterministic_structure_state"),
+            "day_ohlc": {
+                key: _number(story.get(f"day_{key}"))
+                for key in ("open", "high", "low", "close", "net_move", "range")
+            },
+            "confirmed_swing_sequence": [
+                {key: swing.get(key) for key in ("ordinal", "label", "kind", "price", "time_utc", "evidence_id")}
+                for swing in (story.get("swings") or [])[-8:]
+            ],
+            "verified_level_reads": [
+                {
+                    **{key: level.get(key) for key in (
+                        "level_id", "timeframe", "role", "price", "zone_low", "zone_high",
+                        "touch_episodes_today", "latest_closed_response", "current_relation",
+                        "qwen_quality",
+                    )},
+                    "qwen_price_story": str(level.get("qwen_price_story") or "")[:160],
+                    "next_verification": str(level.get("next_verification") or "")[:140],
+                }
+                for level in (story.get("level_reads") or [])[:4]
+            ],
+            "mode": story.get("mode") or "shadow_only",
+            "execution_authority": False,
+            "eligible_for_live_context": bool(story.get("eligible_for_live_context")),
+        })
+    return {
+        # An empty result is a valid connected graph state. Reserve
+        # ``unavailable`` for connection/query failure at the graph service.
+        "status": "shadow_ready" if compact else "ready_empty",
+        "source": "neo4j_intraday_story_graph",
+        "stories": compact,
+        "execution_authority": False,
+        "eligible_for_live_context": False,
+    }
+
+
 def compile_market_memory(raw: dict, max_bytes: int = 14_000) -> dict:
     as_of = utc_datetime(raw.get("as_of_utc") or datetime.now(timezone.utc).isoformat())
     symbols = raw.get("symbols") or {}
@@ -194,6 +244,7 @@ def compile_market_memory(raw: dict, max_bytes: int = 14_000) -> dict:
         "zone_relevant_semantic_memory": relevant_for_zone(
             raw.get("semantic_memories") or [], zones.get("current_or_approaching_focus"), 1
         ),
+        "qwen_intraday_story_memory": _intraday_story_block(raw, xau_key),
         "projection": raw.get("projection", {}),
     }
     encoded = json.dumps(packet, separators=(",", ":"), sort_keys=True).encode("utf-8")

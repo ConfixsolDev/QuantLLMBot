@@ -51,6 +51,7 @@ MANIFEST_VERSION = "1.0"
 DECISION_MODULES = (
     # Decide what to trade, how to size it, and when to leave.
     "entry_policy.py",
+    "entry_contract.py",
     "trade_geometry.py",
     "management_policy.py",
     "trade_manager.py",
@@ -95,6 +96,12 @@ DECISION_MODULES = (
     "market_graph_worker.py",
     "market_history_backfill.py",
     "qwen_event_gate.py",
+    "intraday_observer_worker.py",
+    "intraday_observer/__init__.py",
+    "intraday_observer/contracts.py",
+    "intraday_observer/deterministic.py",
+    "intraday_observer/service.py",
+    "intraday_observer/scheduler.py",
     "instrument_config.py",
     "market_runtime.py",
     "prompt_composer.py",
@@ -201,6 +208,10 @@ def _tunables() -> dict:
          "ROUND_TRIP_COST", "VALUE_PER_PRICE_UNIT_PER_LOT")
     grab("management_policy", "MAX_RISK_MULTIPLE", "INITIAL_REBRACKET_SECONDS",
          "R3_MAX_PROGRESS", "STOP_POLICY", "TARGET_POLICY")
+    grab("profit_protection_policy", "ARM_R", "ARM_ATR", "TRAIL_ATR",
+         "GIVEBACK_MFE", "FRONT_LAYER_VOLUME_FRACTION",
+         "FRONT_LAYER_START_ATR", "WIDE_LAYER_START_ATR",
+         "LADDER_STEP_ATR", "FRONT_GAP_ATR", "WIDE_GAP_ATR")
     grab("paper_executor", "INITIAL_STOP_DISTANCE", "INITIAL_TAKE_PROFIT_DISTANCE",
          "STRUCTURAL_BRACKET_ENABLED")
     grab("paper_runner", "MIN_ENTRY_CONFIDENCE", "DAILY_PAPER_CAP",
@@ -208,10 +219,21 @@ def _tunables() -> dict:
          "LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE",
          "LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK",
          "MAX_PROPOSAL_AGE_SECONDS")
+    # paper_runner exposes these for compatibility, but cooldown_manager is
+    # their modular source of truth. Resolve the actual literals so build
+    # identity records behavior rather than an attribute-expression string.
+    cooldown_names = (
+        "LOSS_COOLDOWN_SECONDS", "WIN_COOLDOWN_SECONDS",
+        "LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE",
+        "LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK",
+    )
+    grab("cooldown_manager", *cooldown_names)
+    for name in cooldown_names:
+        values[f"paper_runner.{name}"] = values[f"cooldown_manager.{name}"]
     # Model placement decides whether a decision can beat its own TTL, so it
     # belongs in the build identity: GPU and CPU runs must never pool.
     grab("review_shared", "FORCE_GPU_LAYERS", "MIN_VRAM_SHARE")
-    grab("reviewer", "REQUIRE_GPU", "GPU_PROBE_INTERVAL_SECONDS")
+    grab("reviewer", "GPU_PROBE_INTERVAL_SECONDS")
     # A blackout window change alters which trades are possible, so it is
     # part of the build identity: news-on and news-off runs must not pool.
     grab("news_blackout", "BLACKOUT_MINUTES_BEFORE", "BLACKOUT_MINUTES_AFTER",

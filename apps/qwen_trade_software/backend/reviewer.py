@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import entry_policy
+import entry_contract
 from instrument_config import instrument_for
 import live_mapped_levels
 import opportunity_state
@@ -86,6 +87,10 @@ from runtime_config import PRIMARY_MARKET_SYMBOL, model_for_role
 from candle_clock import candle_clock
 from market_intelligence import MarketIntelligenceService
 from qwen_event_gate import QwenEventGate
+from intraday_observer.contracts import (
+    CONTRACT_VERSION as INTRADAY_OBSERVER_CONTRACT,
+    read_for_trader as read_intraday_observer,
+)
 
 
 # 2026-08-06: kept separate from trade_management.py's
@@ -95,6 +100,7 @@ from qwen_event_gate import QwenEventGate
 # different values once real numbers are in from the faster GPU machine.
 # Defaults to the same 30s starting point either way.
 INTERVAL_SECONDS = int(os.environ.get("QWEN_ENTRY_INTERVAL_SECONDS", "30"))
+INTRADAY_OBSERVER_PROMOTED = os.environ.get("QWEN_INTRADAY_OBSERVER_LIVE", "0") == "1"
 DAILY_PAPER_CAP = 100
 MIN_ENTRY_CONFIDENCE = 51
 QWEN_PLAN_GATING = os.environ.get("QWEN_PLAN_GATING", "0") == "1"
@@ -917,6 +923,18 @@ def compact_entry_facts(
         "approach_context": {},
         "zone_edge_context": {},
         "market_structure": {},
+        # Independent service boundary.  Reviewer reads only the versioned,
+        # freshness-checked notebook contract; it cannot invoke or mutate the
+        # observer and does not know how the story was produced.
+        "intraday_observer": (
+            read_intraday_observer(symbol)
+            if INTRADAY_OBSERVER_PROMOTED
+            else {
+                "status": "shadow_only",
+                "contract_version": INTRADAY_OBSERVER_CONTRACT,
+                "execution_authority": False,
+            }
+        ),
     }
 
     # -- Lifecycle context injection --
@@ -1216,20 +1234,16 @@ def compact_entry_facts(
 # bury the alarm in its own repetition.
 GPU_PROBE_INTERVAL_SECONDS = 60.0
 GPU_ALARM_INTERVAL_SECONDS = 300.0
-_GPU_GATE_STATE = {"checked_at": 0.0, "ok": True, "alarmed_at": 0.0}
-
-# Set QWEN_REQUIRE_GPU=0 to trade on CPU anyway. Present so an operator who
-# understands the cost can override, not because CPU is a supported mode --
-# decisions arrive after their proposal has expired, which is why this defaults
-# to on.
-REQUIRE_GPU = os.environ.get("QWEN_REQUIRE_GPU", "1") != "0"
+_GPU_GATE_STATE = {"checked_at": 0.0, "ok": False, "alarmed_at": 0.0}
 
 # The window a decision has to beat, quoted in the alarm so the number is in
 # front of whoever reads it. Mirrors paper_runner.MAX_PROPOSAL_AGE_SECONDS,
 # which owns the real TTL -- duplicated rather than imported because reviewer
 # does not otherwise depend on the runner, and a wrong number in a log message
 # is cheaper than a new import cycle.
-PROPOSAL_TTL_SECONDS_FOR_ALARM = 60
+PROPOSAL_TTL_SECONDS_FOR_ALARM = max(
+    60, int(os.environ.get("QWEN_ZONE_ARMED_MAX_SECONDS", "900"))
+)
 
 
 # Re-announce an ongoing blackout at most this often. The entry loop runs every
@@ -1284,22 +1298,17 @@ def gpu_ready_for_entry() -> bool:
     Cached briefly: residency only changes on a load or an eviction, and this
     is called every cycle.
 
-    Fails OPEN on an unreadable probe. If Ollama cannot be reached the entry
-    call will fail on its own with a clear error -- refusing to trade because a
-    diagnostic endpoint timed out would be a worse failure than the one being
-    guarded against.
+    Fails closed for CPU, mixed, unloaded, and unknown placement. The supervisor
+    owns recovery; no caller may use Qwen until Ollama verifies full GPU
+    residency.
     """
     now = time.monotonic()
-    if not REQUIRE_GPU:
-        return True
     if now - _GPU_GATE_STATE["checked_at"] < GPU_PROBE_INTERVAL_SECONDS:
         return bool(_GPU_GATE_STATE["ok"])
 
     residency = gpu_residency()
     state = residency["state"]
-    # "unloaded" is normal before the first warm and between market sessions;
-    # "unknown" means the probe failed, not that placement is wrong.
-    ok = state in ("gpu", "unloaded", "unknown")
+    ok = state == "gpu"
     _GPU_GATE_STATE["checked_at"] = now
     _GPU_GATE_STATE["ok"] = ok
 
@@ -1309,8 +1318,8 @@ def gpu_ready_for_entry() -> bool:
             "ALARM CRITICAL model:not_on_gpu :: %s is on %s (%s) — entry cycles "
             "are being SKIPPED. A decision takes 190-455s on CPU against a %ds "
             "proposal TTL, so every proposal would expire before its answer "
-            "arrived. Free VRAM (`ollama ps` shows what is resident) and "
-            "restart; set QWEN_REQUIRE_GPU=0 to trade anyway.",
+            "arrived. The supervisor will restart Ollama and retry GPU loading; "
+            "CPU inference is disabled.",
             MODEL, state, residency["detail"], PROPOSAL_TTL_SECONDS_FOR_ALARM,
         )
     return ok
@@ -1447,7 +1456,11 @@ def _stamp_regime_target_mode(review: dict, facts: dict) -> None:
         logging.info("qualified_levels count=%d", len(remembered))
 
 
-def wait_reason_for(contradiction: str | None, review: dict) -> str:
+def wait_reason_for(
+    contradiction: str | None,
+    review: dict,
+    contract_failure: str | None = None,
+) -> str:
     """Plain-language wait reason naming the actual cause.
 
     Folding every failure into one "Cache provenance validation failed." string
@@ -1472,6 +1485,8 @@ def wait_reason_for(contradiction: str | None, review: dict) -> str:
             f"Confidence below the {entry_policy.MIN_ENTRY_CONFIDENCE} entry "
             "threshold; waiting for a stronger read."
         )
+    if contract_failure:
+        return entry_contract.wait_reason(contract_failure)
     return "Cache provenance validation failed."
 
 
@@ -1514,24 +1529,16 @@ def build_entry_prompt(facts: dict) -> str:
     )
 
 
+READY_PLAN_LEVEL_FIELDS = entry_contract.READY_PLAN_LEVEL_FIELDS
+READY_PLAN_REQUIRED_FIELDS = entry_contract.READY_PLAN_REQUIRED_FIELDS
+
+
 def qwen_contract_correction_reason(review: dict) -> str | None:
     """Return why one bounded model retry is required; never invent scores."""
-    plan = review.get("execution_plan") or {}
-    bias = str(review.get("bias") or "").lower()
-    try:
-        confidence = int(review.get("confidence") or 0)
-    except (TypeError, ValueError):
-        confidence = 0
-    if bias in ("buy", "sell") and confidence == 0:
-        return "directional_bias_with_zero_confidence"
-    if str(plan.get("status") or "").lower() == "ready":
-        # Geometry omissions are repaired from validated mapped levels by
-        # normalize_execution_plan. Retrying Qwen made otherwise valid M1
-        # facts 20-35 seconds older without adding semantic judgment.
-        declared_side = str(plan.get("side") or "").lower()
-        if declared_side and bias in ("buy", "sell") and declared_side != bias:
-            return "ready_side_contradicts_bias"
-    return None
+    return entry_contract.correction_reason(
+        review,
+        ready_reason_checker=entry_policy.check_ready_reason_contradiction,
+    )
 
 
 def build_qwen_correction_prompt(facts: dict, review: dict, reason: str) -> str:
@@ -1556,7 +1563,9 @@ def build_qwen_correction_prompt(facts: dict, review: dict, reason: str) -> str:
         "Return JSON only. Never claim the model is disabled. Confidence is "
         "1-100 and must be calibrated even for wait. Ready requires bias and "
         "side buy|sell plus entry_low_id, entry_high_id, stop_level_id, and "
-        "target_level_id copied from execution_levels. If the M1 trigger or "
+        "target_level_id copied from execution_levels. Use the flat plan_* "
+        "wire fields; never return an execution_plan object. For wait, put "
+        f"{entry_contract.NONE} in non-applicable plan fields. If the M1 trigger or "
         "target is incomplete, return wait with the actual 1-50 confidence. "
         "Copy epochs exactly and cite only supplied evidence IDs.\nCORRECTION FACTS:\n"
         + json.dumps(compact, separators=(",", ":"))
@@ -1570,91 +1579,19 @@ def entry_decision_schema(entry_cache: dict, decision_levels: dict, facts: dict 
         level_ids = sorted(
             row["id"] for rows in decision_levels.values() for row in rows
         )
-    if not level_ids:
-        level_ids = ["__no_level__"]
     evidence_enum = list(facts.get("citeable_evidence_ids") or []) if facts else []
     if not evidence_enum:
         evidence_enum = list(entry_cache.get("known_evidence_ids") or [])
-    if not evidence_enum:
-        evidence_enum = ["__no_evidence__"]
-    epochs = entry_cache["epochs"]
-    return {
-        "type": "object",
-        "properties": {
-            "bias": {"type": "string", "enum": ["buy", "sell", "wait"]},
-            # Every assessment must be calibrated. A value of 1 represents
-            # effectively no conviction; zero caused v004 to emit a learned
-            # disabled-mode placeholder instead of assessing supplied facts.
-            "confidence": {"type": "integer", "minimum": 1, "maximum": 100},
-            "summary": {"type": "string", "maxLength": 120},
-            "acknowledged_epochs": {
-                "type": "object",
-                "properties": {
-                    key: {"type": "string", "const": value}
-                    for key, value in epochs.items()
-                },
-                "required": sorted(epochs),
-                "additionalProperties": False,
-            },
-            "evidence_ids": {
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "enum": evidence_enum,
-                },
-                "minItems": 1,
-                "maxItems": 6,
-            },
-            "execution_plan": {
-                "type": "object",
-                "properties": {
-                    "status": {"type": "string", "enum": ["ready", "wait"]},
-                    "side": {"type": "string", "enum": ["buy", "sell"]},
-                    "entry_low_id": {"type": "string", "enum": level_ids},
-                    "entry_high_id": {"type": "string", "enum": level_ids},
-                    "stop_level_id": {"type": "string", "enum": level_ids},
-                    "target_level_id": {"type": "string", "enum": level_ids},
-                    "target_mode": {
-                        "type": "string",
-                        "enum": ["scalp", "starter_basket", "directional_basket"],
-                    },
-                    "volume_each": {"type": "number", "const": 0.5},
-                    "reason": {"type": "string", "maxLength": 120},
-                },
-                # Wait must not fabricate a side or geometry. Ready geometry is
-                # validated deterministically after the model response.
-                "required": ["status", "reason"],
-                "additionalProperties": False,
-            },
-            "data_requests": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "tool": {"type": "string", "enum": [
-                            "get_completed_candles", "get_structure_state",
-                            "get_structure_events", "get_dxy_state",
-                        ]},
-                        "symbol": {"type": "string"},
-                        "timeframe": {"type": "string", "enum": [
-                            "M1", "M5", "M15", "M30", "H1", "H4", "D1",
-                        ]},
-                        "count": {"type": "integer", "minimum": 1, "maximum": 80},
-                        "missing_fact": {"type": "string", "maxLength": 120},
-                        "why_needed": {"type": "string", "maxLength": 160},
-                    },
-                    "required": ["tool", "symbol", "timeframe", "count", "missing_fact", "why_needed"],
-                    "additionalProperties": False,
-                },
-                "maxItems": 2,
-            },
-        },
-        "required": [
-            "bias", "confidence", "summary", "acknowledged_epochs",
-            "evidence_ids", "execution_plan",
-        ],
-        "additionalProperties": False,
-    }
+    return entry_contract.build_schema(
+        epochs=entry_cache["epochs"],
+        level_ids=level_ids,
+        evidence_ids=evidence_enum,
+    )
+
+
+def decode_entry_response(raw_response: str) -> dict:
+    """Parse the Qwen wire response and isolate its shape from strategy code."""
+    return entry_contract.adapt_wire_response(json.loads(raw_response))
 
 
 def build_retrieval_followup_prompt(facts: dict, first_review: dict, results: list[dict]) -> str:
@@ -1671,7 +1608,8 @@ def build_retrieval_followup_prompt(facts: dict, first_review: dict, results: li
         "FINAL RETRIEVAL PASS for qwen_cached_entry. Return one JSON decision only. "
         "No further data_requests are allowed. Retrieved rows are completed evidence, "
         "but XAUUSD structure/location/M1 trigger retain trading authority; DXY only "
-        "adjusts confidence. Copy original epochs exactly and use only supplied level IDs.\n"
+        "adjusts confidence. Copy original epochs exactly, use only supplied level IDs, "
+        "and return the flat plan_* wire fields, never execution_plan.\n"
         + json.dumps(packet, separators=(",", ":"))
     )
 
@@ -1792,72 +1730,6 @@ def validate_entry_provenance(review: dict, entry_cache: dict) -> list[str]:
     elif not set(cited).issubset(known):
         failures.append("entry:invented_cache_evidence")
     return failures
-
-
-def cache_fallback_geometry(
-    side: str, decision_levels: dict, quote: float
-) -> dict | None:
-    """Map a clear Qwen side onto nearby cache-owned execution levels."""
-    level_rows = [
-        (str(row["id"]), float(row["price"]), timeframe)
-        for timeframe, rows in decision_levels.items()
-        for row in rows
-    ]
-    if len(level_rows) < 4:
-        return None
-
-    entry_points = None
-    for timeframe in ("M1", "M5", "M15", "M30", "H1", "H4", "D1"):
-        rows = sorted(
-            {
-                (str(row["id"]), float(row["price"]))
-                for row in decision_levels.get(timeframe, [])
-            },
-            key=lambda item: item[1],
-        )
-        if len(rows) < 2:
-            continue
-        pairs = list(zip(rows, rows[1:]))
-        entry_points = min(
-            pairs,
-            key=lambda pair: (
-                0.0
-                if pair[0][1] <= quote <= pair[1][1]
-                else min(abs(quote - pair[0][1]), abs(quote - pair[1][1])),
-                pair[1][1] - pair[0][1],
-            ),
-        )
-        break
-    if entry_points is None:
-        return None
-
-    (entry_low_id, entry_low), (entry_high_id, entry_high) = entry_points
-    structure_tf = infer_structure_timeframe(
-        entry_low_id, entry_high_id, "", ""
-    )
-    stop_pick, target_pick = pick_structure_stop_target(
-        side,
-        entry_low,
-        entry_high,
-        decision_levels,
-        structure_tf,
-        None,
-        None,
-        {},
-    )
-    if stop_pick is None or target_pick is None:
-        return None
-    return {
-        "entry_low_id": entry_low_id,
-        "entry_high_id": entry_high_id,
-        "stop_level_id": stop_pick[0],
-        "target_level_id": target_pick[0],
-        "entry_low": entry_low,
-        "entry_high": entry_high,
-        "stop_loss": stop_pick[1],
-        "take_profit": target_pick[1],
-        "structure_timeframe": structure_tf,
-    }
 
 
 def _level_timeframe(level_id: str) -> str | None:
@@ -2255,6 +2127,8 @@ def normalize_execution_plan(
     bias: str | None = None,
     confidence=None,
     zone_edge_context: dict | None = None,
+    structural_responses: list[dict] | None = None,
+    active_idea_context: dict | None = None,
 ) -> dict:
     """Ready gate = confidence + named S/R entry zone; broker SL/TP = $3/$5.
 
@@ -2262,8 +2136,8 @@ def normalize_execution_plan(
     stop and $5 target from the zone. Next structure S/R prices are kept only
     as management references for trade_management to improve after fill.
     """
-    def wait(reason):
-        return {"status": "wait", "reason": reason}
+    def wait(reason, reason_code="entry:plan_not_ready"):
+        return {"status": "wait", "reason": reason, "reason_code": reason_code}
 
     if not isinstance(value, dict):
         return wait("Qwen did not return a structured execution plan.")
@@ -2315,27 +2189,88 @@ def normalize_execution_plan(
     qwen_target_id = str(value.get("target_level_id") or "")
     geometry_source = "qwen_sr_zone_fixed_3_5"
 
-    if entry_low_id in level_bounds and entry_high_id in level_bounds:
-        selected = (level_bounds[entry_low_id], level_bounds[entry_high_id])
-        entry_low = min(bound[0] for bound in selected)
-        entry_high = max(bound[1] for bound in selected)
-        if abs(entry_low - entry_high) < 1e-9:
-            band = 0.4
-            entry_low = round(entry_low - band, 3)
-            entry_high = round(entry_high + band, 3)
-    else:
-        fallback = cache_fallback_geometry(side, decision_levels, quote)
-        if fallback is None:
-            return wait("Validated cache cannot map a Qwen entry zone.")
-        geometry_source = "cache_sr_zone_fixed_3_5"
-        entry_low_id = fallback["entry_low_id"]
-        entry_high_id = fallback["entry_high_id"]
-        entry_low = fallback["entry_low"]
-        entry_high = fallback["entry_high"]
-        if not qwen_stop_id:
-            qwen_stop_id = fallback["stop_level_id"]
-        if not qwen_target_id:
-            qwen_target_id = fallback["target_level_id"]
+    missing = [
+        field for field, level_id in (
+            ("entry_low_id", entry_low_id),
+            ("entry_high_id", entry_high_id),
+            ("stop_level_id", qwen_stop_id),
+            ("target_level_id", qwen_target_id),
+        )
+        if not level_id
+    ]
+    if missing:
+        return wait(
+            "Qwen ready plan omitted required named levels: " + ", ".join(missing),
+            "entry:ready_missing_geometry",
+        )
+    unknown = [
+        level_id for level_id in (
+            entry_low_id, entry_high_id, qwen_stop_id, qwen_target_id
+        )
+        if level_id not in level_map
+    ]
+    if unknown:
+        return wait(
+            "Qwen ready plan cited unavailable levels: " + ", ".join(unknown),
+            "entry:ready_unknown_level",
+        )
+
+    selected = (level_bounds[entry_low_id], level_bounds[entry_high_id])
+    entry_low = min(bound[0] for bound in selected)
+    entry_high = max(bound[1] for bound in selected)
+    if abs(entry_low - entry_high) < 1e-9:
+        band = 0.4
+        entry_low = round(entry_low - band, 3)
+        entry_high = round(entry_high + band, 3)
+
+    # A ready plan must preserve Qwen's active thesis and anchor the side at a
+    # completed response of the correct semantic kind. "Sell at the top" means
+    # a confirmed resistance response, not merely the upper number of an
+    # automatically-created band near support.
+    anchor_id = entry_low_id if side == "buy" else entry_high_id
+    active = active_idea_context or {}
+    watching_zone = str(active.get("watching_zone") or "")
+    watching_side = str(active.get("watching_side") or "").lower()
+    if watching_side in ("buy", "sell") and watching_side != side:
+        return wait(
+            "Qwen plan side does not match the active idea.",
+            "entry:active_idea_side_mismatch",
+        )
+    if watching_zone and anchor_id != watching_zone:
+        return wait(
+            f"Qwen entry anchor {anchor_id} does not match active idea {watching_zone}.",
+            "entry:active_idea_zone_mismatch",
+        )
+
+    expected_zone_side = "support" if side == "buy" else "resistance"
+    anchor_responses = [
+        row for row in (structural_responses or [])
+        if str(row.get("level_id") or "") == anchor_id
+        and bool(row.get("confirmed"))
+    ]
+    matching_responses = [
+        row for row in anchor_responses
+        if str(row.get("zone_side") or "").lower() == expected_zone_side
+        and str(row.get("direction") or "").lower() == side
+    ]
+    if not matching_responses:
+        return wait(
+            f"No confirmed {side} response at the Qwen entry anchor {anchor_id}.",
+            "entry:anchor_response_mismatch",
+        )
+
+    stop_price = level_map[qwen_stop_id]
+    target_price = level_map[qwen_target_id]
+    geometry_sides_valid = (
+        stop_price < entry_low and target_price > entry_high
+        if side == "buy"
+        else stop_price > entry_high and target_price < entry_low
+    )
+    if not geometry_sides_valid:
+        return wait(
+            "Qwen stop/target are not on the correct sides of its entry zone.",
+            "entry:qwen_geometry_wrong_side",
+        )
 
     structure_tf = infer_structure_timeframe(
         entry_low_id, entry_high_id, qwen_stop_id, qwen_target_id
@@ -2945,7 +2880,7 @@ def generate_dashboard_deal_sheet() -> dict:
             decision_duration_ns,
         )
         raw_response = result.get("response", "{}")
-        review = json.loads(raw_response)
+        review = decode_entry_response(raw_response)
         retrieval_results = []
         requested_data = list(review.get("data_requests") or [])[:2]
         if requested_data and (review.get("execution_plan") or {}).get("status") == "wait":
@@ -2967,7 +2902,7 @@ def generate_dashboard_deal_sheet() -> dict:
             )
             prompt_text = retrieval_prompt
             raw_response = retrieval_call.get("response", "{}")
-            review = json.loads(raw_response)
+            review = decode_entry_response(raw_response)
             # The broker grants one bounded retrieval round only.
             review.pop("data_requests", None)
             log_step(
@@ -2990,7 +2925,7 @@ def generate_dashboard_deal_sheet() -> dict:
             )
             prompt_text = correction_prompt
             raw_response = correction.get("response", "{}")
-            review = json.loads(raw_response)
+            review = decode_entry_response(raw_response)
             log_step(
                 "qwen_contract_correction", "completed", symbol=symbol,
                 price=(facts.get("quote") or {}).get("bid"),
@@ -2999,6 +2934,7 @@ def generate_dashboard_deal_sheet() -> dict:
                 confidence=review.get("confidence"),
                 plan_status=(review.get("execution_plan") or {}).get("status"),
             )
+        remaining_contract_failure = qwen_contract_correction_reason(review)
         log_step(
             "qwen_response", "received", symbol=symbol,
             price=(facts.get("quote") or {}).get("bid"),
@@ -3012,6 +2948,10 @@ def generate_dashboard_deal_sheet() -> dict:
             # persist or recycle it as a thesis under the directional contract.
             review["summary"] = "Directional bias unresolved."
         provenance_failures = validate_entry_provenance(review, entry_cache)
+        if remaining_contract_failure:
+            provenance_failures.append(
+                "entry:qwen_contract_uncorrected:" + remaining_contract_failure
+            )
         snapshot["qwen_evidence_ids"] = list(review.get("evidence_ids") or [])
 
         # Confidence is an observed model output, not permission that runtime
@@ -3061,9 +3001,18 @@ def generate_dashboard_deal_sheet() -> dict:
             # was the entry contract.
             review["execution_plan"] = {
                 "status": "wait",
-                "reason": wait_reason_for(contradiction, review),
+                "reason": wait_reason_for(
+                    contradiction, review, remaining_contract_failure
+                ),
                 "reason_code": (
-                    contradiction if contradiction else "entry:provenance_failed"
+                    contradiction
+                    if contradiction
+                    else (
+                        "entry:qwen_contract_uncorrected:"
+                        + remaining_contract_failure
+                        if remaining_contract_failure
+                        else "entry:provenance_failed"
+                    )
                 ),
             }
         else:
@@ -3074,6 +3023,8 @@ def generate_dashboard_deal_sheet() -> dict:
                 bias=review.get("bias"),
                 confidence=review.get("confidence"),
                 zone_edge_context=facts.get("zone_edge_context"),
+                structural_responses=facts.get("structural_responses"),
+                active_idea_context=facts.get("active_idea_context"),
             )
             plan_failures = validate_entry_against_plan(
                 review["execution_plan"], planner_context
@@ -3379,11 +3330,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             requested_symbol = str(query.get("symbol", [""])[0] or "").upper()
             requested_result = str(query.get("result", [""])[0] or "").lower()
+            start_utc = str(query.get("start_utc", [""])[0] or "")
+            end_utc = str(query.get("end_utc", [""])[0] or "")
+            try:
+                if start_utc:
+                    datetime.fromisoformat(start_utc.replace("Z", "+00:00"))
+                if end_utc:
+                    datetime.fromisoformat(end_utc.replace("Z", "+00:00"))
+            except ValueError:
+                self.send_error(400, "start_utc and end_utc must be ISO-8601 timestamps")
+                return
             try:
                 limit = max(1, min(int(query.get("limit", ["100"])[0]), 1000))
             except ValueError:
                 limit = 100
-            rows = MARKET_INTELLIGENCE.store.trade_journals(limit=limit)
+            rows = MARKET_INTELLIGENCE.store.trade_journals(
+                limit=limit,
+                start_utc=start_utc or None,
+                end_utc=end_utc or None,
+            )
             if requested_symbol:
                 rows = [row for row in rows if str(row.get("symbol") or "").upper() == requested_symbol]
             if requested_result in {"win", "loss", "breakeven"}:
@@ -3701,10 +3666,13 @@ def self_test_entry_prompt() -> None:
     assert "execution_levels" in facts
     assert "forming" in facts and "H4" not in facts["forming"]
     # Lifecycle fields (prior_idea_context, zone_scores, approach_context)
-    # add ~1600 bytes worst case. num_ctx=4096 tokens ≈ 8KB at 2 chars/token.
-    assert prompt_bytes < 8000, prompt_bytes
+    # The live entry call uses num_ctx=8192. Recent measured packets evaluated
+    # 37KB as ~4100 Qwen tokens, so 48KB is a conservative regression ceiling
+    # that catches unbounded packet growth without confusing bytes with tokens.
+    assert prompt_bytes < 48000, prompt_bytes
     schema = entry_decision_schema(entry_cache, decision_levels, facts)
-    assert "H1_RES_1" in schema["properties"]["execution_plan"]["properties"]["entry_low_id"]["enum"]
+    assert "execution_plan" not in schema["properties"]
+    assert "H1_RES_1" in schema["properties"]["entry_low_id"]["enum"]
     wait_review = {
         "execution_plan": {"status": "wait", "reason": "Entry cache blocked."},
         "entry_validation_failures": ["entry_cache:minute:expired"],

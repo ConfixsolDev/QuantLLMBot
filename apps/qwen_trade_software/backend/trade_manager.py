@@ -18,6 +18,7 @@ ALLOWED_CONFIRMATIONS = {
     "thesis_invalidation_confirmed",
     "momentum_reversal_confirmed",
     "continuation_acceptance_confirmed",
+    "target_deterioration_confirmed",
     # 2026-08-10, topic 10 (trade management, distilled from the corpus).
     # Management may end a trade whenever the idea is genuinely dead, but it
     # must name WHICH condition ended it. These are the three additional named
@@ -184,6 +185,7 @@ def build_management_facts(
             "gross_pnl": float(position["profit"]),
             "favorable_price_move": round(current_move, 3),
             "broker_stop": float(position.get("stop_loss") or 0.0),
+            "broker_target": float(position.get("take_profit") or 0.0),
         },
         "entry_thesis": {
             "reason": entry_plan.get("reason"),
@@ -649,6 +651,7 @@ def validate_management_decision(
             failures.append("management:invalidated_thesis_held")
         if action == "hold" and confirmation in {
             "target_rejection_confirmed",
+            "target_deterioration_confirmed",
             "thesis_invalidation_confirmed",
             "momentum_reversal_confirmed",
         }:
@@ -656,18 +659,47 @@ def validate_management_decision(
         if action == "protect":
             if not level_ref and not decision.get("next_target_ref"):
                 failures.append("management:protect_without_sl_or_tp_level")
-            if confirmation != "continuation_acceptance_confirmed":
-                failures.append("management:protect_without_acceptance")
-            if latest_m1 not in cited or latest_m5 not in cited:
-                failures.append("management:protect_without_two_timeframe_confirmation")
-            if level_ref in levels and latest_m1 in supplied_candles and latest_m5 in supplied_candles:
-                level = float(levels[level_ref]["price"])
-                side = facts.get("position", {}).get("side")
-                if not (
-                    _closed_beyond(supplied_candles[latest_m1], level, side, True)
-                    and _closed_beyond(supplied_candles[latest_m5], level, side, True)
-                ):
-                    failures.append("management:protect_without_closed_acceptance")
+            target_ref = decision.get("next_target_ref")
+            target = levels.get(target_ref) if target_ref else None
+            position = facts.get("position", {})
+            side = position.get("side")
+            direction = 1.0 if side == "buy" else -1.0
+            old_target = float(position.get("broker_target") or 0.0)
+            target_price = float(target["price"]) if target else None
+            reducing_target = bool(
+                target_price is not None and old_target
+                and direction * (target_price - old_target) < 0
+            )
+            if reducing_target:
+                current = float(position.get("current") or 0.0)
+                if direction * (target_price - current) <= 0:
+                    failures.append("management:reduced_target_not_ahead")
+                if confirmation != "target_deterioration_confirmed":
+                    failures.append("management:reduced_target_without_deterioration")
+                if thesis_state not in {"weakening", "target_response"}:
+                    failures.append("management:reduced_target_without_weakening")
+                if latest_m1 not in cited:
+                    failures.append("management:reduced_target_without_latest_m1")
+                latest = supplied_candles.get(latest_m1)
+                if latest:
+                    against = (
+                        latest.get("direction") == "down"
+                        if side == "buy" else latest.get("direction") == "up"
+                    )
+                    if not against:
+                        failures.append("management:reduced_target_without_adverse_m1")
+            else:
+                if confirmation != "continuation_acceptance_confirmed":
+                    failures.append("management:protect_without_acceptance")
+                if latest_m1 not in cited or latest_m5 not in cited:
+                    failures.append("management:protect_without_two_timeframe_confirmation")
+                if level_ref in levels and latest_m1 in supplied_candles and latest_m5 in supplied_candles:
+                    level = float(levels[level_ref]["price"])
+                    if not (
+                        _closed_beyond(supplied_candles[latest_m1], level, side, True)
+                        and _closed_beyond(supplied_candles[latest_m5], level, side, True)
+                    ):
+                        failures.append("management:protect_without_closed_acceptance")
 
     next_target_ref = decision.get("next_target_ref")
     if next_target_ref is not None and next_target_ref not in levels:
