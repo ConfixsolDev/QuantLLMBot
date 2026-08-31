@@ -47,8 +47,10 @@ CREATE TABLE IF NOT EXISTS forming_candles (
 CREATE TABLE IF NOT EXISTS ticks (
  id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, time_utc TIMESTAMPTZ NOT NULL,
  bid DOUBLE PRECISION NOT NULL, ask DOUBLE PRECISION NOT NULL,
- spread DOUBLE PRECISION NOT NULL, flags INTEGER NOT NULL
+ spread DOUBLE PRECISION NOT NULL, flags INTEGER NOT NULL, migration_key TEXT
 );
+ALTER TABLE ticks ADD COLUMN IF NOT EXISTS migration_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS tick_migration_key ON ticks(migration_key) WHERE migration_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ticks_lookup ON ticks(symbol,time_utc DESC);
 CREATE TABLE IF NOT EXISTS cache_objects (
  cache_type TEXT NOT NULL, cache_epoch TEXT PRIMARY KEY, symbol TEXT NOT NULL,
@@ -62,19 +64,26 @@ CREATE TABLE IF NOT EXISTS cache_objects (
 CREATE INDEX IF NOT EXISTS cache_current_lookup ON cache_objects(symbol,cache_type,is_current,valid_as_of_utc DESC);
 CREATE TABLE IF NOT EXISTS readiness_manifests (
  id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, validated_at_utc TIMESTAMPTZ NOT NULL,
- status TEXT NOT NULL, payload_json JSONB NOT NULL
+ status TEXT NOT NULL, payload_json JSONB NOT NULL, migration_key TEXT
 );
+ALTER TABLE readiness_manifests ADD COLUMN IF NOT EXISTS migration_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS readiness_manifest_migration_key ON readiness_manifests(migration_key) WHERE migration_key IS NOT NULL;
 CREATE TABLE IF NOT EXISTS qwen_validations (
  id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, validation_type TEXT NOT NULL,
  created_at_utc TIMESTAMPTZ NOT NULL, input_hash TEXT NOT NULL, response_json JSONB,
- raw_response TEXT, passed BOOLEAN NOT NULL, failures_json JSONB NOT NULL, metrics_json JSONB NOT NULL
+ raw_response TEXT, passed BOOLEAN NOT NULL, failures_json JSONB NOT NULL, metrics_json JSONB NOT NULL,
+ migration_key TEXT
 );
+ALTER TABLE qwen_validations ADD COLUMN IF NOT EXISTS migration_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS qwen_validation_migration_key ON qwen_validations(migration_key) WHERE migration_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS qwen_validation_lookup ON qwen_validations(symbol,validation_type,input_hash,created_at_utc DESC);
 CREATE TABLE IF NOT EXISTS latency_events (
  id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, cycle_id TEXT NOT NULL,
  created_at_utc TIMESTAMPTZ NOT NULL, stage TEXT NOT NULL,
- duration_ms DOUBLE PRECISION NOT NULL, details_json JSONB NOT NULL
+ duration_ms DOUBLE PRECISION NOT NULL, details_json JSONB NOT NULL, migration_key TEXT
 );
+ALTER TABLE latency_events ADD COLUMN IF NOT EXISTS migration_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS latency_event_migration_key ON latency_events(migration_key) WHERE migration_key IS NOT NULL;
 """
 
 
@@ -199,20 +208,20 @@ class TimescaleMarketContextCache:
             return 0
         with self.pool.connection() as connection, connection.cursor() as cur:
             if table == "ticks":
-                cur.executemany("INSERT INTO ticks(symbol,time_utc,bid,ask,spread,flags) VALUES(%s,%s,%s,%s,%s,%s)", [
-                    (row["symbol"], _dt(row["time_utc"]), row["bid"], row["ask"], row["spread"], row["flags"]) for row in rows])
+                cur.executemany("INSERT INTO ticks(symbol,time_utc,bid,ask,spread,flags,migration_key) VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING", [
+                    (row["symbol"], _dt(row["time_utc"]), row["bid"], row["ask"], row["spread"], row["flags"], row.get("migration_key")) for row in rows])
             elif table == "cache_objects":
                 cur.executemany("INSERT INTO cache_objects(cache_type,cache_epoch,symbol,schema_version,created_at_utc,valid_as_of_utc,source_start_utc,source_end_utc,source_hash,producer_version,model_digest,expires_at_utc,invalidated_at_utc,invalidation_reason,evidence_ids_json,payload_json,is_current) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s) ON CONFLICT(cache_epoch) DO NOTHING", [
                     (row["cache_type"], row["cache_epoch"], row["symbol"], row["schema_version"], _dt(row["created_at_utc"]), _dt(row["valid_as_of_utc"]), _dt(row["source_start_utc"]) if row.get("source_start_utc") else None, _dt(row["source_end_utc"]) if row.get("source_end_utc") else None, row["source_hash"], row["producer_version"], row.get("model_digest"), _dt(row["expires_at_utc"]) if row.get("expires_at_utc") else None, _dt(row["invalidated_at_utc"]) if row.get("invalidated_at_utc") else None, row.get("invalidation_reason"), row["evidence_ids_json"] if isinstance(row["evidence_ids_json"], str) else json.dumps(row["evidence_ids_json"]), row["payload_json"] if isinstance(row["payload_json"], str) else json.dumps(row["payload_json"]), bool(row["is_current"])) for row in rows])
             elif table == "qwen_validations":
-                cur.executemany("INSERT INTO qwen_validations(symbol,validation_type,created_at_utc,input_hash,response_json,raw_response,passed,failures_json,metrics_json) VALUES(%s,%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s::jsonb)", [
-                    (row["symbol"], row["validation_type"], _dt(row["created_at_utc"]), row["input_hash"], row.get("response_json") or "null", row.get("raw_response"), bool(row["passed"]), row["failures_json"], row["metrics_json"]) for row in rows])
+                cur.executemany("INSERT INTO qwen_validations(symbol,validation_type,created_at_utc,input_hash,response_json,raw_response,passed,failures_json,metrics_json,migration_key) VALUES(%s,%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s::jsonb,%s) ON CONFLICT DO NOTHING", [
+                    (row["symbol"], row["validation_type"], _dt(row["created_at_utc"]), row["input_hash"], row.get("response_json") or "null", row.get("raw_response"), bool(row["passed"]), row["failures_json"], row["metrics_json"], row.get("migration_key")) for row in rows])
             elif table == "readiness_manifests":
-                cur.executemany("INSERT INTO readiness_manifests(symbol,validated_at_utc,status,payload_json) VALUES(%s,%s,%s,%s::jsonb)", [
-                    (row["symbol"], _dt(row["validated_at_utc"]), row["status"], row["payload_json"] if isinstance(row["payload_json"], str) else json.dumps(row["payload_json"])) for row in rows])
+                cur.executemany("INSERT INTO readiness_manifests(symbol,validated_at_utc,status,payload_json,migration_key) VALUES(%s,%s,%s,%s::jsonb,%s) ON CONFLICT DO NOTHING", [
+                    (row["symbol"], _dt(row["validated_at_utc"]), row["status"], row["payload_json"] if isinstance(row["payload_json"], str) else json.dumps(row["payload_json"]), row.get("migration_key")) for row in rows])
             elif table == "latency_events":
-                cur.executemany("INSERT INTO latency_events(symbol,cycle_id,created_at_utc,stage,duration_ms,details_json) VALUES(%s,%s,%s,%s,%s,%s::jsonb)", [
-                    (row["symbol"], row["cycle_id"], _dt(row["created_at_utc"]), row["stage"], row["duration_ms"], row["details_json"]) for row in rows])
+                cur.executemany("INSERT INTO latency_events(symbol,cycle_id,created_at_utc,stage,duration_ms,details_json,migration_key) VALUES(%s,%s,%s,%s,%s,%s::jsonb,%s) ON CONFLICT DO NOTHING", [
+                    (row["symbol"], row["cycle_id"], _dt(row["created_at_utc"]), row["stage"], row["duration_ms"], row["details_json"], row.get("migration_key")) for row in rows])
             else:
                 raise ValueError(f"unsupported migration table: {table}")
         return len(rows)

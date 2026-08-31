@@ -1,7 +1,8 @@
 """Migrate the market-context SQLite database into TimescaleDB.
 
 The source is opened read-only and remains available for rollback/parity
-comparison. Re-running the command is safe for candles and cache epochs.
+comparison. Re-running the command is conflict-safe for candles, cache epochs,
+and append-only rows carrying a stable source-row migration key.
 """
 
 from __future__ import annotations
@@ -34,28 +35,35 @@ def migrate(source: Path, dsn: str, *, dry_run: bool = False) -> dict[str, int]:
         if "forming_candles" in tables:
             target.upsert_forming([dict(row) for row in db.execute("SELECT * FROM forming_candles")])
         if "ticks" in tables:
-            rows = db.execute("SELECT symbol,time_utc,bid,ask,spread,flags FROM ticks ORDER BY id")
+            rows = db.execute("SELECT id,symbol,time_utc,bid,ask,spread,flags FROM ticks ORDER BY id")
             while batch := list(islice(rows, 1000)):
-                target.copy_batch("ticks", [dict(row) for row in batch])
+                target.copy_batch("ticks", [_with_key(row, source, "ticks") for row in batch])
         if "cache_objects" in tables:
             rows = db.execute("SELECT * FROM cache_objects")
             while batch := list(islice(rows, 1000)):
                 target.copy_batch("cache_objects", [dict(row) for row in batch])
         if "readiness_manifests" in tables:
-            rows = db.execute("SELECT symbol,validated_at_utc,status,payload_json FROM readiness_manifests")
+            rows = db.execute("SELECT id,symbol,validated_at_utc,status,payload_json FROM readiness_manifests")
             while batch := list(islice(rows, 1000)):
-                target.copy_batch("readiness_manifests", [dict(row) for row in batch])
+                target.copy_batch("readiness_manifests", [_with_key(row, source, "readiness_manifests") for row in batch])
         if "qwen_validations" in tables:
             rows = db.execute("SELECT * FROM qwen_validations")
             while batch := list(islice(rows, 1000)):
-                target.copy_batch("qwen_validations", [dict(row) for row in batch])
+                target.copy_batch("qwen_validations", [_with_key(row, source, "qwen_validations") for row in batch])
         if "latency_events" in tables:
             rows = db.execute("SELECT * FROM latency_events")
             while batch := list(islice(rows, 1000)):
-                target.copy_batch("latency_events", [dict(row) for row in batch])
+                target.copy_batch("latency_events", [_with_key(row, source, "latency_events") for row in batch])
         return counts
     finally:
         db.close()
+
+
+def _with_key(row: sqlite3.Row, source: Path, table: str) -> dict:
+    """Attach a stable source identity for append-only migration rows."""
+    result = dict(row)
+    result["migration_key"] = f"{source.resolve()}::{table}::{result['id']}"
+    return result
 
 
 def main() -> None:
