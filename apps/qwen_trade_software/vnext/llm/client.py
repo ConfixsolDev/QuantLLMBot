@@ -46,9 +46,18 @@ class QwenClient:
 
 
 def build_arbitration_prompt(state: PairMarketState, candidate: TradeCandidate,
-                             story: Mapping[str, Any]) -> str:
+                             story: Mapping[str, Any], *, max_bars_per_timeframe: int = 32,
+                             max_structure_events: int = 16) -> str:
+    if max_bars_per_timeframe <= 0 or max_structure_events <= 0:
+        raise ValueError("bounded prompt limits must be positive")
+    bounded = state.as_dict()
+    bounded["timeframes"] = {
+        timeframe: list(rows[-max_bars_per_timeframe:])
+        for timeframe, rows in bounded["timeframes"].items()
+    }
+    bounded["structural_events"] = bounded["structural_events"][-max_structure_events:]
     packet = {"task": "arbitrate_one_candidate", "allowed_decisions": ["APPROVE", "WAIT", "VETO", "NO_TRADE"],
-              "state_hash": state.state_hash, "state": state.as_dict(),
+              "state_hash": state.state_hash, "state": bounded,
               "candidate": candidate.as_dict(), "story": dict(story),
               "constraints": ["cite candidate_id for APPROVE", "do not invent geometry",
                               "do not size risk", "do not submit orders", "return JSON only"]}
