@@ -176,6 +176,10 @@ class MarketIntelligenceService:
             "graph_context": graph_context,
             "graph_health": graph_health,
         }
+        # Read-through cache: a restart or TTL expiry should incur one
+        # durable read, then restore the fast current-context path for the
+        # next Qwen/dashboard request.
+        self._cache_snapshot(symbol)
         # Neo4j remains non-authoritative: Qwen may inspect the bounded zone
         # plan for validation, while deterministic entry/risk gates retain the
         # right to reject it.  The website still receives the full packet.
