@@ -24,7 +24,7 @@ def test_engine_composes_state_and_requires_approval_before_order():
     state = engine.compose_state(bars())
     result = engine.evaluate(state, spec())
     assert state.schema_version == "PAIR_MARKET_STATE_V1"
-    assert len(state.mtf_relationships) == 6
+    assert len(state.mtf_relationships) == 7
     assert result.arbitration is None
     with pytest.raises(RuntimeError):
         engine.submit(result, order={"candidate_id": "c1"})

@@ -9,7 +9,7 @@ from typing import Iterable, Mapping
 from vnext.platform.time_frontier import TimeFrontier, utc
 
 
-TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H2": 120, "H4": 240, "D1": 1440}
 
 
 @dataclass(frozen=True, slots=True)

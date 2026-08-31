@@ -64,7 +64,7 @@ class VNextEngine:
     def compose_state(self, m1_bars: list[Bar], *, statistics: dict | None = None) -> PairMarketState:
         builder = TimeframeBuilder(self.pair, frontier=self.frontier)
         timeframes: dict[str, Any] = {"M1": [bar.as_dict() for bar in builder.build(m1_bars, "M1")]}
-        for timeframe in ("M5", "M15", "M30", "H1", "H4", "D1"):
+        for timeframe in ("M5", "M15", "M30", "H1", "H2", "H4", "D1"):
             timeframes[timeframe] = [bar.as_dict() for bar in builder.build(m1_bars, timeframe)]
         confirmed = [bar for bar in m1_bars if bar.pair == self.pair and self.frontier.permits(bar.end_utc)]
         zones = self.zone_engine.discover(confirmed, pair=self.pair, timeframe="M1")
@@ -90,8 +90,8 @@ class VNextEngine:
         relationships = tuple(
             {"parent_timeframe": parent, "child_timeframe": child,
              **classify_relationship(timeframe_rows[parent], timeframe_rows[child])}
-            for parent, child in zip(("D1", "H4", "H1", "M30", "M15", "M5"),
-                                     ("H4", "H1", "M30", "M15", "M5", "M1"))
+            for parent, child in zip(("D1", "H4", "H2", "H1", "M30", "M15", "M5"),
+                                     ("H4", "H2", "H1", "M30", "M15", "M5", "M1"))
         )
         state = PairMarketState(
             self.pair, self.frontier.as_of_utc, {"status": "ready" if confirmed else "unavailable",
