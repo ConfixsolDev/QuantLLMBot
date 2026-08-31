@@ -3,7 +3,7 @@ from vnext.market.state import PairMarketState
 from vnext.narrator.story import NarratorRequest, StoryNarrator
 from vnext.platform.time_frontier import TimeFrontier
 from vnext.strategy.definition import StrategySpec, create_candidate
-from strategy_contract import StrategyDefinition
+from vnext.strategy.contracts import StrategyDefinition
 
 
 def candidate():

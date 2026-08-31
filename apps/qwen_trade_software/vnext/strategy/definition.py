@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from strategy_contract import StrategyDefinition, TradeCandidate
+from vnext.strategy.contracts import StrategyDefinition, TradeCandidate
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from strategy_contract import TradeCandidate
+from vnext.strategy.contracts import TradeCandidate
 
 
 DECISIONS = frozenset({"APPROVE", "WAIT", "VETO", "NO_TRADE"})

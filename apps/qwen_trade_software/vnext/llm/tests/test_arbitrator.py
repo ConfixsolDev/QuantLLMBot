@@ -1,4 +1,4 @@
-from strategy_contract import StrategyDefinition
+from vnext.strategy.contracts import StrategyDefinition
 from vnext.llm.arbitrator import arbitrate
 from vnext.strategy.definition import StrategySpec, create_candidate
 

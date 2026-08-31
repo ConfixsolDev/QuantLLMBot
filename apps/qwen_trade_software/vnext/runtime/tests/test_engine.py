@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from strategy_contract import StrategyDefinition
+from vnext.strategy.contracts import StrategyDefinition
 from vnext.data.bars import Bar
 from vnext.platform.time_frontier import TimeFrontier
 from vnext.runtime.engine import VNextEngine

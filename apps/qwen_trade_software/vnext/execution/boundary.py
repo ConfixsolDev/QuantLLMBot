@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from strategy_contract import TradeCandidate
+from vnext.strategy.contracts import TradeCandidate
 
 
 def validate_candidate_for_execution(candidate: TradeCandidate) -> dict[str, object]:
@@ -17,5 +17,5 @@ def validate_candidate_for_execution(candidate: TradeCandidate) -> dict[str, obj
         "invalidation": candidate.invalidation,
         "target_zone_ids": list(candidate.target_zone_ids),
         "state_hash": candidate.state_hash,
-        "execution_authority": "existing_validated_executor",
+        "execution_authority": "vnext_deterministic_oms",
     }
