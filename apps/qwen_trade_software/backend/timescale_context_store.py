@@ -146,7 +146,11 @@ class TimescaleMarketContextCache:
                         # are intentionally ignored, matching the SQLite contract.
                         names = [desc.name for desc in cur.description]
                         prior = dict(zip(names, existing))
-                        changed = [field for field in immutable if str(prior[field]) != str(row[field])]
+                        def same_value(field: str) -> bool:
+                            if field in {"open_time_utc", "close_time_utc"}:
+                                return _dt(prior[field]) == _dt(row[field])
+                            return str(prior[field]) == str(row[field])
+                        changed = [field for field in immutable if not same_value(field)]
                         if changed:
                             raise ValueError(f"immutable completed candle changed: {row['evidence_id']} fields={','.join(changed)}")
                         unchanged += 1
