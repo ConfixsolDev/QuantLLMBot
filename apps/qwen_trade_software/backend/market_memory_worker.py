@@ -16,6 +16,7 @@ import MetaTrader5 as mt5
 from market_intelligence.collector import collect_once
 from market_intelligence.live_structure_updater import update_live_structure
 from market_intelligence.projection import reduce_event
+from market_intelligence import MarketIntelligenceService
 from storage_factory import create_intelligence_store
 from runtime_config import PRIMARY_MARKET_SYMBOL
 
@@ -77,6 +78,12 @@ def write_health(
 def run(db_path: Path, symbol: str, interval: float, once: bool = False) -> None:
     configure_logging()
     store = create_intelligence_store(db_path)
+    # The collector owns durable evidence; this small facade only publishes a
+    # bounded read-through snapshot so Redis remains warm between reviewer or
+    # dashboard requests. It never selects trades or changes the ledger.
+    context_service = MarketIntelligenceService(
+        db_path, lambda _symbol, _timeframe, _count: []
+    )
     replayed = store.rebuild(reduce_event)
     logging.info("startup replay complete events=%d", replayed)
     first_cycle = True
@@ -93,6 +100,7 @@ def run(db_path: Path, symbol: str, interval: float, once: bool = False) -> None
                 if key.startswith(f"{symbol}:") and int(count or 0) > 0
             ]
             structure = update_live_structure(store, symbol, updated_timeframes)
+            context_service.refresh_snapshot(symbol)
             health = {"status": "ready", "symbol": symbol,
                       "updated_at_epoch": time.time(), "replayed_events": replayed,
                       "live_structure": structure, **result}
