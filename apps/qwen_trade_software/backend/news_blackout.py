@@ -105,7 +105,15 @@ def refresh_calendar(timeout: int = 20) -> dict:
             "source": FEED_URL,
             "events": events,
         }
-        CACHE_FILE.write_text(json.dumps(payload), encoding="utf-8")
+        try:
+            from runtime_store import live_runtime_store
+            runtime = live_runtime_store()
+        except Exception:
+            runtime = None
+        if runtime is not None:
+            runtime.put_state(CACHE_FILE, payload, owner="news_blackout")
+        else:
+            CACHE_FILE.write_text(json.dumps(payload), encoding="utf-8")
         blocking = sum(1 for e in events if is_blocking_event(e))
         logging.info(
             "news calendar refreshed: %d events, %d blocking", len(events), blocking
@@ -120,6 +128,15 @@ def refresh_calendar(timeout: int = 20) -> dict:
 
 
 def load_calendar() -> dict:
+    try:
+        from runtime_store import live_runtime_store
+        runtime = live_runtime_store()
+        if runtime is not None:
+            payload = runtime.get_state(CACHE_FILE)
+            if isinstance(payload, dict):
+                return payload
+    except Exception:
+        pass
     try:
         return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -222,21 +239,23 @@ def record_block(event: dict, proposal_id: str | None = None) -> None:
     and no way to tell whether that helped. Each row names the event, so the
     skipped windows can later be joined to what price actually did.
     """
+    record = {
+        "event": "entry_blocked_by_news",
+        "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+        "proposal_id": proposal_id,
+        **event,
+    }
     try:
+        from runtime_store import live_runtime_store
+        runtime = live_runtime_store()
+        if runtime is not None:
+            runtime.append_event(owner="news_blackout", level="INFO",
+                                 message="entry blocked by news",
+                                 event_name="entry_blocked_by_news", payload=record)
+            return
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         path = LOG_DIR / f"news-blackout-{datetime.now():%Y-%m-%d}.jsonl"
         with path.open("a", encoding="utf-8") as stream:
-            stream.write(
-                json.dumps(
-                    {
-                        "event": "entry_blocked_by_news",
-                        "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
-                        "proposal_id": proposal_id,
-                        **event,
-                    },
-                    separators=(",", ":"),
-                )
-                + "\n"
-            )
+            stream.write(json.dumps(record, separators=(",", ":")) + "\n")
     except Exception:
         logging.exception("news:block_record_failed")

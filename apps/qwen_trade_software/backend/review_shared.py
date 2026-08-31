@@ -189,12 +189,29 @@ def _dated_log_files(base_name: str, days_back: int = 1) -> list[Path]:
 
 def load_review_tickets() -> set:
     try:
+        from runtime_store import live_runtime_store
+        runtime = live_runtime_store()
+        if runtime is not None:
+            payload = runtime.get_state(REVIEW_TICKETS_FILE)
+            if isinstance(payload, dict):
+                return {int(ticket) for ticket in payload.get("tickets", [])}
+    except Exception:
+        pass
+    try:
         return {int(ticket) for ticket in json.loads(REVIEW_TICKETS_FILE.read_text())}
     except (FileNotFoundError, ValueError, TypeError):
         return set()
 
 
 def save_review_tickets(tickets: set) -> None:
+    try:
+        from runtime_store import live_runtime_store
+        runtime = live_runtime_store()
+        if runtime is not None:
+            runtime.put_state(REVIEW_TICKETS_FILE, {"tickets": sorted(tickets)}, owner="reviewer")
+            return
+    except Exception:
+        pass
     REVIEW_TICKETS_FILE.write_text(
         json.dumps(sorted(tickets), separators=(",", ":")),
         encoding="utf-8",
