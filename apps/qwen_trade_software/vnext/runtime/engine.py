@@ -7,6 +7,7 @@ risk gates the result, and the broker adapter owns transport.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Protocol
@@ -17,6 +18,7 @@ from vnext.intelligence.mtf.relationships import classify_relationship
 from vnext.intelligence.structure.engine import StructureEngine
 from vnext.intelligence.zones.engine import ZoneEngine
 from vnext.llm.arbitrator import Arbitration, arbitrate
+from vnext.llm.client import QwenClient, request_arbitration
 from vnext.market.state import PairMarketState
 from vnext.narrator.story import NarratorRequest, StoryNarrator
 from vnext.platform.events import EventEnvelope
@@ -47,12 +49,14 @@ class VNextEngine:
     def __init__(self, *, pair: str, frontier: TimeFrontier,
                  broker: BrokerAdapter | None = None,
                  ledger: EventLedger | None = None,
-                 event_sink: Callable[[list[EventEnvelope]], int] | None = None) -> None:
+                 event_sink: Callable[[list[EventEnvelope]], int] | None = None,
+                 qwen_client: QwenClient | None = None) -> None:
         self.pair = pair
         self.frontier = frontier
         self.broker = broker
         self.ledger = ledger
         self.event_sink = event_sink
+        self.qwen_client = qwen_client
         self.zone_engine = ZoneEngine()
         self.structure_engine = StructureEngine()
         self.narrator = StoryNarrator()
@@ -115,7 +119,21 @@ class VNextEngine:
         candidate = None
         if candidate_inputs:
             candidate = create_candidate(spec, state_hash=state.state_hash, **dict(candidate_inputs))
-        arbitration_result = arbitrate(response or {"decision": "WAIT", "state_hash": state.state_hash}, candidate) if candidate else None
+        arbitration_result = None
+        if candidate:
+            if response is not None:
+                arbitration_result = arbitrate(response, candidate)
+            elif self.qwen_client is not None:
+                arbitration_result = request_arbitration(self.qwen_client, state, candidate, story)
+            else:
+                arbitration_result = arbitrate({"decision": "WAIT", "state_hash": state.state_hash}, candidate)
+            self._record("QWEN_ARBITRATION", {
+                "candidate_id": candidate.candidate_id,
+                "decision": arbitration_result.decision,
+                "state_hash": arbitration_result.state_hash,
+                "violations": list(arbitration_result.violations),
+                "reason": arbitration_result.reason[:512],
+            })
         risk_result = None
         if candidate and arbitration_result and arbitration_result.decision == "APPROVE" and risk_inputs:
             risk_result = evaluate_risk(**dict(risk_inputs))
@@ -143,7 +161,6 @@ class VNextEngine:
     def _record(self, event_type: str, payload: dict[str, Any]) -> None:
         if self.ledger is None and self.event_sink is None:
             return
-        import hashlib
         raw = f"{self.pair}|{event_type}|{self.frontier.as_of_utc.isoformat()}|{payload}"
         event = EventEnvelope(hashlib.sha256(raw.encode()).hexdigest()[:24], event_type,
                               self.pair, self.frontier.as_of_utc, payload, "vnext_runtime")
