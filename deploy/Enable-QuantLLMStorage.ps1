@@ -40,12 +40,6 @@ $env:QWEN_REDIS_URL = if ($env:QWEN_REDIS_URL) { $env:QWEN_REDIS_URL } else { 'r
 $env:QWEN_NEO4J_URI = if ($env:QWEN_NEO4J_URI) { $env:QWEN_NEO4J_URI } else { 'bolt://127.0.0.1:7687' }
 $env:QWEN_NEO4J_USER = if ($env:QWEN_NEO4J_USER) { $env:QWEN_NEO4J_USER } else { 'neo4j' }
 $env:QWEN_NEO4J_PASSWORD = $neo4jPassword
-if (-not $SkipMigration) {
-    & $python (Join-Path $backend 'tools/migrate_sqlite_to_timescale.py') $intelligenceDb --dsn $env:QWEN_TIMESCALE_DSN
-    if ($LASTEXITCODE -ne 0) { throw 'Intelligence ledger migration failed.' }
-    & $python (Join-Path $backend 'tools/migrate_context_sqlite_to_timescale.py') $contextDb --dsn $env:QWEN_TIMESCALE_DSN
-    if ($LASTEXITCODE -ne 0) { throw 'Market-context migration failed.' }
-}
 & $python (Join-Path $ProjectRoot 'apps/qwen_trade_software/vnext/tools/storage_acceptance.py')
 if ($LASTEXITCODE -ne 0) { throw 'Storage acceptance gate failed; live backend variables were not validated.' }
 Write-Host 'QuantLLM storage is ready for this PowerShell session.'
