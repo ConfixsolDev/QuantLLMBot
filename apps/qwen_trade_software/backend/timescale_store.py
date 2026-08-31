@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS graph_projection_outbox (
     attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT, enqueued_at_utc TIMESTAMPTZ NOT NULL,
     projected_at_utc TIMESTAMPTZ, PRIMARY KEY(event_id, event_time_utc)
 );
+-- The graph worker claims pending rows by retry eligibility and then consumes
+-- them in event order. Keep this index separate from the primary key so a
+-- large historical backlog does not require a full outbox scan each cycle.
+CREATE INDEX IF NOT EXISTS graph_outbox_pending_work
+    ON graph_projection_outbox(status, attempts, event_time_utc, enqueued_at_utc)
+    WHERE status = 'pending';
 CREATE TABLE IF NOT EXISTS trade_journal (
     proposal_id TEXT PRIMARY KEY, execution_id TEXT NOT NULL, symbol TEXT NOT NULL,
     exit_time_utc TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL,
