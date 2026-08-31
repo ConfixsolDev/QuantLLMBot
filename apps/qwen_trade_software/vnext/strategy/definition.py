@@ -22,6 +22,7 @@ class StrategySpec:
     management_policy: str = ""
     statistical_qualification: Mapping[str, Any] = field(default_factory=dict)
     narrator_request: Mapping[str, Any] = field(default_factory=dict)
+    management_parameters: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.trigger or not self.invalidation_policy or not self.target_zone_policy:
@@ -33,7 +34,8 @@ class StrategySpec:
                 "invalidation_policy": self.invalidation_policy, "target_zone_policy": self.target_zone_policy,
                 "management_policy": self.management_policy,
                 "statistical_qualification": dict(self.statistical_qualification),
-                "narrator_request": dict(self.narrator_request)}
+                "narrator_request": dict(self.narrator_request),
+                "management_parameters": dict(self.management_parameters)}
 
 
 def create_candidate(spec: StrategySpec, *, candidate_id: str, direction: str,
