@@ -4057,7 +4057,7 @@ def run_incremental_self_test() -> dict:
             failures.append("incremental:h4_epoch_expiry")
         final_hash = cache.raw_hash(symbol)
         cache.close()
-        restarted = MarketContextCache(path)
+        restarted = MarketContextCache(path, backend="sqlite")
         if restarted.raw_hash(symbol) != final_hash:
             failures.append("incremental:restart_hash")
         restarted.close()
