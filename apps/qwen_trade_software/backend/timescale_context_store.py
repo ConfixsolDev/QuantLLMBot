@@ -114,6 +114,12 @@ class TimescaleMarketContextCache:
     def close(self) -> None:
         self.pool.close()
 
+    def counts(self) -> dict[str, int]:
+        """Return durable row counts used by the context cutover parity gate."""
+        tables = ("completed_candles", "forming_candles", "ticks", "cache_objects", "readiness_manifests", "qwen_validations", "latency_events")
+        with self.pool.connection() as connection, connection.cursor() as cur:
+            return {table: int(cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for table in tables}
+
     @staticmethod
     def _storage(row: dict) -> dict:
         from market_context_cache import content_hash, iso_utc, utc_now

@@ -46,6 +46,11 @@ def migrate(source: Path, dsn: str, *, dry_run: bool = False) -> dict[str, int]:
             for row in connection.execute("SELECT * FROM retrieval_audit"):
                 target.record_retrieval(row["request_id"], row["symbol"], json.loads(row["request_json"]), json.loads(row["result_json"]), row["status"])
                 counts["retrievals"] += 1
+        if "trade_journal" in tables:
+            for row in connection.execute("SELECT * FROM trade_journal"):
+                journal = dict(row)
+                target.upsert_trade_journal(journal)
+                counts["journals"] += 1
         return counts
     finally:
         connection.close()
