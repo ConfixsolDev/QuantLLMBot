@@ -543,24 +543,32 @@ def gold_market_open(
 
 def _read_model_residency() -> dict:
     try:
+        from runtime_store import live_runtime_store
+        runtime = live_runtime_store()
+        if runtime is not None:
+            value = runtime.get_state(MODEL_RESIDENCY_FILE)
+            if isinstance(value, dict):
+                return value
+    except Exception:
+        pass
+    try:
         return json.loads(MODEL_RESIDENCY_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError, OSError):
         return {"state": "unknown"}
 
 
 def _write_model_residency(state: str, reason: str) -> None:
-    MODEL_RESIDENCY_FILE.write_text(
-        json.dumps(
-            {
-                "state": state,
-                "reason": reason,
-                "model": MODEL,
-                "updated_at_utc": _utc_now().isoformat(),
-            },
-            separators=(",", ":"),
-        ),
-        encoding="utf-8",
-    )
+    payload = {"state": state, "reason": reason, "model": MODEL,
+               "updated_at_utc": _utc_now().isoformat()}
+    try:
+        from runtime_store import live_runtime_store
+        runtime = live_runtime_store()
+        if runtime is not None:
+            runtime.put_state(MODEL_RESIDENCY_FILE, payload, owner="model_residency")
+            return
+    except Exception:
+        pass
+    MODEL_RESIDENCY_FILE.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
 
 
 def sync_model_residency(market: dict | None = None) -> dict:

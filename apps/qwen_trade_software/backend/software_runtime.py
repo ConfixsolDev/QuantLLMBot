@@ -187,15 +187,17 @@ class QwenTradeSoftware:
         from storage_config import StorageConfig
         storage_health = StorageConfig.from_env().validate_activation()
         logging.info("Storage activation health: %s", storage_health)
-        from tick_data_archive import sync_all_archives, write_all_day_manifests, write_day_manifest
-
-        synced = sync_all_archives()
-        if synced:
-            logging.info("Synced tick data archive: %d file(s)", len(synced))
-        write_day_manifest()
-        manifests = write_all_day_manifests()
-        if manifests:
-            logging.info("Refreshed %d tick_data day manifest(s)", manifests)
+        # Live Timescale mode owns runtime history.  The legacy JSONL archive
+        # synchronizer is retained for offline/replay mode only.
+        if os.environ.get("QWEN_INTELLIGENCE_BACKEND", "sqlite").strip().lower() != "timescale":
+            from tick_data_archive import sync_all_archives, write_all_day_manifests, write_day_manifest
+            synced = sync_all_archives()
+            if synced:
+                logging.info("Synced tick data archive: %d file(s)", len(synced))
+            write_day_manifest()
+            manifests = write_all_day_manifests()
+            if manifests:
+                logging.info("Refreshed %d tick_data day manifest(s)", manifests)
         self._launch_desktop_dependencies()
         if not self._wait_for(self.OLLAMA_HEALTH, 90):
             raise RuntimeError("Ollama/Qwen did not become ready")
