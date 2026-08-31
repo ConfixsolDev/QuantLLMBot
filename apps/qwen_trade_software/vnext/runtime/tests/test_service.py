@@ -4,6 +4,7 @@ from vnext.runtime.live_cycle import LiveVNextCycle
 from vnext.runtime.service import VNextService
 from vnext.strategy.contracts import StrategyDefinition
 from vnext.strategy.definition import StrategySpec
+from vnext.strategy.dsl import StrategyProgram
 
 
 class Source:
@@ -48,3 +49,12 @@ def test_service_does_not_submit_without_order_provider():
             "entry": 10, "stop": 9, "point_value": 1},
         qwen_client=None).run_once()
     assert result.evaluation is not None and result.submitted is None
+
+
+def test_service_can_use_explicit_strategy_program():
+    from vnext.storage.persistence import VNextPersistence
+    p = VNextPersistence(ledger=Ledger(), projection=Projection(), working_memory=Memory())
+    # The composed fixture has one zone, so the program correctly remains no-trade.
+    result = VNextService(cycle=LiveVNextCycle(pair="XAUUSD", source=Source(), persistence=p), strategy=spec(),
+                          strategy_program=StrategyProgram("reclaim", "break", "next")).run_once()
+    assert result.evaluation is None and result.submitted is None

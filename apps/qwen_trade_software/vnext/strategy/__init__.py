@@ -1,8 +1,8 @@
 """Strategy candidate and lifecycle boundaries."""
 
+from .contracts import StrategyDefinition, TradeCandidate
+from .dsl import CandidateIntent, Rule, StrategyProgram
 from .lifecycle import CandidateLifecycle
 
-__all__ = ["CandidateLifecycle"]
-from .contracts import StrategyDefinition, TradeCandidate
-
-__all__ = ["StrategyDefinition", "TradeCandidate"]
+__all__ = ["CandidateLifecycle", "StrategyDefinition", "TradeCandidate",
+           "CandidateIntent", "Rule", "StrategyProgram"]
