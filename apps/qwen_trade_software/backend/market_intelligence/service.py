@@ -22,6 +22,7 @@ GRAPH_CONTEXT_MAX_AGE_SECONDS = 120
 class MarketIntelligenceService:
     def __init__(self, db_path: Path | str, candle_reader) -> None:
         self.store = create_intelligence_store(db_path)
+        self.cache_dir = Path(__file__).resolve().parents[1] / "cache"
         self.candle_reader = candle_reader
         self.retrieval = RetrievalBroker(self.store, candle_reader, dxy_bars)
         self.last_snapshot: dict = {}
@@ -137,14 +138,14 @@ class MarketIntelligenceService:
             hierarchy.get("H1") or {}, dxy_states.get("H1") or {}
         )
         worker_health = {}
-        health_path = self.store.path.parent / "market-memory-health.json"
+        health_path = self.cache_dir / "market-memory-health.json"
         try:
             worker_health = json.loads(health_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             worker_health = {"status": "unavailable"}
         graph_context = {"status": "unavailable"}
         graph_health = {"status": "unavailable"}
-        graph_path = self.store.path.parent / "market-graph-context.json"
+        graph_path = self.cache_dir / "market-graph-context.json"
         try:
             graph_context = json.loads(graph_path.read_text(encoding="utf-8"))
             as_of = datetime.fromisoformat(
@@ -158,7 +159,7 @@ class MarketIntelligenceService:
             pass
         try:
             graph_health = json.loads(
-                (self.store.path.parent / "market-graph-health.json").read_text(encoding="utf-8")
+                (self.cache_dir / "market-graph-health.json").read_text(encoding="utf-8")
             )
         except (OSError, ValueError):
             pass
