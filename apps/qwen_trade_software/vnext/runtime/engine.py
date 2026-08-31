@@ -26,6 +26,10 @@ from vnext.risk.engine import RiskDecision, evaluate_risk
 from vnext.strategy.definition import StrategySpec, create_candidate
 
 
+class EventLedger(Protocol):
+    def append(self, event: EventEnvelope, *, frontier: TimeFrontier | None = None) -> bool: ...
+
+
 class BrokerAdapter(Protocol):
     def submit(self, order: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
@@ -41,10 +45,12 @@ class Evaluation:
 
 class VNextEngine:
     def __init__(self, *, pair: str, frontier: TimeFrontier,
-                 broker: BrokerAdapter | None = None) -> None:
+                 broker: BrokerAdapter | None = None,
+                 ledger: EventLedger | None = None) -> None:
         self.pair = pair
         self.frontier = frontier
         self.broker = broker
+        self.ledger = ledger
         self.zone_engine = ZoneEngine()
         self.structure_engine = StructureEngine()
         self.narrator = StoryNarrator()
@@ -63,7 +69,7 @@ class VNextEngine:
                      "confirmed_event_count": len(structure_events)}
         if latest is not None:
             structure["direction"] = "buy" if latest.close >= latest.open else "sell"
-        return PairMarketState(
+        state = PairMarketState(
             self.pair, self.frontier.as_of_utc, {"status": "ready" if confirmed else "unavailable",
             "completed_bars": len(confirmed)}, timeframes,
             zones=tuple(zone.as_dict() for zone in zones), structure=structure,
@@ -71,6 +77,10 @@ class VNextEngine:
             mtf_relationships=(), temporal_state={}, statistics=statistics or {},
             indicators=indicators,
         )
+        self._record("PAIR_MARKET_STATE_COMPOSED", {"state_hash": state.state_hash,
+                     "timefrontier": self.frontier.as_of_utc.isoformat(),
+                     "completed_bars": len(confirmed)})
+        return state
 
     def evaluate(self, state: PairMarketState, spec: StrategySpec, *, response: Mapping[str, Any] | None = None,
                  candidate_inputs: Mapping[str, Any] | None = None, risk_inputs: Mapping[str, Any] | None = None) -> Evaluation:
@@ -89,7 +99,14 @@ class VNextEngine:
         risk_result = None
         if candidate and arbitration_result and arbitration_result.decision == "APPROVE" and risk_inputs:
             risk_result = evaluate_risk(**dict(risk_inputs))
-        return Evaluation(state, story, candidate, arbitration_result, risk_result)
+        evaluation = Evaluation(state, story, candidate, arbitration_result, risk_result)
+        self._record("STRATEGY_EVALUATION", {
+            "state_hash": state.state_hash,
+            "candidate_id": candidate.candidate_id if candidate else None,
+            "decision": arbitration_result.decision if arbitration_result else None,
+            "risk_approved": risk_result.approved if risk_result else None,
+        })
+        return evaluation
 
     def submit(self, evaluation: Evaluation, *, order: Mapping[str, Any]) -> Mapping[str, Any]:
         if self.broker is None:
@@ -98,7 +115,19 @@ class VNextEngine:
             raise RuntimeError("order requires an approved candidate")
         if evaluation.risk is None or not evaluation.risk.approved:
             raise RuntimeError("order requires approved risk")
-        return self.broker.submit(dict(order))
+        result = self.broker.submit(dict(order))
+        self._record("ORDER_SUBMITTED", {"candidate_id": evaluation.candidate.candidate_id,
+                     "order": dict(order), "broker_result": dict(result)})
+        return result
+
+    def _record(self, event_type: str, payload: dict[str, Any]) -> None:
+        if self.ledger is None:
+            return
+        import hashlib
+        raw = f"{self.pair}|{event_type}|{self.frontier.as_of_utc.isoformat()}|{payload}"
+        event = EventEnvelope(hashlib.sha256(raw.encode()).hexdigest()[:24], event_type,
+                              self.pair, self.frontier.as_of_utc, payload, "vnext_runtime")
+        self.ledger.append(event, frontier=self.frontier)
 
     @staticmethod
     def recover(*, broker_positions: list[Mapping[str, Any]], ledger_positions: list[Mapping[str, Any]],

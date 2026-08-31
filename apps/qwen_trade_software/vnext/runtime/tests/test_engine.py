@@ -6,6 +6,7 @@ from strategy_contract import StrategyDefinition
 from vnext.data.bars import Bar
 from vnext.platform.time_frontier import TimeFrontier
 from vnext.runtime.engine import VNextEngine
+from vnext.storage.ledger import InMemoryLedger
 from vnext.strategy.definition import StrategySpec
 
 
@@ -56,3 +57,12 @@ def test_approved_candidate_passes_risk_then_broker_adapter():
     assert result.risk.approved
     assert engine.submit(result, order={"candidate_id": "c1", "volume": 1})["state"] == "SUBMITTED"
     assert broker.orders == [{"candidate_id": "c1", "volume": 1}]
+
+
+def test_engine_persists_state_and_evaluation_events():
+    ledger = InMemoryLedger()
+    engine = VNextEngine(pair="XAUUSD", frontier=TimeFrontier.from_value("2026-01-01T00:05:00Z"), ledger=ledger)
+    state = engine.compose_state(bars())
+    engine.evaluate(state, spec())
+    assert {event.event_type for event in ledger.read(pair="XAUUSD")} == {"PAIR_MARKET_STATE_COMPOSED", "STRATEGY_EVALUATION"}
+    assert len(ledger.read(pair="XAUUSD")) == 2
