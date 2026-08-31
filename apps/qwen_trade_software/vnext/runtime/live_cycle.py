@@ -37,6 +37,28 @@ class MT5ClosedBarSource:
         } for row in rates]
 
 
+class TimescaleClosedBarSource:
+    """Read canonical completed M1 bars from the durable V2 numerical store."""
+
+    def __init__(self, dsn: str) -> None:
+        if not dsn:
+            raise ValueError("Timescale DSN is required")
+        self.dsn = dsn
+
+    def closed_m1(self, pair: str, count: int) -> Iterable[Mapping[str, Any]]:
+        if count < 3:
+            raise ValueError("count must allow causal confirmation")
+        import psycopg
+        with psycopg.connect(self.dsn, connect_timeout=3) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT open_time_utc,open,high,low,close,tick_volume,spread "
+                "FROM completed_candles WHERE symbol=%s AND timeframe='M1' "
+                "ORDER BY open_time_utc DESC LIMIT %s", (pair, int(count)))
+            rows = list(reversed(cursor.fetchall()))
+        return [{"time": row[0], "open": row[1], "high": row[2], "low": row[3],
+                 "close": row[4], "tick_volume": row[5], "spread": row[6]} for row in rows]
+
+
 def _row_value(row: Any, key: str, default: Any = None) -> Any:
     if isinstance(row, Mapping):
         return row.get(key, default)
