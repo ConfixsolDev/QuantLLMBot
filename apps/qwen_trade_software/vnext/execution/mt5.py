@@ -15,6 +15,36 @@ class MT5BrokerClient:
             raise ValueError("invalid MT5 broker configuration")
         self.mt5, self.magic, self.deviation = mt5_client, magic, deviation
 
+    def snapshot(self) -> dict[str, Any]:
+        """Return a read-only broker snapshot for restart reconciliation.
+
+        The adapter deliberately normalizes only fields needed by recovery. It
+        never places, modifies, or closes an order while taking a snapshot.
+        """
+        account = self.mt5.account_info()
+        terminal = self.mt5.terminal_info()
+        positions = self.mt5.positions_get()
+        if account is None or terminal is None or positions is None:
+            raise RuntimeError("MT5 snapshot unavailable")
+        normalized = []
+        for position in positions:
+            row = _as_mapping(position)
+            position_id = row.get("ticket", row.get("position_id"))
+            if position_id is None:
+                raise RuntimeError("MT5 position has no stable ticket")
+            normalized.append({
+                "position_id": str(position_id),
+                "pair": str(row.get("symbol", "")),
+                "direction": _position_direction(row),
+                "volume": float(row.get("volume", 0.0)),
+            })
+        return {
+            "healthy": bool(_field(terminal, "connected", True))
+            and bool(_field(account, "trade_allowed", True)),
+            "positions": tuple(normalized),
+            "account_login": str(_field(account, "login", "")),
+        }
+
     def order_send(self, order: Mapping[str, Any]) -> Any:
         direction = str(order.get("direction", "")).lower()
         if direction not in {"buy", "sell"}:
@@ -49,3 +79,23 @@ class MT5IdempotentBroker:
 
     def submit(self, order: Mapping[str, Any]) -> dict[str, Any]:
         return self.adapter.submit(order)
+
+
+def _as_mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    return {name: getattr(value, name) for name in dir(value)
+            if not name.startswith("_") and not callable(getattr(value, name))}
+
+
+def _field(value: Any, name: str, default: Any) -> Any:
+    return value.get(name, default) if isinstance(value, Mapping) else getattr(value, name, default)
+
+
+def _position_direction(row: Mapping[str, Any]) -> str:
+    position_type = row.get("type")
+    if position_type in (0, "0", "buy", "BUY"):
+        return "buy"
+    if position_type in (1, "1", "sell", "SELL"):
+        return "sell"
+    raise RuntimeError("MT5 position has unknown direction")
