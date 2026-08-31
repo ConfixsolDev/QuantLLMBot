@@ -15,7 +15,7 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Docker is 
 $envFile = Join-Path $PSScriptRoot '.env'
 $composeArgs = @('-f', $compose)
 if (Test-Path $envFile) { $composeArgs += @('--env-file', $envFile) }
-docker compose @composeArgs up -d
+docker compose @composeArgs up -d --wait
 if ($LASTEXITCODE -ne 0) { throw 'Storage services failed to start.' }
 
 $dbPassword = $env:POSTGRES_PASSWORD
