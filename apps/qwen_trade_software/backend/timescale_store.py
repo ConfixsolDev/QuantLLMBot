@@ -208,6 +208,27 @@ class TimescaleIntelligenceStore:
             self.put_projection(symbol, tf, state, event_id)
         return count
 
+    def enqueue_unprojected_graph_events(self) -> int:
+        """Backfill the graph outbox from the immutable event ledger."""
+        now = datetime.now(timezone.utc)
+        with self.pool.connection() as connection, connection.cursor() as cur:
+            cur.execute(
+                "INSERT INTO graph_projection_outbox(event_id,event_time_utc,enqueued_at_utc) "
+                "SELECT event_id,event_time_utc,%s FROM intelligence_events "
+                "ON CONFLICT(event_id) DO NOTHING",
+                (now,),
+            )
+            return max(0, int(cur.rowcount))
+
+    def graph_outbox_stats(self) -> dict:
+        """Return projection backlog and watermark for the graph worker."""
+        with self.pool.connection() as connection, connection.cursor() as cur:
+            cur.execute("SELECT status,COUNT(*) FROM graph_projection_outbox GROUP BY status")
+            counts = {row[0]: int(row[1]) for row in cur.fetchall()}
+            cur.execute("SELECT MAX(projected_at_utc) FROM graph_projection_outbox WHERE status='projected'")
+            watermark = cur.fetchone()[0]
+        return {"pending": counts.get("pending", 0), "projected": counts.get("projected", 0), "dead": counts.get("dead", 0), "last_projected_at_utc": watermark.isoformat() if watermark else None}
+
     def graph_outbox_batch(self, limit: int = 200, max_attempts: int = 8) -> list[dict]:
         with self.pool.connection() as connection, connection.cursor() as cur:
             cur.execute("SELECT o.event_id,o.event_time_utc,o.attempts,e.sequence,e.symbol,e.timeframe,e.event_type,e.evidence_id,e.payload_json,e.payload_hash,e.recorded_at_utc FROM graph_projection_outbox o JOIN intelligence_events e ON e.event_id=o.event_id AND e.event_time_utc=o.event_time_utc WHERE o.status='pending' AND o.attempts < %s ORDER BY e.event_time_utc,e.sequence LIMIT %s", (max(1, int(max_attempts)), max(1, min(int(limit), 10000))))
