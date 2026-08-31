@@ -239,7 +239,7 @@ class TimescaleMarketContextCache:
         rows = self._rows("SELECT MIN(open_time_utc) AS first,MAX(open_time_utc) AS last FROM completed_candles WHERE symbol=%s", (symbol,))
         if not rows or rows[0]["first"] is None:
             return None, None
-        return rows[0]["first"].isoformat(), rows[0]["last"].isoformat()
+        return str(rows[0]["first"]), str(rows[0]["last"])
 
     def raw_hash(self, symbol: str) -> str:
         from market_context_cache import content_hash
