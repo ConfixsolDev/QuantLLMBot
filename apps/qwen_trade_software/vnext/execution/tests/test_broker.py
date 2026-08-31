@@ -9,6 +9,10 @@ class FakeClient:
     def order_send(self, request): self.calls.append(dict(request)); return {"retcode": "accepted"}
 
 
+class RejectingClient:
+    def order_send(self, request): return {"retcode": 10004}
+
+
 def test_duplicate_order_is_submitted_once_and_not_filled():
     client = FakeClient()
     adapter = IdempotentBrokerAdapter(client)
@@ -26,6 +30,12 @@ def test_reused_order_id_with_changed_request_is_rejected():
     adapter.submit({"order_id": "o1", "candidate_id": "c1", "volume": 1})
     with pytest.raises(BrokerSubmissionError):
         adapter.submit({"order_id": "o1", "candidate_id": "c1", "volume": 2})
+
+
+def test_broker_rejection_is_not_recorded_as_submitted():
+    adapter = IdempotentBrokerAdapter(RejectingClient())
+    with pytest.raises(BrokerSubmissionError):
+        adapter.submit({"order_id": "o1", "candidate_id": "c1", "volume": 1})
 
 
 class FakeMT5:

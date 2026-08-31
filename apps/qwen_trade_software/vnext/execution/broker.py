@@ -42,6 +42,9 @@ class IdempotentBrokerAdapter:
         if result is None:
             raise BrokerSubmissionError("broker returned no response")
         response = dict(result) if isinstance(result, Mapping) else {"raw": result}
+        retcode = response.get("retcode")
+        if isinstance(retcode, int) and retcode not in {10008, 10009, 10010}:
+            raise BrokerSubmissionError(f"broker rejected order: retcode={retcode}")
         normalized = {"state": "SUBMITTED", "broker_response": response,
                       "order_id": str(order["order_id"]), "filled_volume": 0.0}
         record = {"fingerprint": fingerprint, "result": normalized}
