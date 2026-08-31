@@ -15,11 +15,20 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Docker is 
 $envFile = Join-Path $PSScriptRoot '.env'
 $composeArgs = @('-f', $compose)
 if (Test-Path $envFile) { $composeArgs += @('--env-file', $envFile) }
+$dbPassword = $env:POSTGRES_PASSWORD
+if (-not $dbPassword -and (Test-Path $envFile)) {
+    $passwordLine = Get-Content -LiteralPath $envFile | Where-Object {
+        $_ -match '^\s*POSTGRES_PASSWORD\s*=\s*(.+?)\s*$'
+    } | Select-Object -First 1
+    if ($passwordLine) { $dbPassword = $Matches[1] }
+}
+if (-not $env:QWEN_TIMESCALE_DSN -and -not $dbPassword) {
+    throw 'Set POSTGRES_PASSWORD (or POSTGRES_PASSWORD in deploy/.env) before activation.'
+}
+if ($dbPassword) { $env:POSTGRES_PASSWORD = $dbPassword }
 docker compose @composeArgs up -d --wait
 if ($LASTEXITCODE -ne 0) { throw 'Storage services failed to start.' }
 
-$dbPassword = $env:POSTGRES_PASSWORD
-if (-not $env:QWEN_TIMESCALE_DSN -and -not $dbPassword) { throw 'Set QWEN_TIMESCALE_DSN or POSTGRES_PASSWORD before activation.' }
 $env:QWEN_TIMESCALE_DSN = if ($env:QWEN_TIMESCALE_DSN) { $env:QWEN_TIMESCALE_DSN } else { "postgresql://quantllm:$dbPassword@127.0.0.1:5432/quantllm" }
 $env:QWEN_REDIS_URL = if ($env:QWEN_REDIS_URL) { $env:QWEN_REDIS_URL } else { 'redis://127.0.0.1:6379/0' }
 if (-not $SkipMigration) {
