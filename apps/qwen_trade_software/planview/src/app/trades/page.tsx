@@ -1,8 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchTradeJournal } from "@/lib/api";
+import { AppNav } from "@/components/AppNav";
+import { STRATEGY_CATALOG, strategyLabel } from "@/lib/strategies";
 import type { TradeJournalResponse, TradeJournalRow } from "@/lib/tradeJournal";
 
 const money = (value?: number | null) =>
@@ -202,6 +203,7 @@ function TradeCard({ trade }: { trade: TradeJournalRow }) {
 export default function TradesPage() {
   const [data, setData] = useState<TradeJournalResponse | null>(null);
   const [filter, setFilter] = useState<"all" | "win" | "loss">("all");
+  const [strategyFilter, setStrategyFilter] = useState("all");
   const [selectedDate, setSelectedDate] = useState(localDateValue);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
@@ -217,23 +219,25 @@ export default function TradesPage() {
     if (!trade.exit_time_utc) return false;
     return localDateValue(new Date(trade.exit_time_utc)) === selectedDate;
   }), [data, selectedDate]);
-  const trades = useMemo(() => dateTrades.filter(t => filter === "all" || t.result === filter), [dateTrades, filter]);
+  const strategyTrades = useMemo(() => dateTrades.filter((trade) => strategyFilter === "all" || (trade.strategy_id || "unassigned") === strategyFilter), [dateTrades, strategyFilter]);
+  const trades = useMemo(() => strategyTrades.filter(t => filter === "all" || t.result === filter), [strategyTrades, filter]);
   const stats = useMemo(() => {
-    const all = dateTrades; const net = all.reduce((n, t) => n + (t.net_pnl || 0), 0);
+    const all = strategyTrades; const net = all.reduce((n, t) => n + (t.net_pnl || 0), 0);
     const wins = all.filter(t => t.result === "win").length;
     return { count: all.length, net, wins, losses: all.filter(t => t.result === "loss").length, winRate: all.length ? wins / all.length * 100 : 0 };
-  }, [dateTrades]);
+  }, [strategyTrades]);
 
   return <main className="mx-auto min-h-screen max-w-7xl space-y-5 p-4 md:p-6">
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div><div className="text-xs font-semibold uppercase tracking-[.2em] text-gold">Trading memory</div><h1 className="mt-1 text-2xl font-bold">Trade Analysis Journal</h1><p className="mt-1 text-sm text-slate-400">Broker facts, deterministic findings, and asynchronous Qwen review—kept visibly separate.</p></div>
-      <nav className="flex gap-2"><Link href="/ideas" className="rounded border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800">Trade ideas</Link><Link href="/" className="rounded border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800">Chart / plan</Link></nav>
+      <AppNav />
     </header>
     <div className="text-sm text-slate-400">Showing closed trades for <span className="font-medium text-slate-200">{displayDate(selectedDate)}</span></div>
     <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5"><Metric label="Closed trades" value={String(stats.count)} /><Metric label="Net P&L" value={money(stats.net)} tone={stats.net >= 0 ? "text-emerald-300" : "text-rose-300"} /><Metric label="Wins" value={String(stats.wins)} tone="text-emerald-300" /><Metric label="Losses" value={String(stats.losses)} tone="text-rose-300" /><Metric label="Win rate" value={`${stats.winRate.toFixed(1)}%`} /></section>
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div className="flex gap-2">{(["all", "win", "loss"] as const).map(x => <button key={x} onClick={() => setFilter(x)} className={`rounded px-3 py-1.5 text-sm capitalize ${filter === x ? "bg-gold text-ink" : "bg-slate-800 text-slate-300"}`}>{x}</button>)}</div>
       <div className="flex items-center gap-2">
+        <select value={strategyFilter} onChange={(event) => setStrategyFilter(event.target.value)} className="rounded border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-100" aria-label="Filter by strategy"><option value="all">All strategies</option><option value="unassigned">Unassigned / legacy</option>{STRATEGY_CATALOG.map((strategy) => <option key={strategy.strategy_id} value={strategy.strategy_id}>{strategyLabel(strategy.strategy_id)}</option>)}</select>
         <input
           type="date"
           value={selectedDate}

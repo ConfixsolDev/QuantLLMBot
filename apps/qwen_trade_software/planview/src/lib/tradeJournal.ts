@@ -57,6 +57,10 @@ export interface EntryEvidence {
 
 export interface TradeJournalRow {
   proposal_id: string;
+  strategy_id?: string | null;
+  strategy_version?: string | null;
+  magic_number?: number | null;
+  comment?: string | null;
   execution_id?: string | null;
   symbol: string;
   side: string;

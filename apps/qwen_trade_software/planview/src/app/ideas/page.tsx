@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchLifecycle, fetchSnapshot, fetchTradeIdeas } from "@/lib/api";
 import {
@@ -10,6 +9,7 @@ import {
 import type { LifecycleResponse, TradeIdeaRow, TradeIdeasResponse } from "@/lib/tradeIdeas";
 import type { Snapshot } from "@/lib/types";
 import { describeTrigger, levelName } from "@/lib/translate";
+import { AppNav } from "@/components/AppNav";
 
 function fmt(n: number | null | undefined, digits = 2): string {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";
@@ -194,12 +194,7 @@ export default function TradeIdeasPage() {
               : "Including 0-confidence plans. Check the box at the top to hide them again."}
           </p>
         </div>
-        <Link
-          href="/"
-          className="rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
-        >
-          ← Chart / plan
-        </Link>
+        <AppNav />
       </header>
 
       <div className="flex flex-wrap items-center gap-3 text-sm">

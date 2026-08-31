@@ -32,6 +32,9 @@ export type TradeIdeaOutcome = {
 
 export type TradeIdeaRow = {
   proposal_id: string;
+  strategy_id?: string | null;
+  strategy_version?: string | null;
+  magic_number?: number | null;
   created_at_utc?: string | null;
   symbol?: string | null;
   price?: number | null;
