@@ -33,6 +33,8 @@ class VNextService:
                  risk_provider: RiskProvider | None = None,
                  order_provider: OrderProvider | None = None,
                  qwen_client: Any = None, broker: Any = None) -> None:
+        if not isinstance(strategy, StrategySpec):
+            raise TypeError("V2 service requires an explicit StrategySpec")
         self.cycle, self.strategy = cycle, strategy
         self.candidate_provider = candidate_provider
         self.strategy_program = strategy_program

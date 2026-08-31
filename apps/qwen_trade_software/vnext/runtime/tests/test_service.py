@@ -39,6 +39,17 @@ def test_service_without_candidate_provider_is_no_trade():
     assert result.evaluation is None and result.submitted is None
 
 
+def test_service_rejects_missing_strategy_before_runtime():
+    from vnext.storage.persistence import VNextPersistence
+    p = VNextPersistence(ledger=Ledger(), projection=Projection(), working_memory=Memory())
+    try:
+        VNextService(cycle=LiveVNextCycle(pair="XAUUSD", source=Source(), persistence=p), strategy=None)
+    except TypeError as exc:
+        assert "StrategySpec" in str(exc)
+    else:
+        raise AssertionError("V2 service must reject a missing strategy")
+
+
 def test_service_does_not_submit_without_order_provider():
     from vnext.storage.persistence import VNextPersistence
     p = VNextPersistence(ledger=Ledger(), projection=Projection(), working_memory=Memory())
