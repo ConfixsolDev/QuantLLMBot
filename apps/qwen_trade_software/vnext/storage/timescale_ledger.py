@@ -65,14 +65,15 @@ class TimescaleEventLedger:
                 "(event_id,event_type,pair,observed_at_utc,confirmed_at_utc," 
                 "effective_from_utc,invalidated_at_utc,source,schema_version," 
                 "content_hash,payload_json) VALUES "
-                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                "(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb) "
+                "ON CONFLICT (event_id, observed_at_utc) DO NOTHING",
                 (event.event_id, event.event_type, event.pair,
                  event.observed_at_utc, event.confirmed_at_utc,
                  event.effective_from_utc, event.invalidated_at_utc,
                  event.source, event.schema_version, event.content_hash,
                  json.dumps(dict(event.payload), sort_keys=True, default=str)),
             )
-            return True
+            return cursor.rowcount == 1
 
     def count(self, *, pair: str | None = None) -> int:
         with self._connect() as connection, connection.cursor() as cursor:
