@@ -97,31 +97,51 @@ class ZoneEngine:
         rows.sort(key=lambda bar: bar.start_utc)
         if not rows:
             return []
-        # The initial clean-room implementation uses an auditable median body
-        # core. Density and rejection distributions remain explicit so later
-        # R&D can replace the estimator without changing the contract.
-        body_lows = [min(bar.open, bar.close) for bar in rows]
-        body_highs = [max(bar.open, bar.close) for bar in rows]
-        lower, upper = median(body_lows), median(body_highs)
-        if upper <= lower:
-            width = volatility or max(rows[-1].high - rows[-1].low, 1e-9)
-            lower, upper = lower - width / 2, upper + width / 2
-        upper_rejections = [max(0.0, bar.high - upper) for bar in rows]
-        lower_rejections = [max(0.0, lower - bar.low) for bar in rows]
-        zone_hash = hashlib.sha256(
-            f"{pair}|{timeframe}|{rows[0].start_utc.isoformat()}|{rows[-1].end_utc.isoformat()}".encode()
-        ).hexdigest()[:16]
-        density = sum(lower <= min(bar.open, bar.close) and max(bar.open, bar.close) <= upper for bar in rows) / len(rows)
-        return [Zone(
-            pair=pair, timeframe=timeframe, zone_id=f"{timeframe}-{zone_hash}",
-            lower=lower, upper=upper, acceptance_density=round(density, 6),
-            upper_rejection_p90=self._quantile(upper_rejections, 0.90),
-            lower_rejection_p90=self._quantile(lower_rejections, 0.90),
-            lifecycle_state="FRESH", created_at_utc=rows[-1].end_utc,
-            algorithm_version=self.algorithm_version,
-            contributing_bars=tuple(bar.start_utc.isoformat() for bar in rows),
-            birth_context={"bar_count": len(rows), "volatility": volatility},
-        )]
+        # R&D baseline: deterministic 1D clustering of body midpoints. The
+        # tolerance is volatility-scaled, so nearby bodies form one acceptance
+        # area while separated price populations become distinct zones.
+        ranges = [max(bar.high - bar.low, 1e-9) for bar in rows]
+        tolerance = max(float(volatility or median(ranges)), 1e-9)
+        ordered = sorted(rows, key=lambda bar: (min(bar.open, bar.close) + max(bar.open, bar.close)) / 2)
+        clusters: list[list[Bar]] = []
+        for bar in ordered:
+            midpoint = (min(bar.open, bar.close) + max(bar.open, bar.close)) / 2
+            if not clusters:
+                clusters.append([bar])
+                continue
+            prior = clusters[-1]
+            prior_midpoint = median((min(item.open, item.close) + max(item.open, item.close)) / 2 for item in prior)
+            if midpoint - prior_midpoint <= tolerance:
+                prior.append(bar)
+            else:
+                clusters.append([bar])
+        minimum_count = max(2, len(rows) // 50)
+        selected = [cluster for cluster in clusters if len(cluster) >= minimum_count] or [rows]
+        result: list[Zone] = []
+        for index, cluster in enumerate(selected):
+            body_lows = [min(bar.open, bar.close) for bar in cluster]
+            body_highs = [max(bar.open, bar.close) for bar in cluster]
+            lower, upper = median(body_lows), median(body_highs)
+            if upper <= lower:
+                width = tolerance
+                lower, upper = lower - width / 2, upper + width / 2
+            upper_rejections = [max(0.0, bar.high - upper) for bar in cluster]
+            lower_rejections = [max(0.0, lower - bar.low) for bar in cluster]
+            zone_hash = hashlib.sha256(
+                f"{pair}|{timeframe}|{rows[0].start_utc.isoformat()}|{rows[-1].end_utc.isoformat()}|{index}|{len(cluster)}".encode()
+            ).hexdigest()[:16]
+            density = sum(lower <= min(bar.open, bar.close) and max(bar.open, bar.close) <= upper for bar in cluster) / len(cluster)
+            result.append(Zone(
+                pair=pair, timeframe=timeframe, zone_id=f"{timeframe}-{zone_hash}",
+                lower=lower, upper=upper, acceptance_density=round(density, 6),
+                upper_rejection_p90=self._quantile(upper_rejections, 0.90),
+                lower_rejection_p90=self._quantile(lower_rejections, 0.90),
+                lifecycle_state="FRESH", created_at_utc=max(bar.end_utc for bar in cluster),
+                algorithm_version=self.algorithm_version,
+                contributing_bars=tuple(bar.start_utc.isoformat() for bar in sorted(cluster, key=lambda bar: bar.start_utc)),
+                birth_context={"bar_count": len(cluster), "volatility": volatility, "cluster_tolerance": tolerance},
+            ))
+        return result
 
     def interact(self, zone: Zone, bar: Bar, *, volatility: float | None = None) -> tuple[Zone, ZoneInteraction]:
         penetration = max(zone.lower - bar.low, bar.high - zone.upper, 0.0)

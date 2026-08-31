@@ -34,3 +34,14 @@ def test_zone_transition_rejects_invalid_jump():
     zone = ZoneEngine().discover(bars(), pair="XAUUSD", timeframe="M1")[0]
     with pytest.raises(ValueError):
         zone.transition("RECLAIMED")
+
+
+def test_zone_engine_separates_two_price_populations():
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    rows = [(10, 10.4, 9.8, 10.2), (10.1, 10.5, 9.9, 10.3),
+            (20, 20.4, 19.8, 20.2), (20.1, 20.5, 19.9, 20.3)]
+    separated = [Bar("XAUUSD", "M1", start + timedelta(minutes=i), start + timedelta(minutes=i+1), *row)
+                 for i, row in enumerate(rows)]
+    zones = ZoneEngine().discover(separated, pair="XAUUSD", timeframe="M1", volatility=.5)
+    assert len(zones) == 2
+    assert zones[0].upper < zones[1].lower
