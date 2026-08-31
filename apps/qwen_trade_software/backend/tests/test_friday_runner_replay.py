@@ -47,6 +47,13 @@ def _floor_volume(value: float, step: float = 0.01) -> float:
 def test_relaxed_runner_ladder_improves_recorded_friday_gross_pnl():
     journal = sqlite3.connect(f"file:{JOURNAL_DB.as_posix()}?mode=ro", uri=True)
     ticks = sqlite3.connect(f"file:{TICK_DB.as_posix()}?mode=ro", uri=True)
+    tick_count = ticks.execute(
+        "SELECT COUNT(*) FROM ticks WHERE symbol='XAUUSDr' "
+        "AND time_utc>=? AND time_utc<?",
+        ("2026-08-21T00:00:00Z", "2026-08-22T00:00:00Z"),
+    ).fetchone()[0]
+    if not tick_count:
+        pytest.skip("recorded Friday tick evidence is unavailable in the local fixture")
     trades = journal.execute(
         "SELECT side,entry_price,exit_price,volume,gross_pnl,"
         "entry_time_utc,exit_time_utc FROM trade_journal "
