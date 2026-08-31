@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from vnext.data.bars import Bar, TimeframeBuilder
 from vnext.intelligence.indicators.evidence import indicator_evidence
@@ -46,11 +46,13 @@ class Evaluation:
 class VNextEngine:
     def __init__(self, *, pair: str, frontier: TimeFrontier,
                  broker: BrokerAdapter | None = None,
-                 ledger: EventLedger | None = None) -> None:
+                 ledger: EventLedger | None = None,
+                 event_sink: Callable[[list[EventEnvelope]], int] | None = None) -> None:
         self.pair = pair
         self.frontier = frontier
         self.broker = broker
         self.ledger = ledger
+        self.event_sink = event_sink
         self.zone_engine = ZoneEngine()
         self.structure_engine = StructureEngine()
         self.narrator = StoryNarrator()
@@ -121,13 +123,17 @@ class VNextEngine:
         return result
 
     def _record(self, event_type: str, payload: dict[str, Any]) -> None:
-        if self.ledger is None:
+        if self.ledger is None and self.event_sink is None:
             return
         import hashlib
         raw = f"{self.pair}|{event_type}|{self.frontier.as_of_utc.isoformat()}|{payload}"
         event = EventEnvelope(hashlib.sha256(raw.encode()).hexdigest()[:24], event_type,
                               self.pair, self.frontier.as_of_utc, payload, "vnext_runtime")
-        self.ledger.append(event, frontier=self.frontier)
+        if self.event_sink is not None:
+            self.event_sink([event])
+        else:
+            assert self.ledger is not None
+            self.ledger.append(event, frontier=self.frontier)
 
     @staticmethod
     def recover(*, broker_positions: list[Mapping[str, Any]], ledger_positions: list[Mapping[str, Any]],
