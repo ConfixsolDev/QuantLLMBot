@@ -269,6 +269,14 @@ class ConfigurationLedger:
 
     def save(self, path: Path | str) -> None:
         path = Path(path)
+        try:
+            from runtime_store import live_runtime_store
+            store = live_runtime_store()
+            if store is not None:
+                store.put_state(path, self.to_dict(), owner="configuration_ledger")
+                return
+        except Exception:
+            pass
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_suffix(path.suffix + ".tmp")
         temp.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
@@ -277,6 +285,15 @@ class ConfigurationLedger:
     @classmethod
     def load(cls, path: Path | str) -> "ConfigurationLedger":
         path = Path(path)
+        try:
+            from runtime_store import live_runtime_store
+            store = live_runtime_store()
+            if store is not None:
+                value = store.get_state(path)
+                if isinstance(value, dict):
+                    return cls.from_dict(value)
+        except Exception:
+            pass
         if not path.exists():
             return cls()
         try:

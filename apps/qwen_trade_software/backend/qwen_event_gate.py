@@ -21,6 +21,15 @@ class QwenEventGate:
 
     def _load(self) -> dict:
         try:
+            from runtime_store import live_runtime_store
+            store = live_runtime_store()
+            if store is not None:
+                value = store.get_state(self.path)
+                if isinstance(value, dict):
+                    return value
+        except Exception:
+            pass
+        try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
             return value if isinstance(value, dict) else {}
         except (OSError, ValueError):
@@ -42,6 +51,14 @@ class QwenEventGate:
     def record_call(self, current: str, reason: str, now: float | None = None) -> None:
         now = time.time() if now is None else float(now)
         self.state = {"fingerprint": current, "called_at_epoch": now, "reason": reason}
+        try:
+            from runtime_store import live_runtime_store
+            store = live_runtime_store()
+            if store is not None:
+                store.put_state(self.path, self.state, owner="qwen_event_gate")
+                return
+        except Exception:
+            pass
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(json.dumps(self.state, sort_keys=True), encoding="utf-8")

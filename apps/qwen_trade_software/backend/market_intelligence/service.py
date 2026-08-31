@@ -140,14 +140,22 @@ class MarketIntelligenceService:
         worker_health = {}
         health_path = self.cache_dir / "market-memory-health.json"
         try:
-            worker_health = json.loads(health_path.read_text(encoding="utf-8"))
+            from runtime_store import live_runtime_store
+            runtime = live_runtime_store()
+            worker_health = runtime.get_state(health_path) if runtime is not None else None
+            if not worker_health:
+                worker_health = json.loads(health_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             worker_health = {"status": "unavailable"}
         graph_context = {"status": "unavailable"}
         graph_health = {"status": "unavailable"}
         graph_path = self.cache_dir / "market-graph-context.json"
         try:
-            graph_context = json.loads(graph_path.read_text(encoding="utf-8"))
+            from runtime_store import live_runtime_store
+            runtime = live_runtime_store()
+            graph_context = runtime.get_state(graph_path) if runtime is not None else None
+            if not graph_context:
+                graph_context = json.loads(graph_path.read_text(encoding="utf-8"))
             as_of = datetime.fromisoformat(
                 str(graph_context.get("as_of_utc")).replace("Z", "+00:00")
             )
@@ -158,9 +166,12 @@ class MarketIntelligenceService:
         except (OSError, ValueError):
             pass
         try:
-            graph_health = json.loads(
-                (self.cache_dir / "market-graph-health.json").read_text(encoding="utf-8")
-            )
+            health_path = self.cache_dir / "market-graph-health.json"
+            from runtime_store import live_runtime_store
+            runtime = live_runtime_store()
+            graph_health = runtime.get_state(health_path) if runtime is not None else None
+            if not graph_health:
+                graph_health = json.loads(health_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             pass
         self.last_snapshot = {

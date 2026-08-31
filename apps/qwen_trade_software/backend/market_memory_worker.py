@@ -27,12 +27,8 @@ HEALTH_FILE = APP_DIR / "cache" / "market-memory-health.json"
 
 
 def configure_logging() -> None:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.handlers.TimedRotatingFileHandler(
-        LOG_DIR / "market-memory-worker.log", when="midnight", encoding="utf-8"
-    )
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    import process_logging
+    process_logging.configure(LOG_DIR / "market-memory-worker.log", owner="market_memory")
 
 
 def write_health(
@@ -49,6 +45,14 @@ def write_health(
     bounded retries absorb reader locks. Health is diagnostic, so exhausting
     retries logs a warning and returns False instead of killing the collector.
     """
+    try:
+        from runtime_store import live_runtime_store
+        store = live_runtime_store()
+        if store is not None:
+            store.put_state(target, payload, owner="market_memory")
+            return True
+    except Exception:
+        logging.getLogger(__name__).debug("market memory runtime state publication failed", exc_info=True)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:

@@ -62,6 +62,17 @@ def clear_cooldown() -> None:
 
 def _volatility_state(now: datetime | None = None) -> dict:
     try:
+        from runtime_store import live_runtime_store
+        store = live_runtime_store()
+        if store is not None:
+            state = store.get_state(STATE_FILE)
+            if state:
+                until = datetime.fromisoformat(str(state["until_utc"]).replace("Z", "+00:00"))
+                current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+                return state if until > current else {}
+    except Exception:
+        pass
+    try:
         state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         until = datetime.fromisoformat(str(state["until_utc"]).replace("Z", "+00:00"))
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -80,6 +91,14 @@ def start_volatility_cooldown(event: dict, now: datetime | None = None) -> dict:
              "started_at_utc": current.isoformat(),
              "until_utc": (current + timedelta(seconds=VOLATILITY_COOLDOWN_SECONDS)).isoformat(),
              "event": event}
+    try:
+        from runtime_store import live_runtime_store
+        store = live_runtime_store()
+        if store is not None:
+            store.put_state(STATE_FILE, state, owner="cooldown_manager")
+            return state
+    except Exception:
+        pass
     temporary = STATE_FILE.with_suffix(".tmp")
     temporary.write_text(json.dumps(state, separators=(",", ":")), encoding="utf-8")
     os.replace(temporary, STATE_FILE)

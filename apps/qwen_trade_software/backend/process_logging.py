@@ -1,4 +1,4 @@
-"""One place that decides which log file a process writes to.
+"""One place that routes process events to durable observability storage.
 
 2026-08-11 -- why this exists
 ----------------------------
@@ -46,6 +46,44 @@ DISABLE_ENV = "QWEN_DISABLE_FILE_LOGGING"
 OWNER: str | None = None
 
 
+class TimescaleRuntimeHandler(logging.Handler):
+    """Write ordinary log records to the authoritative runtime event ledger."""
+
+    def __init__(self, owner: str) -> None:
+        super().__init__(level=logging.INFO)
+        self.owner = owner
+        self._store = None
+        self._schema_ready = False
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if self._store is None:
+                from runtime_store import RuntimeStore
+                self._store = RuntimeStore()
+            if not self._store.enabled:
+                return
+            if not self._schema_ready:
+                self._store.ensure_schema()
+                self._schema_ready = True
+            rendered = self.format(record)
+            event_name = None
+            payload = {}
+            message = record.getMessage()
+            if message.startswith("EVENT "):
+                try:
+                    payload = json.loads(message[6:])
+                    event_name = payload.get("event")
+                except (TypeError, ValueError):
+                    pass
+            self._store.append_event(owner=self.owner, level=record.levelname,
+                                     message=rendered, event_name=event_name,
+                                     payload=payload)
+        except Exception:
+            # Logging must never recursively crash a worker. The error-only
+            # file handler remains available for diagnosing a DB outage.
+            self._schema_ready = False
+
+
 def structured_event(event: str, *, level: int = logging.INFO, **fields: object) -> None:
     """Write one stable JSON event while retaining the ordinary process log.
 
@@ -67,7 +105,7 @@ def structured_event(event: str, *, level: int = logging.INFO, **fields: object)
 
 
 def configure(log_path: Path, owner: str, level: int = logging.INFO) -> logging.Handler:
-    """Point this process's root logger at `log_path`, replacing any previous.
+    """Route logs to Timescale in live mode and retain only error files.
 
     `force=True` is the whole point: it tears down handlers installed by
     modules imported earlier, so the entrypoint wins regardless of import
@@ -84,12 +122,26 @@ def configure(log_path: Path, owner: str, level: int = logging.INFO) -> logging.
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    handler = logging.handlers.TimedRotatingFileHandler(
-        filename=log_path, when="midnight", encoding="utf-8"
-    )
-    handler.suffix = "%Y-%m-%d"
-    handler.setFormatter(logging.Formatter(FORMAT))
+    live_timescale = bool(os.environ.get("QWEN_TIMESCALE_DSN")) and os.environ.get(
+        "QWEN_INTELLIGENCE_BACKEND", "sqlite").strip().lower() == "timescale"
+    if live_timescale:
+        handler: logging.Handler = TimescaleRuntimeHandler(owner)
+        handler.setFormatter(logging.Formatter(FORMAT))
+        bug_file = logging.handlers.TimedRotatingFileHandler(
+            filename=log_path, when="midnight", encoding="utf-8", delay=True
+        )
+        bug_file.suffix = "%Y-%m-%d"
+        bug_file.setLevel(logging.ERROR)
+        bug_file.setFormatter(logging.Formatter(FORMAT))
+        handlers = [handler, bug_file]
+    else:
+        handler = logging.handlers.TimedRotatingFileHandler(
+            filename=log_path, when="midnight", encoding="utf-8"
+        )
+        handler.suffix = "%Y-%m-%d"
+        handler.setFormatter(logging.Formatter(FORMAT))
+        handlers = [handler]
 
-    logging.basicConfig(level=level, handlers=[handler], force=True)
+    logging.basicConfig(level=level, handlers=handlers, force=True)
     OWNER = owner
     return handler

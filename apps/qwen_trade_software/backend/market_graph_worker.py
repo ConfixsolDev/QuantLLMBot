@@ -32,6 +32,14 @@ def configure_logging() -> None:
 
 
 def atomic_json(path: Path, payload: dict, attempts: int = 5) -> bool:
+    try:
+        from runtime_store import live_runtime_store
+        store = live_runtime_store()
+        if store is not None:
+            store.put_state(path, payload, owner="market_graph")
+            return True
+    except Exception:
+        logging.getLogger(__name__).debug("graph runtime state publication failed", exc_info=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:

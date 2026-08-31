@@ -58,6 +58,18 @@ CREATE TABLE IF NOT EXISTS trade_journal (
     source_hash TEXT NOT NULL, updated_at_utc TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS trade_journal_exit_time ON trade_journal(exit_time_utc DESC);
+CREATE TABLE IF NOT EXISTS runtime_events (
+    id BIGSERIAL NOT NULL, recorded_at_utc TIMESTAMPTZ NOT NULL,
+    owner TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL,
+    event_name TEXT, payload_json JSONB NOT NULL,
+    PRIMARY KEY (id, recorded_at_utc)
+);
+SELECT create_hypertable('runtime_events', 'recorded_at_utc', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS runtime_events_owner_time ON runtime_events(owner, recorded_at_utc DESC);
+CREATE TABLE IF NOT EXISTS runtime_state (
+    state_key TEXT PRIMARY KEY, updated_at_utc TIMESTAMPTZ NOT NULL,
+    owner TEXT NOT NULL, payload_json JSONB NOT NULL
+);
 """
 
 

@@ -211,6 +211,15 @@ def read_json_safe(path: Path, default: dict) -> dict:
     degrade gracefully, not crash a process over the other process's file.
     """
     try:
+        from runtime_store import live_runtime_store
+        store = live_runtime_store()
+        if store is not None:
+            stored = store.get_state(path)
+            if stored is not None:
+                return stored
+    except Exception:
+        logging.getLogger(__name__).debug("runtime state read failed", exc_info=True)
+    try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError, OSError):
         return json.loads(json.dumps(default))
@@ -220,6 +229,14 @@ def write_json_atomic(path: Path, data: dict) -> None:
     """Write JSON so a concurrent reader in the other process never sees a
     half-written file. Write to a temp file in the same directory, then
     rename -- rename is atomic on the same volume on Windows and POSIX."""
+    try:
+        from runtime_store import live_runtime_store
+        store = live_runtime_store()
+        if store is not None:
+            store.put_state(path, data, owner=path.stem)
+            return
+    except Exception:
+        logging.getLogger(__name__).debug("runtime state write failed", exc_info=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(
         json.dumps(data, separators=(",", ":")), encoding="utf-8"

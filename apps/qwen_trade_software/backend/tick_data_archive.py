@@ -89,6 +89,24 @@ def append_tick_record(base_name: str, record: dict, *, day: date | None = None)
     here is logged and swallowed. An unregistered base is a bug worth fixing,
     but not worth a stranded position.
     """
+    # In live mode Timescale is the sole durable event ledger.  Redis is used
+    # by RuntimeStore only for current working state; event history remains in
+    # Timescale so it is queryable and does not create large lock-prone files.
+    try:
+        from runtime_store import live_runtime_store
+        runtime = live_runtime_store()
+    except Exception:
+        runtime = None
+    if runtime is not None:
+        runtime.append_event(
+            owner=base_name,
+            level="INFO",
+            message=f"runtime event: {base_name}",
+            event_name=str(record.get("event") or base_name),
+            payload=record,
+        )
+        return
+
     line = json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n"
     day = _day(day)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
