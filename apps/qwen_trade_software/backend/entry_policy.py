@@ -449,7 +449,8 @@ def decide(
 ) -> PolicyDecision:
     """Turn an observation into a decision. Pure, deterministic, replayable.
 
-    2026-08-28: session_permitted check temporarily disabled to allow trading.
+    Session permission is a caller-supplied safety boundary and is checked
+    before any side can become ready.
     """
     ok, code, detail = validate_observation(observation, entry_cache)
     if not ok:
@@ -462,13 +463,12 @@ def decide(
             detail=str(entry_cache.get("reason") or "cache not ready"),
         )
 
-    # 2026-08-28: Temporarily disabled session check
-    # if not session_permitted:
-    #     return PolicyDecision(
-    #         status="wait",
-    #         reason_code=ReasonCode.SESSION_BLOCKED,
-    #         detail="session does not permit new entries",
-    #     )
+    if not session_permitted:
+        return PolicyDecision(
+            status="wait",
+            reason_code=ReasonCode.SESSION_BLOCKED,
+            detail="session does not permit new entries",
+        )
 
     assessments = {side: assess_side(side, observation[side]) for side in SIDES}
     eligible = [a for a in assessments.values() if a.eligible]
