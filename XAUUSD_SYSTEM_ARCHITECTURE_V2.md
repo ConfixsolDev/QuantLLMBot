@@ -190,30 +190,27 @@ state and deterministic validation remain authoritative.
 
 #### Durable intelligence storage and fast context
 
-The live intelligence ledger and its materialized projections use PostgreSQL
-with TimescaleDB as durable authority when `QWEN_INTELLIGENCE_BACKEND=timescale`
-is explicitly configured. `timescale_store.py` uses pooled, parameterized
-transactions and idempotent event IDs; `migrate_sqlite_to_timescale.py` reads
-the existing SQLite intelligence ledger read-only and can be run repeatedly.
-SQLite is retained only as a migration source or offline compatibility backend
-until parity checks pass. A failed Timescale connection is a safe halt for new
+The live intelligence ledger and all durable materialized state use PostgreSQL
+with TimescaleDB as the sole durable authority. The V2 runtime has no SQLite
+backend, fallback flag, or SQLite decision path. `timescale_store.py` uses
+pooled, parameterized transactions and idempotent event IDs;
+`migrate_sqlite_to_timescale.py` is a one-way, read-only migration utility for
+historical import only. A failed Timescale connection is a safe halt for new
 decisions, not permission to silently fall back to a stale or divergent store.
 
-Redis is an acceleration layer only. `redis_context.py` stores bounded current
-context and structure projections with a short TTL. Redis data is disposable,
-never replay authority, and never a source for risk, execution, or broker truth.
-Redis failure falls back to the durable store unless the operator explicitly
-sets `QWEN_REDIS_REQUIRED=1`, in which case startup fails closed. Cache writes
-occur only after durable projection reads/writes succeed.
+Redis is working memory only. `redis_context.py` stores bounded current context
+and market-structure projections with a short TTL for fast retrieval. Redis
+data is disposable, never replay authority, and never a source for risk,
+execution, or broker truth. Redis failure causes the affected context path to
+fail closed; it must not recreate file or SQLite persistence. Cache writes
+occur only after durable TimescaleDB writes succeed.
 
-The former `market_context.sqlite3` persistence surface has a compatible
-Timescale implementation in `timescale_context_store.py`, covering completed
+The former `market_context.sqlite3` persistence surface is replaced by
+`timescale_context_store.py`, covering completed
 and forming candles, ticks, cache objects, readiness manifests, model
-validation records, and latency records. Its source migration is
-`tools/migrate_context_sqlite_to_timescale.py`; the live context worker opts in
-with `QWEN_CONTEXT_BACKEND=timescale` only after source/target counts and
-content hashes match. The SQLite file must remain read-only rollback evidence
-until that parity check is recorded.
+validation records, and latency records. `tools/migrate_context_sqlite_to_timescale.py`
+is run before activation and records source/target counts and content hashes in
+TimescaleDB. SQLite is not opened by the live runtime after migration.
 
 The shared strategy boundary is implemented by `strategy_contract.py` and
 `strategy_runtime.py`. Each candidate carries pair, strategy ID/version, trade
@@ -238,9 +235,9 @@ calibrate confidence and patience but has no execution authority over gold.
 XAUUSD structure, mapped location, and completed XAUUSD trigger remain
 mandatory.
 
-#### Optional Neo4j temporal relationship projection
+#### Neo4j temporal relationship projection
 
-Neo4j is an optional, instrument-neutral projection of the SQLite evidence
+Neo4j is an instrument-neutral causal projection of the TimescaleDB evidence
 ledger. It organizes completed market events by instrument, timeframe, UTC
 time bucket, session phase, evidence provenance, and chronological succession
 so Python can assemble a smaller and more traceable packet for Qwen. Its
@@ -256,24 +253,23 @@ Neo4j is never the trading brain. It must not choose buy/sell/wait, invent a
 level, approve an entry, choose or change risk, submit an order, manage a
 position, or replace Qwen under any normal condition. It is not the numerical
 source of truth, a discretionary market judge, or an execution dependency.
-Qwen remains the sole discretionary judgment layer; SQLite and immutable
+Qwen remains the sole discretionary judgment layer; TimescaleDB and immutable
 source evidence remain authoritative for replayable facts, while runtime and
 broker controls retain their existing safety and execution responsibilities.
 
-The projection is populated through a transactional SQLite outbox and a
+The projection is populated from the TimescaleDB event ledger through a
 separate `market_graph_worker.py` process. Appending an intelligence event and
-enqueuing its graph projection occur in one SQLite transaction. The graph
+enqueuing its graph projection occur through durable TimescaleDB event state. The graph
 worker performs idempotent, parameterized batch writes using stable external
 IDs, records a projection watermark and bounded retry state, and can rebuild
 the entire graph from the ledger. Neo4j unavailability may make graph context
-stale or unavailable, but it must never stop MT5 collection, deterministic
-structure updates, Qwen's baseline SQLite context, order execution, trade
-protection, or broker reconciliation.
+stale or unavailable, but it must never authorize a trade or replace
+TimescaleDB context, order execution, trade protection, or broker reconciliation.
 
 The graph stores compact `MarketEvent`, `Instrument`, `Timeframe`,
 `TimeBucket`, `SessionPhase`, and `MarketEpisode` nodes plus provenance and ordering
 relationships. Candle OHLCV arrays, tick history, indicators, statistical
-results, and broker truth stay in SQLite or their existing ledgers. Parent
+results, and broker truth stay in TimescaleDB. Parent
 timeframe membership is represented through shared deterministic time buckets
 rather than materializing every possible parent-to-child candle edge. This
 keeps the model extensible to additional Forex pairs without embedding
@@ -289,22 +285,22 @@ through stable proposal or position references so later retrieval can follow
 evidence -> decision -> episode without scanning unrelated JSONL files.
 Execution start, fill, close, and skip records emit the same bounded event form
 and update episode lifecycle status and outcome references. High-frequency path
-monitor samples remain in their existing numerical logs and are deliberately
+monitor samples remain bounded TimescaleDB events and are deliberately
 excluded from Neo4j.
 
 Python owns all writes and allowlisted reads. The worker publishes a bounded,
-atomically replaced graph-context snapshot and health file; the reviewer reads
-that local snapshot instead of placing a Neo4j network call in the entry hot
+atomically replaced graph-context snapshot in Redis; the reviewer reads
+that working-memory snapshot instead of placing a Neo4j network call in the entry hot
 path. Every graph record carries an external ID, UTC event time, evidence ID,
 payload hash, schema version, and detector/source provenance. Session intervals
 carry a versioned calendar identifier so daylight-saving or calendar changes
 can be rebuilt rather than silently rewriting history.
 
-Graph promotion is shadow-first. Initial success means complete idempotent
+Graph activation requires complete idempotent
 projection, deterministic replay, bounded retrieval, correct multi-symbol
 isolation, lower evidence duplication, and acceptable projection lag. Better
 trading performance remains a separate claim requiring counterfactual Qwen
-replay and out-of-sample evaluation against the existing SQLite-only baseline.
+replay and out-of-sample evaluation against the pre-V2 baseline.
 
 Historical candle authority is convention-explicit. M1, M15, M30, and H1 retain
 the maximum broker-available completed history with tick volume, real volume,
@@ -452,12 +448,10 @@ history. Once an item survives probation it is human-locked: revision,
 retirement, deletion, or reactivation requires explicit human supervision.
 Lifecycle labels remain internal and do not bias Qwen.
 
-This compiler and memory contract is promoted shadow-first. Until its packet
-completeness, freshness, contradiction coverage, size, deterministic replay,
-and usefulness are validated, SQLite remains Qwen's baseline context path.
-Neo4j may become the primary context-memory provider only after that measured
-promotion; even then Qwen remains the sole discretionary trading brain and
-SQLite remains authoritative evidence.
+This compiler and memory contract is activated only after packet completeness,
+freshness, contradiction coverage, size, deterministic replay, and usefulness
+are validated. TimescaleDB remains authoritative evidence and Neo4j supplies
+bounded causal context; Redis supplies only disposable working memory.
 
 #### Independent Qwen intraday-observer boundary
 
@@ -496,14 +490,13 @@ and cannot run unbounded across the next completed-candle decision.
 The worker checks every ten seconds so its startup phase cannot permanently
 miss all eligible M1 windows. Lock contention and inference timeout are logged
 as distinct deferral reasons.
-The service starts in shadow mode: it generates, persists, and logs stories but
-entry and management receive only `status=shadow_only`. Promotion into their
-live prompts requires measured replay/forward validation and the explicit
-deployment flag `QWEN_INTRADAY_OBSERVER_LIVE=1`; the flag changes context
-visibility only and grants the observer no execution authority.
+The service is the active V2 path after its evidence gates pass: it generates
+and persists stories directly for entry and management context. No runtime
+shadow flag is permitted; observer output has no execution authority unless
+the deterministic candidate, risk, and OMS contracts independently pass.
 
 Every completed observer response also becomes one immutable, replay-safe
-`intraday_story` event in the authoritative SQLite intelligence ledger. The
+`intraday_story` event in the authoritative TimescaleDB intelligence ledger. The
 existing transactional outbox—never the observer itself—projects graph schema
 V3 into Neo4j. Projection creates an `IntradayStory` node linked to its
 `MarketEvent`, `MarketEpisode`, `Instrument`, and `EvidenceRef` nodes; ordered
@@ -515,18 +508,19 @@ links to it rather than creating a competing level identity.
 
 Neo4j retrieval returns the latest bounded story history by symbol and as-of
 knowledge time. The graph compiler includes only the latest compact story,
-eight confirmed swings, and four verified level reads in the shadow packet;
+eight confirmed swings, and four verified level reads in the bounded packet;
 older stories remain queryable in Neo4j without inflating every Qwen context.
 It explicitly preserves `execution_authority=false` and
-`eligible_for_live_context=false`. SQLite/outbox replay remains authoritative;
-Neo4j outage, lag, duplication, or rebuild cannot stop the observer or trading.
+`eligible_for_live_context=true` only when deterministic validation passes.
+TimescaleDB replay remains authoritative; Neo4j outage, lag, duplication, or
+rebuild cannot authorize a trade.
 Direct observer-to-Neo4j writes and model-authored Cypher remain prohibited.
 
 Observer, graph, and protection workers own distinct loopback singleton ports;
 the full restart procedure must stop all supervised worker entrypoints so an
 orphan cannot compete with its replacement. A derived H4 candle becomes
 immutable only when every expected H1 constituent for its DST-aware New York
-slot is present. Shared SQLite connections serialize reads and writes.
+slot is present. TimescaleDB transactions provide durable serialization.
 
 Operational health and content availability are separate: a connected graph
 with no observer story reports `ready_empty`; `shadow_ready` means a bounded
@@ -567,7 +561,7 @@ failed to represent. Every such event is immutable and carries
 `execution_authority=false`, `eligible_for_live_context=false`, and
 `eligible_for_training=false`. Its compact `supervised_analysis` property may
 be projected to Neo4j for explanation and website observability, while the full
-dimension payload remains in SQLite. Live graph queries and Qwen decision
+dimension payload remains in TimescaleDB. Live graph queries and Qwen decision
 packets must exclude this event type. Promotion into training or live context
 requires a separate leakage review, deterministic evaluation, and an approved
 in-place revision of this architecture.
@@ -599,13 +593,13 @@ events; the live process does not inherit the research environment's dependency
 or latency risk.
 
 The live process publishes one immutable sample per completed M5 candle to
-`structure-shadow-input-YYYY-MM-DD.jsonl`, containing the same closed bars and
+the TimescaleDB research-event ledger, containing the same closed bars and
 a frozen native direction. A separate Python 3.12/3.13 worker owns all external
 imports and records external consensus plus per-provider decisions. After three
 later completed M5 bars, it labels both native and external calls against the
 same ATR-normalized forward-price outcome and maintains a comparison summary.
-Shadow output is excluded from Qwen prompts, validators, and execution state;
-its JSONL ledger and summary state are observability and research artifacts
+Research output is excluded from Qwen prompts, validators, and execution state;
+its TimescaleDB ledger and summary state are observability and research artifacts
 only. Missing-provider health is `no_providers_available`, never a successful
 market-structure observation.
 
@@ -1694,12 +1688,16 @@ Every problem has a testable success criterion:
 
 4. **Closed candles only.** No system component makes structural decisions from intrabar data. Exception: scalp_guard can use peak_price for TP timing in range (taking profit at a reached level is timing, not a structural decision).
 
-5. **Log everything.** Every new component logs its output. Every regime transition is logged. Every guard decision logs which guard ran and why. Every displacement is logged. This data feeds the next iteration.
+5. **Persist everything operationally relevant.** Every new component emits an
+immutable operational event to TimescaleDB. Regime transitions, guard
+decisions, displacements, timings, failures, and recovery actions are queried
+from that ledger. Only bug diagnostics may be written to a local log file;
+there are no routine file logs or JSONL persistence paths.
 
 6. **No doctrine change.** core_skill.md and sop.md are extended (regime section added) but not rewritten. The 3-step entry process (context → hunt → arm) stays. The 4 exit conditions (invalidation/flip/arithmetic/time) stay. Regime detection is a new layer that informs existing decisions, not a replacement.
 
 7. **Measure against baseline.** Every phase compares against the pre-change paper trade results. If a phase makes things worse, revert and investigate before proceeding.
 
-8. **Qwen is the sole discretionary brain, not the whole implementation.** The guard, executor, regime engine, level detection, SQLite, Neo4j, and retrieval services are deterministic support components. They compute facts, provide context, enforce approved safety, and execute validated instructions; they do not compete with Qwen for normal trade judgment. Qwen receives their mechanically sound evidence and remains the main driver for entries and routine management.
+8. **Qwen is the sole discretionary brain, not the whole implementation.** The guard, executor, regime engine, level detection, TimescaleDB, Neo4j, Redis, and retrieval services are deterministic support components. They compute facts, provide context, enforce approved safety, and execute validated instructions; they do not compete with Qwen for normal trade judgment. Qwen receives their mechanically sound evidence and remains the main driver for entries and routine management.
 
 9. **Minimal model contracts.** Entry Qwen returns only directional judgment, confidence, cited evidence, ready/wait, one approved geometry-row identifier, a short reason, and bounded data requests. Runtime supplies cache epochs and expands that row into side, entry, stop, target, target mode, and volume. Trade-management Qwen runs only when exactly one Qwen-owned position is already open and may manage only that position; it never searches for, proposes, adds, averages, reverses, or opens trades.
