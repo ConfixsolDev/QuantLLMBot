@@ -69,14 +69,32 @@ class VNextEngine:
         indicators = indicator_evidence(confirmed)
         structure = {"state": "unknown", "direction": "neutral",
                      "confirmed_event_count": len(structure_events)}
-        if latest is not None:
-            structure["direction"] = "buy" if latest.close >= latest.open else "sell"
+        if structure_events:
+            latest_structure = structure_events[-1]
+            structure["direction"] = ("sell" if latest_structure.event_type == "SWING_HIGH_CONFIRMED"
+                                       else "buy" if latest_structure.event_type == "SWING_LOW_CONFIRMED"
+                                       else "neutral")
+            structure["state"] = "confirmed_swing"
+            structure["last_event_id"] = latest_structure.event_id
+        timeframe_rows = {
+            timeframe: {"direction": ("buy" if rows and rows[-1]["close"] > rows[-1]["open"]
+                                       else "sell" if rows and rows[-1]["close"] < rows[-1]["open"]
+                                       else "neutral"),
+                        "state": "confirmed_bar" if rows else "unknown"}
+            for timeframe, rows in timeframes.items()
+        }
+        relationships = tuple(
+            {"parent_timeframe": parent, "child_timeframe": child,
+             **classify_relationship(timeframe_rows[parent], timeframe_rows[child])}
+            for parent, child in zip(("D1", "H4", "H1", "M30", "M15", "M5"),
+                                     ("H4", "H1", "M30", "M15", "M5", "M1"))
+        )
         state = PairMarketState(
             self.pair, self.frontier.as_of_utc, {"status": "ready" if confirmed else "unavailable",
             "completed_bars": len(confirmed)}, timeframes,
             zones=tuple(zone.as_dict() for zone in zones), structure=structure,
             structural_events=tuple(event.as_dict() for event in structure_events),
-            mtf_relationships=(), temporal_state={}, statistics=statistics or {},
+            mtf_relationships=relationships, temporal_state={}, statistics=statistics or {},
             indicators=indicators,
         )
         self._record("PAIR_MARKET_STATE_COMPOSED", {"state_hash": state.state_hash,
