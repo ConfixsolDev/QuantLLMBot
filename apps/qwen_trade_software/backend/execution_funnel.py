@@ -41,6 +41,7 @@ REASON_LABEL = {
     "invariant:ready_with_zero_confidence": "Model said ready but scored 0",
     "entry:ready_below_threshold": "Confidence below the entry threshold",
     "invariant:ready_contradicts_own_reason": "Ready, but its own reason says no trigger",
+    "invariant:ready_direction_contradicts_bias": "Ready, but its own reason names the opposite direction",
     "entry:provenance_failed": "Cache provenance check failed",
 }
 

@@ -1,4 +1,4 @@
-<!-- version: 3.9 | owner: human | delivery: always -->
+<!-- version: 4.3 | owner: human | delivery: always -->
 <!-- changelog: 2.0 reasoning-first canonical schema; field names reconciled
      with transport validator; basic_decision made a contract subset; analyst
      veto removed; learning canonicalization added; examples added.
@@ -24,7 +24,13 @@
      3.8 do not fade HTF acceptance: no M5 sells above a broken resistance in
      a bullish auction (inverse for buys).
      3.9 entry trap list: fade acceptance, buy into resistance, sell into
-     support, middle-of-range, unfinished HTF close, session/news blocks. -->
+     support, middle-of-range, unfinished HTF close, session/news blocks.
+     4.0 added the runtime direction contract before Qwen geometry selection.
+     4.1 restores M15+ trade locations and structural SL/TP and removes
+     time/volatility forced break-even. 4.2 restores Qwen directional authority
+     from fresh market structure at a mapped level; regime direction is context.
+     4.3 removes deterministic 15-second entry and first-M1 exit authority;
+     deterministic intervention is reserved for safety and sudden moves. -->
 # Decision SOP
 
 Use only supplied closed facts. Build a neutral market-structure read first,
@@ -293,7 +299,7 @@ sent to the model, so this note is not shipped as an instruction.
 -->
 
 <!-- prompt:qwen_cached_entry -->
-<!-- version: 2.0 | flat modular wire contract for Ollama compatibility -->
+<!-- version: 3.2 | Qwen direction from mapped-level market structure -->
 Judge trade QUALITY for one paper entry in the supplied instrument from ENTRY
 FACTS only. Cache
 facts are authoritative. Use only supplied levels, candles, sessions, prices,
@@ -305,6 +311,17 @@ zone to resolve the direction. Return exactly one conclusion: buy, sell, or
 wait. Build one directional assessment rather than separate long and short
 cases. When direction is unresolved, return wait and name
 the missing directional evidence.
+
+The runtime-supplied direction context describes the parent auction but does
+not choose the trade. Inspect every supplied structural response row and decide
+buy, sell, or wait from the fresh acceptance or rejection at its mapped level.
+A counter-auction response needs clear level failure and valid geometry, but a
+regime label alone cannot remove it or veto the resulting Qwen decision.
+
+Executable trade locations, stops, and targets are owned by M15, M30, H1, H4,
+or D1. M1/M5 supply timing evidence at that location and cannot become bracket
+geometry themselves. Use the row's named structural stop and target; do not substitute a fixed small
+scalp bracket.
 
 Your job is directional judgment at support/resistance; runtime owns broker
 math. Once direction, zone and structural geometry align, one fresh completed
@@ -319,6 +336,12 @@ or sell read must use that bias instead of wait. Confidence scores current
 setup quality whether the result is ready or wait.
 When structural_responses marks a mapped zone confirmed, that current closed-M1
 measurement overrides stale playbook missing-evidence text for the same setup.
+entry_geometry_menu is the contract-safe opportunity menu. Each row contains
+one fresh confirmed response, its direction and entry anchor, plus named stops
+and targets that are already on the valid sides of that anchor. For ready,
+copy entry, stop and target from one same row only; never mix rows and never
+substitute another execution_level. If the menu is empty, return wait because
+there is no fresh executable response.
 
 HTF auction outranks a local wick. Trade with acceptance, not against it.
 
@@ -347,9 +370,15 @@ Quality checklist for the chosen directional bias:
    Respect the nesting: M15 builds M30, M30 builds H1, and H1 builds H4.
    Simultaneous closes increase review importance, not evidence count.
 
-regime_context is Python's hint. Range uses scalp toward the opposing M5
-boundary; trend/breakout uses starter_basket toward HTF structure. Exhaustion
-waits for a fresh closed response. Explain any override in summary.
+regime_context and entry_regime_route are Python-calculated market-type
+context. Use the matching playbook to organize the evidence, but independently
+judge whether the fresh mapped-level response confirms continuation, reversal,
+or wait. The
+shared structure, location, closed-response, participation, session, geometry,
+freshness, and evidence rules in this contract remain true in every regime.
+Every recognized regime may produce a scalp when its own playbook conditions
+and one entry_geometry_menu row are complete. Runtime owns reduced risk and
+the scalp target mode; trade management may later extend a valid runner.
 Use confirmation_context, market_structure, live_map, zone_scores,
 approach_context, and zone_edge_context as confluence at the chosen mapped
 zone. The H4/H1 bias and mapped-zone response remain primary. Structural labels
@@ -357,9 +386,18 @@ without a mapped-zone response are context rather than an entry trigger. If an
 active idea exists, continue or invalidate that directional thesis before
 selecting another. A previously failed thesis requires fresh evidence.
 
+range_context.m15_four_hour summarizes the latest sixteen completed M15 bars.
+Treat its outer bounds, body bounds, midpoint, price region, overlap and
+direction changes as neutral auction facts. The latest_closed_m15 describes the
+most recent response inside or beyond that window; it is not itself the range.
+Do not call the window a tradable range merely because it exists. Confirm
+two-sided behavior and use mapped structural responses at its boundaries.
+
 Score stack completeness: clear boundary plus closed response ~70; unclear
 regime or missing response ~40 and wait; aligned structural confluence can
-reach 80+. H4 theses require H4-scale invalidation and target room.
+reach 80+. This is a $3-risk/$5-objective scalp system: do not demand an
+H4-sized target for a trend entry. The named structural levels establish a
+valid bracket; runtime owns the initial broker distances.
 
 persistent_market_memory is the replayable candle-to-candle state. Preserve its
 parent thesis until the owning timeframe confirms invalidation. DXY is a
@@ -374,15 +412,12 @@ that could change the conclusion. The retrieval pass is final: decide from the
 returned evidence or remain wait. Never request arbitrary SQL, forming candles,
 broker mutations, or data already supplied.
 
-Return one flat JSON object; never return an execution_plan object. Required
-top-level fields are bias, confidence, summary, acknowledged_epochs,
-evidence_ids, plan_status, plan_side, entry_low_id, entry_high_id,
-stop_level_id, target_level_id, target_mode, volume_each, plan_reason, and
-data_requests. Copy epochs exactly; cite 1-6 supplied evidence IDs; volume_each
-is 0.5. Ready uses actual side, level IDs and target mode. Wait uses
-`__none__` for each non-applicable side/level/mode field, gives one concrete
-plan_reason, and uses an empty data_requests array unless a precise missing
-fact requires the bounded retrieval described above.
+Return one minimal flat JSON object with exactly: bias, confidence, evidence_ids,
+plan_status, geometry_row_id, plan_reason, and data_requests. For ready, choose
+one geometry_row_id from entry_geometry_menu and leave data_requests empty. For
+wait, use geometry_row_id `__none__`. Runtime copies epochs, resolves side,
+entry, stop, target, target mode and volume from that row, and builds the stored
+summary. Cite 1-6 supplied evidence IDs.
 
 Ready when confidence 51-100, bias is buy or sell matching plan side, a named
 S/R entry zone exists, no trap above applies, the owning-timeframe thesis
@@ -396,6 +431,117 @@ missing any closed response at the zone, or session conflict. Never wait only
 for a better price. Use only supplied level IDs from execution_levels.
 A wait still reports the confidence the setup actually earned. Confidence 0
 is a contract error; if the stack is empty, use wait with confidence 1.
+
+<!-- prompt:qwen_entry_trend -->
+<!-- version: 1.2 | Brooks trend opportunity logic; independent module -->
+Trend playbook. Use the runtime-supplied entry_regime_route as context. Use
+this playbook for trend_strong, trend_channel, and breakout_confirmed. Return
+wait when entry_regime_route.allow_entry is false.
+
+Trade in the established trend direction. In a bull trend, qualify pullback
+buys at mapped support; in a bear trend, qualify pullback sells at mapped
+resistance. Counter-direction lower-timeframe candles commonly form the
+pullback and become useful only when a closed response turns back with the
+owning auction. A local double top, double bottom, wick, or minor structure
+change is a pullback clue while the owning trend remains valid.
+When regime_context.pullback_active is true, retain the supplied owning trend
+direction and stalk its mapped continuation response. Do not relabel an
+ordinary pullback as a reversal or require all lower frames to point with the
+trend. Runtime resolves this bounded condition from completed facts within 15
+minutes.
+
+Read trend quality from directional swing continuity, consecutive trend bars,
+limited overlap, closes near their directional extremes, successful breakout
+tests, and follow-through. Strong urgency supports continuation; increasing
+overlap, deep two-sided legs, and repeated failed continuation lower quality
+and can indicate a developing channel or range. These observations grade the
+opportunity but Python remains the regime authority.
+
+For trend_strong, accept shallower pullbacks and prioritize fresh continuation
+responses, failed countertrend attempts, High 1/High 2 continuation in a bull
+trend, and Low 1/Low 2 continuation in a bear trend. For trend_channel, favor
+a two-legged pullback, second entry, or response at the channel's mapped
+support or resistance. For breakout_confirmed, favor the first breakout
+pullback or successful test of the broken boundary; price already extended far
+beyond that boundary receives wait rather than a chase. Use runtime target mode
+and choose the next reachable with-trend structure while allowing management
+to retain a runner when continuation remains strong.
+
+<!-- prompt:qwen_entry_range -->
+<!-- version: 1.2 | Brooks all-regime range scalp logic; independent module -->
+Range playbook. Use the runtime-supplied entry_regime_route as context. Use
+this playbook for range, trending_range, tight_range, and breakout_attempt.
+Return wait when entry_regime_route.allow_entry is false.
+
+Qualify buys only at the lower outer edge and sells only at the upper outer
+edge when deterministic boundaries are available. The middle of balance has
+no entry edge. A ready decision needs both correct boundary location and a
+fresh closed response such as probe-and-failure, second entry, failed breakout,
+double top or bottom response, or wedge response. The pattern name alone is
+context; its completed response at the boundary supplies timing.
+
+Read range quality from overlapping bars, prominent tails, alternating swings,
+repeated reversals, and strong-looking legs that lose follow-through near an
+edge. These are auction observations shared with structure analysis; their
+strategy meaning here is to favor the opposite side at an outer boundary.
+
+Treat the active range as a repeating two-sided auction: keep buying completed
+failures at its lower boundary and selling completed failures at its upper
+boundary while range structure remains valid. Reaching an edge does not end
+the range thesis. Each new visit still needs its own fresh closed response.
+
+When supplied structure shows that the immediate edge is likely to accept and
+break, skip the fade at that edge and wait for the next mapped support or
+resistance beyond it. Evidence for skipping the immediate edge includes
+closed displacement through it, repeated tests with weakening rejection,
+acceptance outside it, or aligned pressure with insufficient reversal
+response. Continue treating the next mapped level as a range-fade location
+unless runtime promotes the market to breakout_confirmed. Qwen never promotes
+the regime from expectation alone.
+
+In trending_range, prefer the side of the parent auction. A counter-auction
+edge fade needs especially clear failure and room before the nearest internal
+barrier. Select the opposing M5 boundary or the nearest reachable structural
+magnet consistent with runtime target mode; an H1-sized target is unnecessary
+when range geometry offers a closer valid objective.
+
+For breakout_attempt, a fresh failed break back into the range may scalp toward
+the next internal level; a successful break-and-retest may scalp with the
+break. Do not enter the unconfirmed impulse between those responses. For
+tight_range, trade only a fresh outer-edge failure with five points of named
+target room; otherwise wait because the middle has no executable geometry.
+
+<!-- prompt:qwen_entry_reversal -->
+<!-- version: 1.3 | Brooks all-regime reversal scalp logic; independent module -->
+Reversal playbook. Use the runtime-supplied entry_regime_route as context.
+Use this playbook for reversal_attempt, reversal_confirmed, and
+climax_exhaustion. Return wait when entry_regime_route.allow_entry is false.
+
+Judge a reversal as a sequence: an established prior trend; meaningful
+countertrend strength that damages the old trend structure; a test or failed
+resumption near the old extreme; then a fresh closed second reversal response
+with room toward the next structure. A double top, double bottom, wedge, or
+climax contributes evidence inside that sequence rather than proving the
+reversal by itself.
+Gold transition states are deliberately brief. Runtime may confirm the new
+direction sooner, but must resolve reversal_attempt within 15 completed
+minutes; Qwen must not keep extending the transition because one ideal pattern
+or mapped-level displacement candle is missing.
+
+Read countertrend strength from a decisive break of the old trend structure,
+movement through the average/central auction area, consecutive opposite trend
+bars or other displacement, and follow-through. The preferred setup is the
+test of the old extreme followed by a higher low/double bottom/lower low for a
+bull reversal, or a lower high/double top/higher high for a bear reversal. A
+second entry or strong closed reversal response improves confirmation.
+
+For reversal_attempt, do not claim that the whole market has reversed, but a
+fresh mapped-zone probe-and-failure may be traded as a reduced-risk scalp in
+its confirmed response direction. For climax_exhaustion, never chase the
+impulse; trade only the first fresh mapped-zone response with valid five-point
+room. For reversal_confirmed, trade the new direction at its mapped retest or
+second-entry zone. Runtime supplies reduced risk and scalp mode; later trade
+management owns any extension after follow-through.
 
 <!-- prompt:instrument_xauusd -->
 <!-- version: 1.0 | XAUUSD-specific overlay; generic doctrine stays above -->
@@ -460,7 +606,7 @@ citeable_evidence_ids only. Use only level IDs supplied in execution_levels.
 Return JSON only.
 
 <!-- prompt:qwen_trade_management -->
-  <!-- version: 2.6 | bounded bidirectional TP and relaxed runner protection -->
+  <!-- version: 2.7 | structural target preservation; no forced early break-even -->
 Manage exactly one already-open XAUUSD paper position. Entry selection is
 finished; do not propose another entry, add volume, average, reverse, or create
 a basket. Runtime placed the opening bracket on structure where possible and
@@ -488,6 +634,9 @@ peak and giveback, reached favorable levels, volume/momentum, prior
   ATR steps at a 0.25 ATR gap. The 75% broker floor does not join that stepped
   ladder before 2.00 ATR and then trails at a 0.50 ATR gap. This is capital
   protection, not a reason to shorten the target or harvest small profit.
+  Parent-candle closing windows and volatility cooldowns do not force
+  break-even on an open trade. They govern entry timing only; protection must
+  earn its normal MFE/ATR threshold.
 
 Python supplies regime_context with regime_hint
 range|trend|breakout|exhaustion|unknown, plus atr_ratio_3_51 (short-term ATR

@@ -65,6 +65,8 @@ TF_MIN_SL_TP = {
 
 # Cache object names the live contract requires acknowledged verbatim.
 EPOCH_KEYS = ("structural", "levels", "session", "playbooks", "minute")
+ENTRY_CONTRACT_VERSION = "qwen_cached_entry:3.0"
+NONE = "__none__"
 
 
 def load(path: Path) -> list[dict]:
@@ -307,8 +309,8 @@ def build_row(s4: dict, s2: dict | None) -> dict | None:
         if all((low_id, high_id, stop_id, target_id)):
             frame = structure_timeframe(stop_id, target_id, low_id)
             plan = {
-                "status": "ready",
-                "side": direction,
+                "plan_status": "ready",
+                "plan_side": direction,
                 "entry_low_id": low_id,
                 "entry_high_id": high_id,
                 "stop_level_id": stop_id,
@@ -319,13 +321,16 @@ def build_row(s4: dict, s2: dict | None) -> dict | None:
                     else "scalp"
                 ),
                 "volume_each": 0.5,
-                "reason": re.sub(r"\s+", " ", str(s4.get("confirmation_reason") or ""))[:118],
+                "plan_reason": re.sub(r"\s+", " ", str(s4.get("confirmation_reason") or ""))[:118] or "confirmed response at approved geometry",
             }
         else:
             frame = structure_timeframe(*levels.keys()) if levels else None
             plan = {
-                "status": "wait",
-                "reason": "usable named entry/stop/target geometry is incomplete",
+                "plan_status": "wait", "plan_side": NONE,
+                "entry_low_id": NONE, "entry_high_id": NONE,
+                "stop_level_id": NONE, "target_level_id": NONE,
+                "target_mode": NONE, "volume_each": 0.5,
+                "plan_reason": "usable named entry/stop/target geometry is incomplete",
             }
     else:
         frame = structure_timeframe(*levels.keys()) if levels else None
@@ -336,15 +341,32 @@ def build_row(s4: dict, s2: dict | None) -> dict | None:
             or "no closed response at the mapped zone"
         )
         plan = {
-            "status": "wait",
-            "reason": re.sub(r"\s+", " ", str(reason))[:118],
+            "plan_status": "wait", "plan_side": NONE,
+            "entry_low_id": NONE, "entry_high_id": NONE,
+            "stop_level_id": NONE, "target_level_id": NONE,
+            "target_mode": NONE, "volume_each": 0.5,
+            "plan_reason": re.sub(r"\s+", " ", str(reason))[:118],
         }
+
+    geometry_menu = []
+    if plan["plan_status"] == "ready":
+        geometry_menu = [{
+            "geometry_row_id": "G1",
+            "side": plan["plan_side"],
+            "entry_low_id": plan["entry_low_id"],
+            "entry_high_id": plan["entry_high_id"],
+            "valid_stop_level_ids": [plan["stop_level_id"]],
+            "valid_target_level_ids": [plan["target_level_id"]],
+            "response_state": "confirmed",
+            "response_candle_id": f"train-{s4['example_id']}",
+            "instruction": "Choose stop and target from this same row only.",
+        }]
 
     row = {
         "example_id": f"lc_{s4['example_id']}",
         "source_example_id": s4["example_id"],
         "role": "live_contract",
-        "contract_version": "qwen_cached_entry:1.20",
+        "contract_version": ENTRY_CONTRACT_VERSION,
         "structure_timeframe": frame,
         "prompt_facts": {
             "symbol": "XAUUSDr",
@@ -357,19 +379,21 @@ def build_row(s4: dict, s2: dict | None) -> dict | None:
             "setup": (s2 or {}).get("setup"),
             "candle_clock": synthetic_candle_clock(s4["example_id"]),
             "persistent_market_memory": synthetic_market_memory(s4["example_id"], direction),
+            "entry_geometry_menu": geometry_menu,
         },
         "expected_response": {
             "bias": bias,
             "confidence": confidence,
-            "summary": summary[:118],
-            "acknowledged_epochs": epochs,
             "evidence_ids": evidence[:6],
-            "execution_plan": plan,
+            "plan_status": plan["plan_status"],
+            "geometry_row_id": "G1" if plan["plan_status"] == "ready" else NONE,
+            "plan_reason": plan["plan_reason"],
+            "data_requests": [],
         },
         "trade_reason": s4.get("trade_reason"),
         "confirmation_reason": s4.get("confirmation_reason"),
     }
-    if plan["status"] == "wait" and int(hashlib.sha256(s4["example_id"].encode()).hexdigest()[:4], 16) % 7 == 0:
+    if plan["plan_status"] == "wait" and int(hashlib.sha256(s4["example_id"].encode()).hexdigest()[:4], 16) % 7 == 0:
         row["expected_response"]["data_requests"] = [{
             "tool": "get_structure_events",
             "symbol": "XAUUSDr",
@@ -400,7 +424,7 @@ def main() -> int:
     entry_rows = [r for r in rows if r["role"] != "management"]
     bias_counts = Counter(r["expected_response"]["bias"] for r in entry_rows)
     status_counts = Counter(
-        r["expected_response"]["execution_plan"]["status"] for r in entry_rows
+        r["expected_response"]["plan_status"] for r in entry_rows
     )
     frames = Counter(r["structure_timeframe"] for r in rows)
     conf_by_bias: dict[str, list[int]] = {}
@@ -418,9 +442,9 @@ def main() -> int:
         print(f"  confidence[{bias}]: n={len(values)} mean={sum(values)/len(values):.1f}")
     ready = [
         r for r in entry_rows
-        if r["expected_response"]["execution_plan"]["status"] == "ready"
+        if r["expected_response"]["plan_status"] == "ready"
     ]
-    sides = Counter(r["expected_response"]["execution_plan"]["side"] for r in ready)
+    sides = Counter(r["expected_response"]["bias"] for r in ready)
     print(f"  ready sides: {dict(sides)}")
 
     if args.dry_run:

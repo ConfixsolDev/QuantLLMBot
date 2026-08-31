@@ -417,6 +417,105 @@ def test_wait_status_is_left_alone():
     assert ep.check_ready_reason_contradiction(review) is None
 
 
+# --- ready that contradicts its own DIRECTION --------------------------------
+
+def test_ready_buy_with_bearish_reason_is_blocked():
+    """Exact 2026-08-28 live incident: paper-20260828T083558-8499f6ce executed
+    a BUY at 4605-4610 while its reason read "Live bearish sequence into
+    4571.395" -- a bearish narrative naming a target 34 points below entry.
+    entry_validation_failures was empty; nothing checked direction agreement.
+    """
+    review = {
+        "confidence": 82, "bias": "buy",
+        "execution_plan": {
+            "status": "ready", "side": "buy",
+            "reason": "Live bearish sequence into 4571.395",
+        },
+    }
+    assert ep.check_ready_direction_contradiction(review) == (
+        ep.ReasonCode.READY_DIRECTION_CONTRADICTS_BIAS
+    )
+    assert ep.is_contract_regression(
+        ep.ReasonCode.READY_DIRECTION_CONTRADICTS_BIAS, 82
+    ), "confidence 82 clears the gate -- this one reached the broker, alarm"
+
+
+def test_ready_sell_with_bullish_reason_is_blocked():
+    review = {
+        "confidence": 70, "bias": "sell",
+        "execution_plan": {
+            "status": "ready", "side": "sell",
+            "reason": "Bullish continuation toward 4620.500",
+        },
+    }
+    assert ep.check_ready_direction_contradiction(review) == (
+        ep.ReasonCode.READY_DIRECTION_CONTRADICTS_BIAS
+    )
+
+
+def test_reversal_language_is_not_a_contradiction():
+    """'Bearish sweep, now reclaiming support' legitimately contains 'bearish'
+    on a buy -- it describes what just ended, not what is happening. This is
+    the doctrine's CHOCH-as-early-warning distinction: a completed character
+    change is not a contradiction."""
+    for reason in (
+        "Bearish sweep, now reclaiming the M15 support",
+        "Bearish sequence rejected at the demand zone",
+        "Failed breakdown, structure turning bullish",
+        "Bearish exhaustion, buyers recovering the level",
+    ):
+        review = {
+            "confidence": 70, "bias": "buy",
+            "execution_plan": {"status": "ready", "side": "buy", "reason": reason},
+        }
+        assert ep.check_ready_direction_contradiction(review) is None, reason
+
+
+def test_mixed_direction_language_is_not_flagged():
+    """Reason naming both directions ('bearish move now turning bullish')
+    is ambiguous prose, not a clean contradiction -- do not refuse it."""
+    review = {
+        "confidence": 70, "bias": "buy",
+        "execution_plan": {
+            "status": "ready", "side": "buy",
+            "reason": "Bearish move losing momentum, bullish reversal forming",
+        },
+    }
+    assert ep.check_ready_direction_contradiction(review) is None
+
+
+def test_same_direction_reason_is_not_flagged():
+    review = {
+        "confidence": 70, "bias": "sell",
+        "execution_plan": {
+            "status": "ready", "side": "sell",
+            "reason": "Bearish continuation into the next demand zone",
+        },
+    }
+    assert ep.check_ready_direction_contradiction(review) is None
+
+
+def test_direction_free_prose_summary_is_not_matched():
+    """Same discipline as check_ready_reason_contradiction: only the
+    structured plan reason is checked, never free 'summary' prose."""
+    review = {
+        "confidence": 70, "bias": "buy",
+        "summary": "Bearish sequence continuing lower",
+        "execution_plan": {
+            "status": "ready", "side": "buy", "reason": "entry_condition_met",
+        },
+    }
+    assert ep.check_ready_direction_contradiction(review) is None
+
+
+def test_direction_check_wait_status_is_left_alone():
+    review = {
+        "confidence": 20, "bias": "buy",
+        "execution_plan": {"status": "wait", "reason": "Bearish sequence continuing"},
+    }
+    assert ep.check_ready_direction_contradiction(review) is None
+
+
 def test_alarm_severity_follows_what_was_at_stake():
     """Alarm when the guard stopped a trade; log when nothing could have traded.
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -111,6 +113,59 @@ def _loss_reasons(close: dict, proposal: dict, secured: dict) -> list[dict]:
     return reasons or [{"code": "market_thesis_failed", "evidence": close.get("reason")}]
 
 
+def _entry_evidence(plan: dict, fill: dict) -> dict:
+    """Materialize the exact structure chain used at decision and execution."""
+    trigger = fill.get("entry_trigger_candle") or {}
+    zone_low = plan.get("entry_low")
+    zone_high = plan.get("entry_high")
+    return {
+        "selected_zone": {
+            "low_id": plan.get("entry_low_id"),
+            "high_id": plan.get("entry_high_id"),
+            "zone_low": zone_low,
+            "zone_high": zone_high,
+            "owning_timeframe": plan.get("structure_timeframe"),
+        },
+        "decision": {
+            "reason": plan.get("reason"),
+            "decision_time_utc": plan.get("cache_decision_time_utc"),
+            "evidence_ids": plan.get("cache_evidence_ids") or [],
+            "regime_hint": plan.get("regime_hint"),
+            "regime_state": plan.get("regime_state"),
+            "trend_direction": plan.get("trend_direction"),
+        },
+        "execution_trigger": {
+            "gate": fill.get("entry_gate"),
+            "evidence_id": trigger.get("evidence_id"),
+            "open_time_utc": trigger.get("open_time_utc"),
+            "close_time_utc": trigger.get("close_time_utc"),
+            "open": trigger.get("open"),
+            "high": trigger.get("high"),
+            "low": trigger.get("low"),
+            "close": trigger.get("close"),
+            "direction": (
+                "up" if trigger.get("close") is not None and trigger.get("open") is not None
+                and float(trigger["close"]) > float(trigger["open"])
+                else "down" if trigger.get("close") is not None and trigger.get("open") is not None
+                and float(trigger["close"]) < float(trigger["open"])
+                else "flat" if trigger else None
+            ),
+        },
+        "invalidation": {
+            "level_id": plan.get("stop_level_id"),
+            "planned_price": plan.get("stop_loss"),
+            "structural_price": plan.get("structural_stop_loss"),
+            "broker_price": fill.get("stop_loss"),
+        },
+        "target": {
+            "level_id": plan.get("target_level_id"),
+            "planned_price": plan.get("take_profit"),
+            "structural_price": plan.get("structural_take_profit"),
+            "broker_price": fill.get("take_profit"),
+        },
+    }
+
+
 def build_journal(close: dict, proposal: dict | None = None) -> dict:
     proposal_id = str(close["proposal_id"])
     exit_time = str(close["created_at_utc"])
@@ -124,8 +179,16 @@ def build_journal(close: dict, proposal: dict | None = None) -> dict:
     net = float(close.get("net_pnl") or 0.0)
     result = "win" if net > 0 else "loss" if net < 0 else "breakeven"
     evidence = list(dict.fromkeys(
-        str(value) for value in (plan.get("cache_evidence_ids") or []) if value
+        str(value) for value in (
+            list(plan.get("cache_evidence_ids") or [])
+            + [
+                plan.get("entry_low_id"), plan.get("entry_high_id"),
+                plan.get("stop_level_id"), plan.get("target_level_id"),
+                (fill.get("entry_trigger_candle") or {}).get("evidence_id"),
+            ]
+        ) if value
     ))
+    entry_evidence = _entry_evidence(plan, fill)
     outcome = {
         "reason": close.get("reason"),
         "close_comments": close.get("close_comments") or [],
@@ -172,6 +235,7 @@ def build_journal(close: dict, proposal: dict | None = None) -> dict:
         "holding_seconds": close.get("position_holding_seconds"),
         "loss_reasons_json": canonical(_loss_reasons(close, proposal, secured)),
         "evidence_ids_json": canonical(evidence),
+        "entry_evidence_json": canonical(entry_evidence),
         "plan_json": canonical(plan),
         "outcome_json": canonical(outcome),
         "exit_legs_json": canonical(close.get("exit_legs") or []),
@@ -184,11 +248,22 @@ def build_journal(close: dict, proposal: dict | None = None) -> dict:
 def journal_closed_trade(close: dict, proposal: dict | None = None,
                          db_path: Path | str = DEFAULT_DB) -> dict:
     journal = build_journal(close, proposal)
-    store = IntelligenceStore(db_path, busy_timeout_ms=5000)
-    try:
-        store.upsert_trade_journal(journal)
-    finally:
-        store.db.close()
+    # Multiple workers can append the same broker close concurrently. SQLite
+    # may briefly hold a writer lock; retry the idempotent upsert instead of
+    # dropping the close/journal record.
+    for attempt in range(4):
+        store = None
+        try:
+            store = IntelligenceStore(db_path, busy_timeout_ms=15000)
+            store.upsert_trade_journal(journal)
+            break
+        except sqlite3.OperationalError as error:
+            if "locked" not in str(error).lower() or attempt == 3:
+                raise
+            time.sleep(0.5 * (attempt + 1))
+        finally:
+            if store is not None:
+                store.db.close()
     return journal
 
 

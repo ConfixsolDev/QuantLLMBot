@@ -138,23 +138,43 @@ def _normalize_levels(level_rows: Iterable[dict], current_price: float, day_rang
         level_id = str(row.get("level_id") or row.get("id") or "")
         if not level_id or level_id in seen:
             continue
-        price = _number(row.get("price"))
-        lo = _number(row.get("zone_low"), price)
-        hi = _number(row.get("zone_high"), price)
+        # A market zone is a band, never a synthetic midpoint price.  Legacy
+        # point levels are accepted only as a zero-width band so replay stays
+        # possible; no midpoint is invented or exposed to the observer.
+        legacy_point = _number(row.get("price"))
+        has_low = row.get("zone_low") is not None
+        has_high = row.get("zone_high") is not None
+        if not has_low and not has_high and legacy_point <= 0:
+            continue
+        lo = _number(row.get("zone_low"), legacy_point)
+        hi = _number(row.get("zone_high"), lo if has_low else legacy_point)
         if lo > hi:
             lo, hi = hi, lo
-        if price <= 0 or hi < day_low - allowance or lo > day_high + allowance:
+        if hi <= 0 or lo <= 0 or hi < day_low - allowance or lo > day_high + allowance:
             continue
+        relation = (
+            "inside" if lo <= current_price <= hi
+            else "above" if current_price > hi
+            else "below"
+        )
+        distance_to_zone = (
+            0.0 if relation == "inside"
+            else current_price - hi if relation == "above"
+            else lo - current_price
+        )
         seen.add(level_id)
         timeframe = str(row.get("timeframe") or "")
         levels.append({
             "level_id": level_id,
             "timeframe": timeframe,
             "role": row.get("role"),
-            "price": round(price, 3),
             "zone_low": round(lo, 3),
             "zone_high": round(hi, 3),
-            "distance": round(abs(price - current_price), 3),
+            "current_relation": relation,
+            "distance_to_zone": round(distance_to_zone, 3),
+            "distance_to_low_boundary": round(current_price - lo, 3),
+            "distance_to_high_boundary": round(current_price - hi, 3),
+            "boundary_semantics": "explicit_band" if has_low or has_high else "legacy_point_band",
             "rank": TIMEFRAME_WEIGHT.get(timeframe, 0),
             "inside_today_range": bool(hi >= day_low and lo <= day_high),
         })
@@ -162,7 +182,7 @@ def _normalize_levels(level_rows: Iterable[dict], current_price: float, day_rang
     # reference.  Proximity then keeps the bounded packet useful; owning
     # timeframe breaks ties rather than hiding active M5/M15 structure.
     levels.sort(key=lambda row: (
-        not row["inside_today_range"], row["distance"], -row["rank"], row["level_id"]
+        not row["inside_today_range"], row["distance_to_zone"], -row["rank"], row["level_id"]
     ))
     return levels[:24]
 
@@ -210,12 +230,16 @@ def verify_levels(levels: list[dict], rows: list[dict], current_price: float) ->
                 latest_response = "balanced_inside"
         relation = "inside" if lo <= current_price <= hi else ("above" if current_price > hi else "below")
         verified.append({
-            **{key: level.get(key) for key in ("level_id", "timeframe", "role", "price", "zone_low", "zone_high")},
+            **{key: level.get(key) for key in (
+                "level_id", "timeframe", "role", "zone_low", "zone_high",
+                "distance_to_zone", "distance_to_low_boundary",
+                "distance_to_high_boundary", "boundary_semantics",
+            )},
             "touch_episodes_today": len(groups),
             "last_touch_utc": last_touch,
             "latest_closed_response": latest_response,
             "current_relation": relation,
-            "_distance": level.get("distance", 0.0),
+            "_distance": level.get("distance_to_zone", 0.0),
             "_rank": level.get("rank", 0),
         })
     verified.sort(key=lambda row: (

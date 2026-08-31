@@ -17,7 +17,14 @@ class MarketRuntime:
     idea_manager: IdeaManager = field(default_factory=IdeaManager)
     approach_tracker: ApproachTracker = field(default_factory=ApproachTracker)
     regime_memory: dict[str, float | str | None] = field(
-        default_factory=lambda: {"hint": None, "atr_ratio": None}
+        default_factory=lambda: {
+            "hint": None,
+            "atr_ratio": None,
+            "state": None,
+            "trend_direction": None,
+            "transition_started_at_utc": None,
+            "pullback_active": False,
+        }
     )
 
     @property
@@ -90,5 +97,11 @@ class MarketRuntimeRegistry:
                 runtime.regime_memory.update({
                     "hint": memory.get("hint"),
                     "atr_ratio": memory.get("atr_ratio"),
+                    "state": memory.get("state"),
+                    "trend_direction": memory.get("trend_direction"),
+                    "transition_started_at_utc": memory.get(
+                        "transition_started_at_utc"
+                    ),
+                    "pullback_active": bool(memory.get("pullback_active")),
                 })
         return registry

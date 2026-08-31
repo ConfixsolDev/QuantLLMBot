@@ -13,6 +13,7 @@ from .retrieval import RetrievalBroker
 from .store import IntelligenceStore
 
 log = logging.getLogger(__name__)
+GRAPH_CONTEXT_MAX_AGE_SECONDS = 120
 
 
 class MarketIntelligenceService:
@@ -118,7 +119,7 @@ class MarketIntelligenceService:
             )
             age = max(0.0, (datetime.now(timezone.utc) - as_of).total_seconds())
             graph_context["age_seconds"] = round(age, 3)
-            if age > 30:
+            if age > GRAPH_CONTEXT_MAX_AGE_SECONDS:
                 graph_context["status"] = "stale"
         except (OSError, ValueError):
             pass
@@ -141,10 +142,13 @@ class MarketIntelligenceService:
             "graph_context": graph_context,
             "graph_health": graph_health,
         }
-        # Neo4j remains shadow-only until the promotion gates in V2 pass.
-        # Website observability reads ``observability()`` and still receives
-        # the complete bounded graph packet; Qwen receives only this status.
-        return self.compact_snapshot(include_graph=False)
+        # Neo4j remains non-authoritative: Qwen may inspect the bounded zone
+        # plan for validation, while deterministic entry/risk gates retain the
+        # right to reject it.  The website still receives the full packet.
+        # The reviewer consumes only the bounded zone plan from this graph
+        # packet.  Keeping the full context behind the service boundary makes
+        # the plan auditable without granting Neo4j execution authority.
+        return self.compact_snapshot(include_graph=True)
 
     def retrieve(self, symbol: str, requests: list[dict]) -> list[dict]:
         results = self.retrieval.execute(symbol, requests)

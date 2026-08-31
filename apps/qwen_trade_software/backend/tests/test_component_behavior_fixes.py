@@ -41,25 +41,28 @@ def test_entry_schema_uses_flat_top_level_required_plan_contract():
     schema = reviewer.entry_decision_schema(cache, decision_levels)
     assert "execution_plan" not in schema["properties"]
     for field in (
-        "plan_status", "plan_side", "entry_low_id", "entry_high_id",
-        "stop_level_id", "target_level_id", "target_mode", "volume_each",
-        "plan_reason", "data_requests",
+        "bias", "confidence", "evidence_ids", "plan_status",
+        "geometry_row_id", "plan_reason", "data_requests",
     ):
         assert field in schema["required"]
-    assert "M1_LEVEL" in schema["properties"]["stop_level_id"]["enum"]
+    assert "entry_low_id" not in schema["properties"]
 
 
 def test_flat_wire_ready_is_adapted_to_internal_execution_plan():
     wire = {
-        "bias": "sell", "confidence": 68, "summary": "confirmed rejection",
-        "acknowledged_epochs": {"minute": "m1"}, "evidence_ids": ["m1"],
-        "plan_status": "ready", "plan_side": "sell",
-        "entry_low_id": "M1_SUPPORT", "entry_high_id": "M1_RESISTANCE",
-        "stop_level_id": "M15_STOP", "target_level_id": "M15_TARGET",
-        "target_mode": "scalp", "volume_each": 0.5,
+        "bias": "sell", "confidence": 68, "evidence_ids": ["m1"],
+        "plan_status": "ready", "geometry_row_id": "G1",
         "plan_reason": "entry_condition_met", "data_requests": [],
     }
-    review = reviewer.decode_entry_response(json.dumps(wire))
+    facts = {"entry_geometry_menu": [{
+        "geometry_row_id": "G1", "side": "sell",
+        "entry_low_id": "M1_SUPPORT", "entry_high_id": "M1_RESISTANCE",
+        "valid_stop_level_ids": ["M15_STOP"],
+        "valid_target_level_ids": ["M15_TARGET"],
+    }]}
+    review = reviewer.decode_entry_response(
+        json.dumps(wire), {"epochs": {"minute": "m1"}}, facts
+    )
     assert review["execution_plan"] == {
         "status": "ready", "reason": "entry_condition_met", "side": "sell",
         "entry_low_id": "M1_SUPPORT", "entry_high_id": "M1_RESISTANCE",
@@ -72,15 +75,13 @@ def test_flat_wire_ready_is_adapted_to_internal_execution_plan():
 def test_flat_wire_wait_removes_non_applicable_sentinels():
     none = reviewer.entry_contract.NONE
     wire = {
-        "bias": "wait", "confidence": 40, "summary": "trigger incomplete",
-        "acknowledged_epochs": {"minute": "m1"}, "evidence_ids": ["m1"],
-        "plan_status": "wait", "plan_side": none,
-        "entry_low_id": none, "entry_high_id": none,
-        "stop_level_id": none, "target_level_id": none,
-        "target_mode": none, "volume_each": 0.5,
+        "bias": "wait", "confidence": 40, "evidence_ids": ["m1"],
+        "plan_status": "wait", "geometry_row_id": none,
         "plan_reason": "missing_trigger", "data_requests": [],
     }
-    review = reviewer.decode_entry_response(json.dumps(wire))
+    review = reviewer.decode_entry_response(
+        json.dumps(wire), {"epochs": {"minute": "m1"}}, {}
+    )
     assert review["execution_plan"] == {
         "status": "wait", "reason": "missing_trigger",
     }
@@ -112,6 +113,27 @@ def test_uncorrected_contract_is_not_mislabeled_as_cache_failure():
     )
     assert "Qwen returned ready" in reason
     assert "Cache provenance" not in reason
+
+
+def test_ready_geometry_must_come_from_one_complete_menu_row():
+    review = {
+        "execution_plan": {
+            "status": "ready", "side": "sell",
+            "entry_low_id": "ENTRY", "entry_high_id": "ENTRY",
+            "stop_level_id": "STOP_FROM_A", "target_level_id": "TARGET_FROM_B",
+        }
+    }
+    facts = {"entry_geometry_menu": [
+        {"side": "sell", "entry_low_id": "ENTRY", "entry_high_id": "ENTRY",
+         "valid_stop_level_ids": ["STOP_FROM_A"],
+         "valid_target_level_ids": ["TARGET_FROM_A"]},
+        {"side": "sell", "entry_low_id": "OTHER", "entry_high_id": "OTHER",
+         "valid_stop_level_ids": ["STOP_FROM_B"],
+         "valid_target_level_ids": ["TARGET_FROM_B"]},
+    ]}
+    assert reviewer.qwen_geometry_menu_failure(review, facts) == (
+        "ready_geometry_not_from_one_menu_row"
+    )
 
 
 def _normalization_inputs():
@@ -188,7 +210,28 @@ def test_sell_anchor_preserves_qwen_resistance_zone():
     )
     assert plan["status"] == "ready"
     assert plan["entry_high_id"] == "M1_RESISTANCE"
-    assert plan["geometry_source"] == "qwen_sr_zone_fixed_3_5"
+    assert plan["geometry_source"] == "qwen_sr_zone_structural"
+
+
+def test_legacy_m5_idea_cannot_veto_m15_plus_trade_direction():
+    snapshot, cache = _normalization_inputs()
+    value = {
+        "status": "ready", "side": "sell",
+        "entry_low_id": "M1_SUPPORT", "entry_high_id": "M1_RESISTANCE",
+        "stop_level_id": "M15_STOP", "target_level_id": "M15_TARGET",
+    }
+    plan = reviewer.normalize_execution_plan(
+        value, snapshot, cache, bias="sell", confidence=68,
+        structural_responses=[{
+            "level_id": "M1_RESISTANCE", "confirmed": True,
+            "zone_side": "resistance", "direction": "sell",
+        }],
+        active_idea_context={
+            "watching_zone": "M5_PREVIOUS_LOW", "watching_side": "buy",
+        },
+    )
+
+    assert plan["status"] == "ready"
 
 
 def test_live_geometry_defaults_are_fail_closed():
@@ -227,7 +270,7 @@ def test_breakout_promotion_requires_m5_and_m15_closed_alignment(tmp_path, monke
     assert review["execution_plan"]["regime_state"] == "breakout_confirmed"
 
 
-def test_directional_breakout_blocks_opposite_plan(tmp_path, monkeypatch):
+def test_directional_breakout_is_context_not_a_side_veto(tmp_path, monkeypatch):
     import qualified_levels
 
     monkeypatch.setattr(
@@ -240,8 +283,8 @@ def test_directional_breakout_blocks_opposite_plan(tmp_path, monkeypatch):
         }
     }
     reviewer._stamp_regime_target_mode(review, facts)
-    assert review["execution_plan"]["status"] == "wait"
-    assert "opposes_breakout_confirmed_buy" in review["execution_plan"]["reason"]
+    assert review["execution_plan"]["status"] == "ready"
+    assert review["execution_plan"]["side"] == "sell"
 
 
 def test_valid_m1_failure_can_fill_in_favorable_half_of_zone(monkeypatch):

@@ -12,9 +12,8 @@ import MetaTrader5 as mt5
 
 import build_manifest
 from cooldown_manager import (
-    VolatilityDetector, start_volatility_cooldown, volatility_cooldown_active,
+    VolatilityDetector, start_volatility_cooldown,
 )
-from entry_safety import temporal_protection_window
 import process_logging
 from profit_protection_policy import FRONT_LAYER_VOLUME_FRACTION, evaluate
 from review_shared import (
@@ -170,9 +169,9 @@ def supervise_once(now: float | None = None) -> None:
             current=current, peak=float(state["peak"]), broker_sl=float(position.sl or 0.0),
             atr=float(state["atr"]), spread=max(0.0, float(tick.ask - tick.bid)),
             point=float(info.point), initial_risk=float(state["initial_risk"]),
-            force_break_even=bool(
-                temporal_protection_window() or volatility_cooldown_active()
-            ),
+            # Time boundaries and volatility events may cool new entries, but
+            # they are not evidence that an open structural trade has failed.
+            force_break_even=False,
         )
         changed = decision.state != state["last_state"]
         heartbeat = now - state["heartbeat_at"] >= HEARTBEAT_SECONDS

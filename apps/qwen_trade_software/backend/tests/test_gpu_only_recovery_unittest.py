@@ -42,6 +42,17 @@ class GpuOnlyPolicyTests(unittest.TestCase):
         self.assertEqual(classify_residency(cpu, self.model)["state"], "cpu")
         self.assertEqual(classify_residency([], self.model)["state"], "unloaded")
 
+    def test_matches_model_keyed_rows_not_only_name_keyed(self):
+        """2026-08-28: Ollama /api/ps rows keyed 'model' instead of 'name'
+        (an Ollama version/schema difference) made every row look nameless,
+        so this always reported 'unloaded' regardless of true GPU state."""
+        rows = [{"model": self.model, "size": 10e9, "size_vram": 10e9}]
+        self.assertEqual(classify_residency(rows, self.model)["state"], "gpu")
+
+    def test_case_and_tag_variance_still_matches(self):
+        rows = [{"name": self.model.upper(), "size": 10e9, "size_vram": 10e9}]
+        self.assertEqual(classify_residency(rows, self.model)["state"], "gpu")
+
     def test_gate_rejects_every_non_gpu_state(self):
         def opener(*_, **__):
             return Response(

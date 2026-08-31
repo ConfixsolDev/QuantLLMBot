@@ -43,6 +43,13 @@ MODEL = model_for_role("context")
 OLLAMA_GENERATE = "http://127.0.0.1:11434/api/generate"
 OLLAMA_TAGS = "http://127.0.0.1:11434/api/tags"
 OLLAMA_PS = "http://127.0.0.1:11434/api/ps"
+# Bounded retries for latest_entry_context()'s manifest/object consistency
+# check. See the 2026-08-28 comment at its call site: a reader landing
+# between the cache writer's object commit and its manifest commit sees a
+# false epoch mismatch. One retry was not always enough under concurrent
+# readers; a real mismatch still blocks after every attempt is exhausted.
+EPOCH_CONSISTENCY_RETRY_ATTEMPTS = 3
+EPOCH_CONSISTENCY_RETRY_DELAY_SECONDS = 0.05
 APP_DIR = Path(__file__).resolve().parent
 LOG_DIR = APP_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -285,10 +292,30 @@ class OllamaClient:
             return json.loads(response.read().decode("utf-8"))
 
     def model_info(self) -> dict:
+        """Look up this model in Ollama's tag list and running-process list.
+
+        2026-08-28: this matched purely on ``row.get("name") == self.model``.
+        gpu_placement.py's independent residency check tolerates a tag/name
+        mismatch with a startswith fallback; this one did not, so a resident
+        row whose reported name differed cosmetically from ``self.model``
+        (trailing whitespace, a differently-cased tag, or any other variant
+        Ollama might return) would silently fail to match and report "not
+        resident" for a model that was actually loaded and serving. Brought
+        up to the same tolerance so the two checks cannot disagree for this
+        reason.
+        """
         tags = self._get(OLLAMA_TAGS).get("models", [])
         running = self._get(OLLAMA_PS).get("models", [])
-        installed = next((row for row in tags if row.get("name") == self.model), None)
-        resident = next((row for row in running if row.get("name") == self.model), None)
+        base_name = self.model.split(":")[0].strip().lower()
+
+        def _matches(row: dict) -> bool:
+            name = str(row.get("name") or row.get("model") or "").strip()
+            if name.lower() == self.model.strip().lower():
+                return True
+            return name.strip().lower().startswith(base_name)
+
+        installed = next((row for row in tags if _matches(row)), None)
+        resident = next((row for row in running if _matches(row)), None)
         return {
             "installed": installed is not None,
             "resident": resident is not None,
@@ -297,6 +324,11 @@ class OllamaClient:
             "size": (installed or {}).get("size"),
             "size_vram": (resident or {}).get("size_vram"),
             "expires_at": (resident or {}).get("expires_at"),
+            # Raw names as Ollama reported them, kept even on a match, so a
+            # future digest mismatch can be diagnosed from the manifest alone
+            # instead of re-querying Ollama by hand.
+            "raw_installed_name": (installed or {}).get("name") or (installed or {}).get("model"),
+            "raw_resident_name": (resident or {}).get("name") or (resident or {}).get("model"),
         }
 
     def generate(
@@ -3818,6 +3850,25 @@ class QwenContextShadow:
                 resident.get("resident")
                 and resident.get("digest") == resident.get("resident_digest")
             )
+
+        # CHANGE: 2026-08-25 — Force model load if still not resident
+        # This fixes "waiting_cache" stuck when model is unloaded
+        if not model_resident:
+            try:
+                logging.info("Model not resident after challenge; forcing load...")
+                self.ollama.warm()  # Attempt to reload/warm model
+                time.sleep(0.5)
+                resident = self.ollama.model_info()
+                model_resident = bool(
+                    resident.get("resident")
+                    and resident.get("digest") == resident.get("resident_digest")
+                )
+                if model_resident:
+                    logging.info("Model successfully loaded and resident after force-load")
+                else:
+                    logging.warning("Model warm failed to establish residency")
+            except Exception as e:
+                logging.exception("Force-load model failed: %s", e)
         failures = (
             gate_a_failures
             + gate_b_failures
@@ -4124,38 +4175,53 @@ def latest_entry_context(
                     "failures": (manifest or {}).get("failures", ["readiness_missing"]),
                     "auto_upgrade_attempted": auto_upgrade,
                 }
-        objects = {
-            name: cache.object(name, symbol)
-            for name in ("structural", "levels", "session", "playbooks", "minute")
-        }
         # The cache writer commits objects immediately before its readiness
-        # manifest. A reader landing between those commits used the new objects
-        # with the preceding manifest and reported a false epoch mismatch.
-        # Re-read once and use the newest ready manifest/object snapshot.
-        newest_manifest = cache.latest_manifest(symbol)
-        if (
-            newest_manifest
-            and newest_manifest.get("status") == "ready"
-            and newest_manifest.get("compatible_epochs") != manifest.get("compatible_epochs")
-        ):
-            manifest = newest_manifest
+        # manifest. A reader landing between those commits sees new objects
+        # against the preceding manifest and reports a false epoch mismatch.
+        # 2026-08-28: this was a single re-read, so a reader unlucky enough to
+        # land in that gap twice in a row (concurrent readers -- entry policy,
+        # management, and execution can all call this at once -- against a
+        # cache cycle firing every few seconds) still fell through to a real
+        # cache_provenance_invalid, the single largest "wait" cause across
+        # eight days of proposal logs, most of it exactly this timing gap
+        # rather than genuinely stale data. Give it a few bounded attempts at
+        # a self-consistent snapshot before reporting a real mismatch; a
+        # mismatch that survives every attempt is unchanged and still blocks.
+        objects = None
+        epoch_failures: list[str] = []
+        missing: list[str] = []
+        for attempt in range(EPOCH_CONSISTENCY_RETRY_ATTEMPTS):
+            newest_manifest = cache.latest_manifest(symbol)
+            if (
+                newest_manifest
+                and newest_manifest.get("status") == "ready"
+                and newest_manifest.get("compatible_epochs") != manifest.get("compatible_epochs")
+            ):
+                manifest = newest_manifest
             objects = {
                 name: cache.object(name, symbol)
                 for name in ("structural", "levels", "session", "playbooks", "minute")
             }
-        missing = [name for name, value in objects.items() if not value]
+            missing = [name for name, value in objects.items() if not value]
+            if missing:
+                epoch_failures = []
+                break
+            compatible = manifest.get("compatible_epochs", {})
+            epoch_failures = [
+                f"entry_cache:{name}:epoch_mismatch"
+                for name, value in objects.items()
+                if value["cache_epoch"] != compatible.get(name)
+            ]
+            if not epoch_failures:
+                break
+            if attempt < EPOCH_CONSISTENCY_RETRY_ATTEMPTS - 1:
+                time.sleep(EPOCH_CONSISTENCY_RETRY_DELAY_SECONDS)
         if missing:
             return {
                 "status": "blocked",
                 "reason": "cache_object_missing",
                 "failures": [f"entry_cache:{name}:missing" for name in missing],
             }
-        compatible = manifest.get("compatible_epochs", {})
-        epoch_failures = [
-            f"entry_cache:{name}:epoch_mismatch"
-            for name, value in objects.items()
-            if value["cache_epoch"] != compatible.get(name)
-        ]
         minute = objects["minute"]
         minute_soft_ok = False
         if minute.get("expires_at_utc") and as_utc(minute["expires_at_utc"]) < checked_at:
@@ -4181,7 +4247,10 @@ def latest_entry_context(
         playbooks = objects["playbooks"]
         level_rows = levels["payload"].get("levels", [])
         recent_closed = {}
-        for timeframe, count in (("M1", 5), ("M5", 5), ("M15", 3), ("M30", 3)):
+        # Sixteen completed M15 bars provide a neutral four-hour auction window
+        # for the entry packet. Reviewer compresses them into one range summary;
+        # it does not send all sixteen raw bars to Qwen.
+        for timeframe, count in (("M1", 5), ("M5", 5), ("M15", 16), ("M30", 3)):
             rows = cache.latest_completed(symbol, timeframe, count)
             recent_closed[timeframe] = [
                 {

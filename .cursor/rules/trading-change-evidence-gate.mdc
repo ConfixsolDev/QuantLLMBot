@@ -1,0 +1,43 @@
+---
+description: Evidence gate for every QuantLLMBot trading or architecture change
+alwaysApply: true
+---
+
+# QuantLLMBot Research-and-Evidence Gate
+
+Before changing trading behavior, architecture, prompts, regime interpretation,
+entries, levels, risk, exits, targets, or protection, perform a read-only R&D
+pass first. State the proposed hypothesis, affected decision path, expected
+benefit, possible harm, and falsification test before editing.
+
+A behavioral change may proceed only when at least one evidence route qualifies:
+
+1. Broker-authoritative or leakage-safe replay evidence supports it across
+   multiple complete trading days and relevant sessions/regimes; one trade,
+   one day, screenshots, anecdotes, or gross P&L alone do not qualify.
+2. A directly relevant trading book or existing approved corpus principle
+   supports it, with instrument/timeframe limitations made explicit.
+3. At least two independent credible internet sources support it; prefer
+   primary/authoritative sources and record material disagreement.
+
+Books and internet evidence justify a hypothesis, not profitability. Validate
+material expectancy claims on XAUUSD data before calling them improvements.
+Never infer causation from post-change profit alone.
+
+If none of the three routes qualifies, veto the behavioral change: do not edit,
+activate, tune, or work around the gate. Report the missing evidence and the
+minimum experiment or data needed to reconsider it.
+
+Pure software-correctness, security, observability, or data-integrity fixes may
+use reproducible code, test, broker, or log evidence instead of trading books,
+but must preserve trading semantics unless a behavioral route above qualifies.
+
+Keep deterministic components factual and safety-oriented. They may calculate,
+validate, enforce broker/risk invariants, and protect against latency-sensitive
+sudden moves. They must not replace Qwen's ordinary market-structure judgment
+unless the protected V2 architecture is explicitly changed after this gate.
+
+Record supporting and contradicting evidence near the change, update only
+`XAUUSD_SYSTEM_ARCHITECTURE_V2.md` for architecture, and verify with focused
+tests plus replay proportional to behavioral risk. Do not restart live services
+or activate a qualified change until activation is explicitly in scope.

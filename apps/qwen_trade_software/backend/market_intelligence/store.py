@@ -114,6 +114,7 @@ class IntelligenceStore:
                     holding_seconds REAL,
                     loss_reasons_json TEXT NOT NULL,
                     evidence_ids_json TEXT NOT NULL,
+                    entry_evidence_json TEXT NOT NULL DEFAULT '{}',
                     plan_json TEXT NOT NULL,
                     outcome_json TEXT NOT NULL,
                     exit_legs_json TEXT NOT NULL DEFAULT '[]',
@@ -139,6 +140,7 @@ class IntelligenceStore:
                 "qwen_analyzed_at_utc": "TEXT",
                 "qwen_analysis_model": "TEXT",
                 "exit_legs_json": "TEXT NOT NULL DEFAULT '[]'",
+                "entry_evidence_json": "TEXT NOT NULL DEFAULT '{}'",
             }
             for column, declaration in migrations.items():
                 if column not in existing:
@@ -167,7 +169,7 @@ class IntelligenceStore:
             "mae_price", "giveback_price", "secured_cash", "secured_stop",
             "secured_at_utc", "exit_reason", "attribution_source",
             "holding_seconds", "loss_reasons_json", "evidence_ids_json",
-            "plan_json", "outcome_json", "source_hash", "created_at_utc",
+            "entry_evidence_json", "plan_json", "outcome_json", "source_hash", "created_at_utc",
             "updated_at_utc", "exit_legs_json",
         )
         placeholders = ",".join("?" for _ in columns)
@@ -223,7 +225,7 @@ class IntelligenceStore:
         for row in rows:
             item = dict(row)
             for field in (
-                "loss_reasons_json", "evidence_ids_json", "plan_json",
+                "loss_reasons_json", "evidence_ids_json", "entry_evidence_json", "plan_json",
                 "outcome_json", "exit_legs_json",
             ):
                 item[field.removesuffix("_json")] = json.loads(item.pop(field))
@@ -460,6 +462,34 @@ class IntelligenceStore:
             }
             for row in reversed(rows)
         ]
+
+    def completed_candles(
+        self, symbol: str, timeframe: str, limit: int = 500
+    ) -> list[dict]:
+        """Return recent authoritative completed candles in market-time order.
+
+        This is the live structure updater's bounded replay window.  Keeping
+        the read on the immutable ledger means live labels and historical
+        rebuilds use exactly the same candle evidence.
+        """
+        rows = self._fetchall(
+            "SELECT event_time_utc,evidence_id,payload_json "
+            "FROM intelligence_events WHERE symbol=? AND timeframe=? "
+            "AND event_type='candle_closed' "
+            "ORDER BY event_time_utc DESC,sequence DESC LIMIT ?",
+            (symbol, timeframe, max(1, min(int(limit), 5000))),
+        )
+        result = []
+        for row in reversed(rows):
+            payload = json.loads(row["payload_json"])
+            if not all(payload.get(key) is not None for key in ("open", "high", "low", "close")):
+                continue
+            result.append({
+                "event_time_utc": row["event_time_utc"],
+                "evidence_id": row["evidence_id"],
+                **payload,
+            })
+        return result
 
     def event(self, event_id: str) -> dict | None:
         row = self._fetchone(

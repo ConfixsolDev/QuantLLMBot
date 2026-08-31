@@ -1,5 +1,12 @@
-<!-- version: 2.7 | owner: human | delivery: always -->
-<!-- changelog: 2.7 added regime-reading (range/trend/breakout/exhaustion).
+<!-- version: 3.1 | owner: human | delivery: always -->
+<!-- changelog: 3.1 reserves deterministic trade intervention for broker,
+     structural invalidation, and sudden-move protection; Qwen owns normal entry
+     and management. 3.0 restores Qwen direction from fresh market structure at a
+     mapped level; deterministic regime direction is context, never a side veto.
+     2.9 restores M15+ trade locations, structural SL/TP, and removes
+     time/volatility-window forced break-even protection.
+     2.8 added next-M1 persistence/rearm and immediate-failure exit.
+     2.7 added regime-reading (range/trend/breakout/exhaustion).
      2.6 added three-step trade finding (context → hunt → arm).
      2.0 stable section IDs added (sections_applied targets these);
      restored condensed doctrine from operator skill: sessions, fib, entry
@@ -12,6 +19,11 @@
 Read price location before EMA. Direction comes from fresh acceptance or
 rejection at a mapped zone; a timeframe trend is context, never a command.
 This is paper research, not live-execution authority.
+
+The trade location, invalidation, and target must be owned by M15, M30, H1,
+H4, or D1. M1/M5 provide entry timing and response evidence only. Use the named structural invalidation
+and structural target; size the position to that stop instead of replacing the
+trade with a fixed small bracket.
 
 ## [auction-states] Auction reading
 
@@ -37,13 +49,19 @@ the hint when they disagree.
   support and resistance. Fade the outer third; skip the middle. First target
   is the opposing M5 boundary (scalp). Do not run a basket across the box.
 - Trend: higher highs and higher lows, or the inverse. Enter on a pullback to
-  a mapped zone with a closed failure, not at the impulse extreme. Keep the
-  higher-timeframe target (starter basket).
+  a mapped zone with a closed failure, not at the impulse extreme. Use the next
+  reachable named structural objective and let management retain the swing
+  while continuation remains structurally valid.
 - Breakout: a closed candle of the level's own timeframe accepts beyond a
   defined range edge and a retest holds. Chase only after that accept; a wick
   through the edge is not a breakout.
-- Exhaustion: fast ATR expansion at a mapped extreme with no pullback. Wait.
-  Do not sell the spike or buy the dump.
+- Exhaustion: fast ATR expansion at a mapped extreme with no pullback. Do not
+  chase. A trade requires the first fresh mapped-zone probe-and-failure with
+  valid scalp room.
+
+Every recognized regime can produce a scalp, but the regime never manufactures
+one: location, one fresh closed M1 response and valid named geometry remain
+mandatory.
 
 A CHoCH, BOS, FVG, or liquidity sweep is a supplied confirmation label on
 closed M1/M5. Interpret it at the active zone; do not invent one, and do not
@@ -211,8 +229,14 @@ Trade finding is three steps (not context→open):
    missing_fact=at_entry_location. Do not sell the structure low or buy the
    high because side is correct. Optional challenger may only force wait/revise.
 3. Arm — price inside the band, then closed M1 failure timing; M5 response is
-   optional strength evidence, then
+   optional strength evidence. Enter at the next M1 open while the mapped zone,
+   structural invalidation, target and freshness checks remain valid. Code does
+   not add another directional vote after Qwen qualifies the closed response. Then
    invalidation still valid → ready. Otherwise keep waiting.
+
+After fill, ordinary candles and pullbacks remain under Qwen's structure-led
+management. Deterministic protection is reserved for broker SL/TP, confirmed
+structural invalidation, and latency-sensitive sudden-move protection.
 
 ## [entry-buy] Buy entry
 

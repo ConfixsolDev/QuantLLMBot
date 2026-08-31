@@ -71,8 +71,8 @@ MIN_STRUCTURE_BUFFER = 0.30
 #
 #     Structure TF   Min SL   Min TP
 #     M15 / M30         5        5
-#     H1                7       10
-#     H4 / D1          10       20
+#     H1                7        5
+#     H4 / D1          10        5
 #
 # A stop tighter than the frame's minimum is the same failure as a stop inside
 # the invalidation: the trade is closed by noise before the idea is tested. Pad
@@ -84,10 +84,10 @@ TF_MIN_STOP = {
     "H4": 10.0, "D1": 10.0,
 }
 TF_MIN_TARGET = {
-    "M1": 3.0, "M5": 4.0,
+    "M1": 5.0, "M5": 5.0,
     "M15": 5.0, "M30": 5.0,
-    "H1": 10.0,
-    "H4": 20.0, "D1": 20.0,
+    "H1": 5.0,
+    "H4": 5.0, "D1": 5.0,
 }
 DEFAULT_MIN_STOP = 5.0
 DEFAULT_MIN_TARGET = 5.0

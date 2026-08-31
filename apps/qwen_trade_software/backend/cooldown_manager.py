@@ -28,9 +28,20 @@ def cooldown_for(result: dict) -> tuple[int, str]:
         net = float(result["net_pnl"])
     except (KeyError, TypeError, ValueError):
         return 0, ""
-    positive_sl = net > 0 and any(
+    reason = str(result.get("reason") or "").strip().lower()
+    attribution = str(result.get("attribution_source") or "").strip().lower()
+    stop_comment = any(
         "[sl" in str(comment).lower()
         for comment in (result.get("close_comments") or [])
+    )
+    # A stop can be a tightened profit floor.  Once broker-backed net P&L is
+    # positive, that exit must not throttle the next independent setup.  Use
+    # the normalized close reason/attribution as well as the broker comment so
+    # this remains true when a broker omits or reformats ``[sl ...]``.
+    positive_sl = net > 0 and (
+        stop_comment
+        or reason == "managed_or_safety_sl"
+        or attribution in {"broker_sl", "broker_stop", "stop_loss"}
     )
     if positive_sl:
         return 0, ""

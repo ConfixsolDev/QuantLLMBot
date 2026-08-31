@@ -55,6 +55,7 @@ def _facts(row: dict) -> dict:
         "net_pnl", "peak_pnl", "maximum_drawdown", "mfe_price", "mae_price",
         "giveback_price", "secured_cash", "secured_stop", "secured_at_utc",
         "exit_reason", "holding_seconds", "loss_reasons_json", "evidence_ids_json",
+        "entry_evidence_json",
     )
     return {key: row.get(key) for key in keep}
 
@@ -137,7 +138,21 @@ def analyze_one(store: IntelligenceStore, row: dict, model: str = JOURNAL_MODEL)
         prompt, timeout=None, num_predict=700, num_ctx=4096,
         format_schema=SCHEMA, model=model,
     )
-    analysis = _normalize_analysis(row, json.loads(result.get("response") or "{}"))
+    # Ollama can return a truncated JSON fragment with ok=True while
+    # reporting done=False. Treat that as an incomplete generation so the
+    # journal remains pending for a retry instead of raising a misleading
+    # JSONDecodeError (or recording partial commentary as complete).
+    if "done" in result and result.get("done") is not True:
+        raise ValueError(
+            "Qwen journal response incomplete: "
+            f"done={result.get('done')!r} done_reason={result.get('done_reason')!r}"
+        )
+    response_text = result.get("response") or result.get("response_text") or "{}"
+    try:
+        parsed_response = json.loads(response_text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Qwen journal response was not valid JSON") from exc
+    analysis = _normalize_analysis(row, parsed_response)
     store.update_trade_qwen_analysis(row["proposal_id"], analysis, "complete", model)
     return analysis
 
@@ -163,9 +178,14 @@ def run(db_path: Path, interval: float, once: bool = False) -> None:
             logging.info("Qwen journal complete proposal=%s", row["proposal_id"])
         except Exception:
             logging.exception("Qwen journal failed proposal=%s", row["proposal_id"])
-            store.update_trade_qwen_analysis(
-                row["proposal_id"], None, "retry", JOURNAL_MODEL
-            )
+            try:
+                store.update_trade_qwen_analysis(
+                    row["proposal_id"], None, "retry", JOURNAL_MODEL
+                )
+            except Exception:
+                # A failed journal analysis must never terminate the worker;
+                # leave the row pending for the next process cycle.
+                logging.exception("Qwen journal retry-state update failed proposal=%s", row["proposal_id"])
             time.sleep(max(5.0, interval))
         if once:
             return

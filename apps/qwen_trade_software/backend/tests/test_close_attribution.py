@@ -194,6 +194,61 @@ def test_partial_and_final_exit_deals_are_aggregated(executor):
     assert outcome["reason"] == "managed_or_safety_sl"
 
 
+def test_partial_exit_does_not_finalize_before_final_leg_settles(executor):
+    pe, fake = executor
+    calls = {"n": 0}
+
+    def history(*_a, **_k):
+        calls["n"] += 1
+        rows = [
+            _deal(555, DEAL_ENTRY_IN, commission=-0.7, volume=0.10, ticket=1),
+            _deal(
+                555, DEAL_ENTRY_OUT, profit=2.81, volume=0.02,
+                price=4618.782, comment="QWEN_PROTECT_FRONT_25", ticket=2,
+                time_msc=1787805954038,
+            ),
+        ]
+        if calls["n"] >= 3:
+            rows.append(
+                _deal(
+                    555, DEAL_ENTRY_OUT, profit=9.43, volume=0.08,
+                    price=4619.006, comment="[sl 4619.00600]", ticket=3,
+                    time_msc=1787805957064,
+                )
+            )
+        return tuple(rows)
+
+    fake.history_deals_get = history
+    fills = [{"order": 555, "deal": 1, "price": 4620.185, "volume": 0.10}]
+
+    outcome = pe.realized_execution_outcome(fills, SINCE)
+
+    assert calls["n"] >= 3, "a partial leg must not end broker settlement polling"
+    assert outcome["pnl_is_complete"] is True
+    assert outcome["remaining_volume"] == pytest.approx(0.0)
+    assert outcome["exit_deal_count"] == 2
+    assert outcome["net_pnl"] == pytest.approx(11.54)
+
+
+def test_partial_exit_timeout_is_explicitly_incomplete(executor):
+    pe, fake = executor
+    fake.history_deals_get = lambda *a, **k: (
+        _deal(555, DEAL_ENTRY_IN, commission=-0.7, volume=0.10, ticket=1),
+        _deal(
+            555, DEAL_ENTRY_OUT, profit=2.81, volume=0.02,
+            price=4618.782, comment="QWEN_PROTECT_FRONT_25", ticket=2,
+        ),
+    )
+    fills = [{"order": 555, "deal": 1, "price": 4620.185, "volume": 0.10}]
+
+    outcome = pe.realized_execution_outcome(fills, SINCE)
+
+    assert outcome["reason"] == "exit_deals_incomplete"
+    assert outcome["pnl_is_complete"] is False
+    assert outcome["remaining_volume"] == pytest.approx(0.08)
+    assert outcome["exit_deal_count"] == 1
+
+
 def test_owned_position_survives_partial_close_comment_change(executor):
     pe, fake = executor
     fake.positions_get = lambda **kwargs: (

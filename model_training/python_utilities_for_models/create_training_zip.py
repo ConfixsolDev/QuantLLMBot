@@ -28,11 +28,13 @@ FILES = [
     "model_training/knowledge/stage_02_structured_data.jsonl",
     "model_training/knowledge/stage_03_detector_definitions.jsonl",
     "model_training/knowledge/stage_04_decision_contract.jsonl",
-    # 2026-08-10: live-inference contract alignment. Teaches the exact JSON the
-    # runtime asks for (bias / acknowledged_epochs / execution_plan), which
-    # stage_04 never contained -- see build_stage05_live_contract.py for the
-    # production failures that motivated it.
+    # Minimal live-inference contract v3.0. Qwen returns seven decision fields;
+    # runtime supplies epochs and expands one approved geometry_row_id.
     "model_training/knowledge/stage_05_live_contract.jsonl",
+    "model_training/outputs/processed_training_data.jsonl",
+    "model_training/CURRICULUM_AND_DATA_PREP.md",
+    "model_training/python_utilities_for_models/build_stage05_live_contract.py",
+    "model_training/python_utilities_for_models/audit_training_dataset.py",
     "model_training/python_utilities_for_models/export_lora_to_ollama_colab.py",
 ]
 
@@ -40,6 +42,10 @@ MARKER = "topic-scoped per example"
 
 print("Creating QuantLLMBot_training.zip")
 print("=" * 60)
+
+if OUTPUT_ZIP.exists():
+    OUTPUT_ZIP.unlink()
+    print(f"  removed old package: {OUTPUT_ZIP}")
 
 missing = []
 with zipfile.ZipFile(OUTPUT_ZIP, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -63,8 +69,13 @@ utils_text = (PROJECT_ROOT / "scripts/utils.py").read_text(encoding="utf-8")
 if "topic: Optional[str]" not in utils_text:
     raise SystemExit("utils.py missing topic-scoped principle fix")
 
+stage05_text = (PROJECT_ROOT / "model_training/knowledge/stage_05_live_contract.jsonl").read_text(encoding="utf-8")
+if '"contract_version": "qwen_cached_entry:3.0"' not in stage05_text:
+    raise SystemExit("stage_05 is not the minimal qwen_cached_entry:3.0 contract")
+
 size_kb = OUTPUT_ZIP.stat().st_size / 1024
 print("=" * 60)
 print(f"OK: {OUTPUT_ZIP}")
 print(f"Size: {size_kb:.1f} KB")
 print(f"Fix verified: topic-scoped principles ({MARKER})")
+print("Contract verified: qwen_cached_entry:3.0 minimal output")

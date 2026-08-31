@@ -45,6 +45,10 @@ INITIAL_TAKE_PROFIT_DISTANCE = 5.0
 # Sell → optimal = zone high, fill only when price >= optimal - tolerance.
 # This ensures we buy at the bottom and sell at the top of the zone.
 OPTIMAL_ENTRY_TOLERANCE_PTS = 0.5  # allow 0.5pt slippage from optimal edge
+M1_PERSISTENCE_SECONDS = 15.0
+M1_PERSISTENCE_SAMPLE_GRACE_SECONDS = 5.0
+M1_PERSISTENCE_MINIMUM_MOVE = 0.10
+M1_PERSISTENCE_ENFORCED = False
 # A mapped zone is slower-lived than its M1 trigger.  The executor may wait for
 # price to revisit structure, but never indefinitely: a bounded window prevents
 # an old synchronous execution from hiding a newer Qwen plan.
@@ -274,10 +278,8 @@ def validate_plan(args, proposal: dict) -> None:
         raise RuntimeError("volume must be positive.")
     if args.signal_timeframe not in ("M1", "M5"):
         raise RuntimeError("Demo entries must be generated from M1 or M5.")
-    if abs(float(args.stop_price_distance) - INITIAL_STOP_DISTANCE) > 1e-9:
-        raise RuntimeError(
-            f"stop-price-distance must be the fixed {INITIAL_STOP_DISTANCE} entry bracket."
-        )
+    if float(args.stop_price_distance) <= 0:
+        raise RuntimeError("stop-price-distance must be positive.")
 
 
 def fill_price(tick, side: str) -> float:
@@ -355,12 +357,106 @@ def latest_closed_m1_bar(symbol: str) -> dict | None:
     if rates is None or len(rates) < 1:
         return None
     rate = rates[-1]
+    opened = datetime.fromtimestamp(float(rate["time"]), timezone.utc)
     return {
         "open": float(rate["open"]),
         "high": float(rate["high"]),
         "low": float(rate["low"]),
         "close": float(rate["close"]),
+        "open_time_utc": opened.isoformat().replace("+00:00", "Z"),
+        "close_time_utc": (opened + timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+        "evidence_id": (
+            f"candle:{symbol}:M1:{opened.isoformat().replace('+00:00', 'Z')}"
+        ),
     }
+
+
+def current_m1_bar(symbol: str) -> dict | None:
+    """Current forming M1 open and broker-clock identity."""
+    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 1)
+    if rates is None or len(rates) < 1:
+        return None
+    rate = rates[-1]
+    opened = datetime.fromtimestamp(float(rate["time"]), timezone.utc)
+    return {
+        "open": float(rate["open"]),
+        "open_time_utc": opened.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def m1_persistence_threshold(spread: float, atr_m1_51: float | None) -> float:
+    """Small but volatility-aware move required by second 15 of the new M1."""
+    atr_component = 0.0 if atr_m1_51 is None else 0.03 * float(atr_m1_51)
+    return max(M1_PERSISTENCE_MINIMUM_MOVE, 1.25 * max(0.0, spread), atr_component)
+
+
+def m1_persistence_ready(
+    side: str,
+    direction_price: float,
+    spread: float,
+    tick_time_msc: int,
+    trigger_m1: dict | None,
+    forming_m1: dict | None,
+    state: dict,
+    *,
+    atr_m1_51: float | None = None,
+) -> tuple[bool, str]:
+    """Confirm the original direction during seconds 0-15 of the next M1.
+
+    A failed observation is final for that candle.  The executor then waits for
+    it to close; if that completed candle is itself revalidated upstream as a
+    structural response, entry may occur at the new M1 open.  This avoids a
+    retroactive entry inside a candle that looked wrong at second 15.
+    """
+    if not trigger_m1 or not forming_m1:
+        return False, "m1_persistence_waiting_clock"
+    trigger_close = str(trigger_m1.get("close_time_utc") or "")
+    observation_open = str(forming_m1.get("open_time_utc") or "")
+    if not trigger_close or observation_open != trigger_close:
+        return False, "m1_persistence_waiting_fresh_trigger"
+
+    key = (str(trigger_m1.get("evidence_id") or trigger_close), observation_open)
+    if state.get("key") != key:
+        rejected_open = state.get("observation_open") if state.get("status") == "rejected" else None
+        trigger_open = str(trigger_m1.get("open_time_utc") or "")
+        state.clear()
+        if rejected_open and trigger_open == rejected_open:
+            # entry_fill_ready() has just revalidated the formerly rejected
+            # forming candle as a completed structural response at the zone.
+            state.update({
+                "key": key,
+                "status": "passed",
+                "rearmed_from_closed_m1": trigger_m1.get("evidence_id"),
+            })
+            return True, "m1_persistence_revalidated_on_close"
+        state.update({"key": key, "status": "observing"})
+    if state.get("status") == "passed":
+        return True, "m1_persistence_passed"
+    if state.get("status") == "rejected":
+        return False, "m1_persistence_failed_waiting_close"
+
+    opened = datetime.fromisoformat(observation_open.replace("Z", "+00:00"))
+    tick_time = datetime.fromtimestamp(float(tick_time_msc) / 1000.0, timezone.utc)
+    elapsed = (tick_time - opened).total_seconds()
+    if elapsed < M1_PERSISTENCE_SECONDS:
+        return False, "m1_persistence_observing_first_15s"
+    if elapsed > M1_PERSISTENCE_SECONDS + M1_PERSISTENCE_SAMPLE_GRACE_SECONDS:
+        state.update({"status": "rejected", "observation_open": observation_open})
+        return False, "m1_persistence_sample_missed_waiting_close"
+
+    open_price = float(forming_m1["open"])
+    move = (
+        float(direction_price) - open_price
+        if str(side).lower() == "buy"
+        else open_price - float(direction_price)
+    )
+    threshold = m1_persistence_threshold(spread, atr_m1_51)
+    state.update({"move": move, "threshold": threshold, "sample_second": elapsed})
+    if move >= threshold:
+        state["status"] = "passed"
+        return True, "m1_persistence_passed"
+    state.update({"status": "rejected", "observation_open": observation_open})
+    return False, "m1_persistence_failed_waiting_close"
 
 
 def latest_closed_m5_bar(symbol: str) -> dict | None:
@@ -399,9 +495,21 @@ def entry_fill_ready(
     to reach the level, not the middle of the range.
     """
     location = entry_location(side, price, low, high, stop_loss)
-    if location != "inside_zone":
+    # CHANGE: 2026-08-26 — Allow entry on favorable_outside when within 1pt of zone edge
+    # and M1 failure confirmed. Fixes 9 "target_reached_without_fill" misses where price
+    # pulled back near zone, M1 failure formed, then shot to TP without entering zone.
+    ZONE_APPROACH_TOLERANCE = 1.0
+    near_zone_favorable = False
+    if location == "favorable_outside":
+        if side == "buy" and (price - high) <= ZONE_APPROACH_TOLERANCE:
+            near_zone_favorable = True
+        elif side == "sell" and (low - price) <= ZONE_APPROACH_TOLERANCE:
+            near_zone_favorable = True
+    if location != "inside_zone" and not near_zone_favorable:
         return False, location
     if not live_mapped_levels.m1_failure_for_entry(side, low, high, closed_m1):
+        if near_zone_favorable:
+            return False, "near_zone_waiting_m1_failure"
         return False, "inside_zone_waiting_m1_failure"
 
     # ── Optimal price gate ───────────────────────────────────────────
@@ -652,26 +760,38 @@ def realized_execution_outcome(fills: list[dict], since: datetime) -> dict:
     unknown, because a false zero silently drags every average toward nothing.
     """
     position_ids = {int(fill["order"]) for fill in fills}
+    original_volume = sum(float(fill.get("volume") or 0.0) for fill in fills)
 
     deadline = time.monotonic() + EXIT_SETTLE_TIMEOUT_SECONDS
     while True:
         deals = mt5.history_deals_get(since, datetime.now(timezone.utc)) or ()
         matched = [deal for deal in deals if int(deal.position_id) in position_ids]
         exits = [deal for deal in matched if deal.entry != mt5.DEAL_ENTRY_IN]
-        if exits or time.monotonic() >= deadline:
+        settled_exit_volume = sum(float(deal.volume) for deal in exits)
+        fully_settled = (
+            original_volume > 0.0
+            and settled_exit_volume + 1e-8 >= original_volume
+        )
+        if fully_settled or time.monotonic() >= deadline:
             break
         time.sleep(EXIT_SETTLE_POLL_SECONDS)
 
     comments = [str(deal.comment) for deal in exits]
     manager_decision = None
-    if not exits:
-        # Nothing settled inside the window. Report the gap honestly.
-        reason = "exit_deals_unsettled"
+    if not fully_settled:
+        # Nothing, or only part of the close, settled inside the window.
+        # A partial exit is not a completed trade even when positions_get has
+        # already stopped showing the ticket. Keep the row explicitly
+        # incomplete so totals, learning, and cooldowns cannot consume it as
+        # broker-final truth.
+        reason = "exit_deals_unsettled" if not exits else "exit_deals_incomplete"
         logging.error(
-            "exit deals never settled for positions %s within %.1fs; "
-            "P&L for this trade is INCOMPLETE and must not be treated as zero",
+            "exit deals incomplete for positions %s within %.1fs "
+            "(closed %.4f of %.4f); P&L is INCOMPLETE",
             sorted(position_ids),
             EXIT_SETTLE_TIMEOUT_SECONDS,
+            settled_exit_volume,
+            original_volume,
         )
     elif any("QWEN_MGR_CLOSE" in comment for comment in comments):
         reason = "qwen_confirmed_close"
@@ -703,7 +823,6 @@ def realized_execution_outcome(fills: list[dict], since: datetime) -> dict:
         float(deal.commission) + float(deal.swap) + float(deal.fee)
         for deal in matched
     )
-    original_volume = sum(float(fill.get("volume") or 0.0) for fill in fills)
     remaining_volume = original_volume
     exit_legs = []
     for deal in sorted(
@@ -747,9 +866,10 @@ def realized_execution_outcome(fills: list[dict], since: datetime) -> dict:
         # False means the numbers above are missing the exit deal. Anything
         # that averages, totals, or trains on P&L must skip these rows rather
         # than read them as a flat zero.
-        "pnl_is_complete": bool(exits),
+        "pnl_is_complete": fully_settled,
         "exit_deal_count": len(exits),
         "exit_legs": exit_legs,
+        "remaining_volume": remaining_volume,
         # How we know who closed it: "broker_comment", "manager_decision_log",
         # or None when nobody claimed it.
         "attribution_source": (
@@ -1072,6 +1192,7 @@ def _run(args) -> dict:
             args.best_price_observation_seconds,
             args.best_price_retrace,
         )
+        persistence_state: dict = {"status": "shadow_disabled"}
         append_event(
             {
                 "schema_version": 1,
@@ -1108,6 +1229,11 @@ def _run(args) -> dict:
                     "zone_validity_seconds": zone_validity_seconds,
                     "optimal_entry_price": getattr(args, "optimal_entry_price", None),
                     "optimal_entry_tolerance_pts": OPTIMAL_ENTRY_TOLERANCE_PTS,
+                    "m1_persistence_seconds": M1_PERSISTENCE_SECONDS,
+                    "m1_persistence_enforced": M1_PERSISTENCE_ENFORCED,
+                    "m1_persistence_threshold": (
+                        "max(0.10,1.25*spread,0.03*atr_m1_51)"
+                    ),
                     "entry_price_policy": (
                         "optimal_zone_edge_fill;"
                         "buy_at_zone_low_sell_at_zone_high;"
@@ -1239,7 +1365,7 @@ def _run(args) -> dict:
                 args.entry_high,
                 args.stop_loss,
             )
-            currently_allowed, gate = entry_fill_ready(
+            structurally_allowed, gate = entry_fill_ready(
                 args.side,
                 entry_quote,
                 args.entry_low,
@@ -1248,7 +1374,20 @@ def _run(args) -> dict:
                 closed_m1,
                 optimal_entry_price=getattr(args, "optimal_entry_price", None),
             )
-            currently_allowed = not fills and currently_allowed
+            currently_allowed = not fills and structurally_allowed
+            if currently_allowed and M1_PERSISTENCE_ENFORCED:
+                persistence_allowed, persistence_gate = m1_persistence_ready(
+                    args.side,
+                    float(tick.bid),
+                    max(0.0, float(tick.ask) - float(tick.bid)),
+                    int(tick.time_msc),
+                    closed_m1,
+                    current_m1_bar(args.symbol),
+                    persistence_state,
+                    atr_m1_51=None,
+                )
+                currently_allowed = persistence_allowed
+                gate = persistence_gate
             if not fills and not currently_allowed:
                 now = time.monotonic()
                 if outside_zone_since is None or gate != outside_zone_gate:
@@ -1291,6 +1430,9 @@ def _run(args) -> dict:
                     "m1_trigger", "passed", proposal_id=args.proposal_id,
                     execution_id=execution_id, symbol=args.symbol,
                     price=entry_quote, quote_age_ms=max(0, age_ms), detail=gate,
+                    trigger_evidence_id=(closed_m1 or {}).get("evidence_id"),
+                    trigger_candle=closed_m1,
+                    entry_zone={"low": args.entry_low, "high": args.entry_high},
                 )
                 logging.info(
                     "paper_executor %s: entry_gate=%s filling at %.3f "
@@ -1348,6 +1490,12 @@ def _run(args) -> dict:
                     ),
                     "entry_selection_reason": tracker_state["reason"],
                     "entry_gate": gate,
+                    "entry_trigger_candle": closed_m1,
+                    "entry_persistence": dict(persistence_state),
+                    "entry_zone": {
+                        "zone_low": args.entry_low,
+                        "zone_high": args.entry_high,
+                    },
                     "entry_observation_seconds": tracker_state["observation_seconds"],
                     "entry_observations": tracker_state["observations"],
                     "improvement_from_previous": None,

@@ -63,11 +63,33 @@ def test_reset_one_instrument_does_not_reset_another():
 def test_entry_prompt_has_generic_and_instrument_specific_portions():
     prompt = reviewer.build_entry_prompt({"symbol": "XAUUSDr"})
     assert "GENERIC MARKET ANALYSIS CONTRACT:" in prompt
+    assert "REGIME-SPECIFIC PLAYBOOK [TREND qwen_entry_trend:1.2]" in prompt
     assert "INSTRUMENT-SPECIFIC CONTRACT:" in prompt
     assert "The supplied instrument is XAUUSD" in prompt
     assert prompt.index("GENERIC MARKET ANALYSIS CONTRACT:") < prompt.index(
+        "REGIME-SPECIFIC PLAYBOOK"
+    ) < prompt.index(
         "INSTRUMENT-SPECIFIC CONTRACT:"
     )
+
+
+def test_entry_prompt_routes_each_regime_to_only_its_own_playbook():
+    cases = {
+        "trend_channel": ("TREND", "Trend playbook"),
+        "range": ("RANGE", "Range playbook"),
+        "reversal_confirmed": ("REVERSAL", "Reversal playbook"),
+    }
+    for state, (family, marker) in cases.items():
+        prompt = reviewer.build_entry_prompt({
+            "symbol": "XAUUSDr",
+            "regime_context": {"regime_state": state},
+        })
+        assert f"REGIME-SPECIFIC PLAYBOOK [{family} " in prompt
+        assert marker in prompt
+        other_markers = {
+            "Trend playbook", "Range playbook", "Reversal playbook"
+        } - {marker}
+        assert not any(other in prompt for other in other_markers)
 
 
 def test_unknown_instrument_gets_generic_overlay_without_gold_assumptions():
@@ -105,10 +127,76 @@ def test_runtime_registry_migrates_legacy_single_market_state():
 def test_runtime_registry_roundtrip_keeps_markets_separate():
     source = MarketRuntimeRegistry()
     source.get("XAUUSDr").regime_memory["hint"] = "trend"
+    source.get("XAUUSDr").regime_memory["state"] = "trend_channel"
+    source.get("XAUUSDr").regime_memory["trend_direction"] = "buy"
+    source.get("XAUUSDr").regime_memory["transition_started_at_utc"] = (
+        "2026-08-25T01:00:00Z"
+    )
+    source.get("XAUUSDr").regime_memory["pullback_active"] = True
     source.get("EURUSDr").regime_memory["hint"] = "range"
     restored = MarketRuntimeRegistry.from_state(source.to_state())
     assert restored.get("XAUUSD").regime_memory["hint"] == "trend"
+    assert restored.get("XAUUSD").regime_memory["state"] == "trend_channel"
+    assert restored.get("XAUUSD").regime_memory["trend_direction"] == "buy"
+    assert restored.get("XAUUSD").regime_memory["transition_started_at_utc"] == (
+        "2026-08-25T01:00:00Z"
+    )
+    assert restored.get("XAUUSD").regime_memory["pullback_active"] is True
     assert restored.get("EURUSDr").regime_memory["hint"] == "range"
+
+
+def test_dashboard_regime_prefers_live_context_and_exposes_family():
+    runtime = MarketRuntimeRegistry().get("XAUUSDr")
+    runtime.regime_memory.update({
+        "state": "trend_channel", "hint": "trend", "trend_direction": "buy"
+    })
+    result = reviewer.dashboard_regime_context(
+        {
+            "regime_context": {
+                "regime_state": "reversal_attempt",
+                "regime_hint": "range",
+                "trend_direction": None,
+                "volatility_state": "high",
+                "regime_transition": True,
+                "pullback_active": False,
+                "transition_age_minutes": 7.0,
+            }
+        },
+        {"qwen": {"execution_plan": {"regime_state": "range"}}},
+        runtime,
+    )
+    assert result == {
+        "regime_state": "reversal_attempt",
+        "regime_hint": "range",
+        "regime_family": "reversal",
+        "trend_direction": None,
+        "volatility_state": "high",
+        "regime_transition": True,
+        "pullback_active": False,
+        "transition_age_minutes": 7.0,
+        "source": "live_management",
+    }
+
+
+def test_dashboard_regime_falls_back_to_latest_entry_decision():
+    runtime = MarketRuntimeRegistry().get("XAUUSDr")
+    runtime.regime_memory["trend_direction"] = "sell"
+    result = reviewer.dashboard_regime_context(
+        {},
+        {
+            "qwen": {
+                "execution_plan": {
+                    "regime_state": "trending_range",
+                    "regime_hint": "range",
+                    "volatility_state": "normal",
+                }
+            }
+        },
+        runtime,
+    )
+    assert result["regime_state"] == "trending_range"
+    assert result["regime_family"] == "range"
+    assert result["source"] == "latest_entry_decision"
 
 
 def test_only_explicitly_authorized_instruments_can_trade():

@@ -21,6 +21,19 @@ def _number(value, digits=3):
         return None
 
 
+def _zone_position(price: float, low: float, high: float) -> dict:
+    """Describe a price against explicit zone boundaries without a midpoint."""
+    low, high = min(low, high), max(low, high)
+    relation = "inside" if low <= price <= high else "above" if price > high else "below"
+    distance = 0.0 if relation == "inside" else price - high if relation == "above" else low - price
+    return {
+        "current_relation": relation,
+        "distance_to_zone": _number(distance),
+        "distance_to_low_boundary": _number(price - low),
+        "distance_to_high_boundary": _number(price - high),
+    }
+
+
 def _latest(symbol: dict, timeframe: str) -> dict:
     events = symbol.get(timeframe) or []
     return events[0] if events else {}
@@ -73,19 +86,18 @@ def _temporal_row(symbol: dict, timeframe: str, as_of: datetime) -> dict:
 
 def _zone_groups(levels: list[dict], price: float) -> list[list[dict]]:
     valid = [row for row in levels if _number(row.get("zone_low")) is not None and _number(row.get("zone_high")) is not None]
-    valid.sort(key=lambda row: abs((float(row["zone_low"]) + float(row["zone_high"])) / 2 - price))
+    valid.sort(key=lambda row: _zone_position(
+        price, float(row["zone_low"]), float(row["zone_high"])
+    )["distance_to_zone"])
     candidates = valid[:60]
     tolerance = max(0.25, abs(price) * 0.00015)
     groups: list[list[dict]] = []
     for row in candidates:
         row_low, row_high = float(row["zone_low"]), float(row["zone_high"])
-        midpoint = (float(row["zone_low"]) + float(row["zone_high"])) / 2
         target = next((group for group in groups if (
-            row_low <= max(float(item["zone_high"]) for item in group)
-            and row_high >= min(float(item["zone_low"]) for item in group)
-        ) or abs(midpoint - mean(
-            (float(item["zone_low"]) + float(item["zone_high"])) / 2 for item in group
-        )) <= tolerance), None)
+            row_low <= max(float(item["zone_high"]) for item in group) + tolerance
+            and row_high >= min(float(item["zone_low"]) for item in group) - tolerance
+        )), None)
         if target is None:
             groups.append([row])
         else:
@@ -108,10 +120,10 @@ def _zone(group: list[dict], price: float, evidence: dict[str, list[dict]]) -> d
     matching.sort(key=lambda row: str(row.get("event_time_utc") or ""), reverse=True)
     latest = matching[0] if matching else {}
     tests = sum(1 for row in matching if row.get("event_type") in {"zone_tested", "zone_retested"})
-    midpoint = (min(lows) + max(highs)) / 2
+    position = _zone_position(price, min(lows), max(highs))
     return {
         "zone_id": zone_id, "zone_low": _number(min(lows)), "zone_high": _number(max(highs)),
-        "distance": _number(abs(midpoint - price)), "contributing_timeframes": timeframes,
+        **position, "contributing_timeframes": timeframes,
         "primary_owning_timeframe": owner,
         "core_overlap": [_number(max(lows)), _number(min(highs))] if max(lows) <= min(highs) else None,
         "investigation_band": [_number(min(lows)), _number(max(highs))],
@@ -126,13 +138,31 @@ def _zone(group: list[dict], price: float, evidence: dict[str, list[dict]]) -> d
 def _three_zones(symbol: dict, price: float) -> dict:
     evidence = symbol.get("structure_evidence") or {}
     zones = [_zone(group, price, evidence) for group in _zone_groups(symbol.get("market_levels") or [], price)]
-    zones.sort(key=lambda row: (row["distance"], -TF_RANK.get(row["primary_owning_timeframe"], 0)))
+    zones.sort(key=lambda row: (row["distance_to_zone"], -TF_RANK.get(row["primary_owning_timeframe"], 0)))
     focus = zones[0] if zones else None
     support = next((row for row in zones if row["zone_high"] < price and row is not focus), None)
     resistance = next((row for row in zones if row["zone_low"] > price and row is not focus), None)
     return {"current_or_approaching_focus": focus, "nearest_proven_support": support,
             "nearest_proven_resistance": resistance, "selection_rule":
             "distance+highest_owner+freshness+structural_proof+session+volume+room"}
+
+
+def _zone_context(zone_positions: dict) -> dict:
+    """Expose neutral zone relationships; never originate direction or a plan."""
+    available = {
+        key: value for key, value in zone_positions.items()
+        if key != "selection_rule" and isinstance(value, dict)
+    }
+    return {
+        "status": "ready" if available else "unavailable",
+        "source": "neo4j_market_levels",
+        "focus_zone": available.get("current_or_approaching_focus"),
+        "support_below": available.get("nearest_proven_support"),
+        "resistance_above": available.get("nearest_proven_resistance"),
+        "selection_rule": zone_positions.get("selection_rule"),
+        "directional_authority": False,
+        "execution_authority": False,
+    }
 
 
 def _session_block(raw: dict, xau: dict, as_of: datetime) -> dict:
@@ -211,12 +241,18 @@ def compile_market_memory(raw: dict, max_bytes: int = 14_000) -> dict:
     xau_key = next((key for key in symbols if key.upper().startswith("XAUUSD")), "XAUUSDr")
     xau, dxy = symbols.get(xau_key, {}), symbols.get("DXY", {})
     latest_m1 = _latest(xau, "M1")
-    price = _number(latest_m1.get("close")) or 0.0
+    price = _number(latest_m1.get("close"))
+    # MarketEvent history can briefly lag the authoritative SQLite cache
+    # during projection.  Use the cache price only as a read-side fallback.
+    if price is None:
+        price = _number((raw.get("current_prices") or {}).get(xau_key)) or 0.0
     temporal = [_temporal_row(xau, tf, as_of) for tf in TIMEFRAMES]
     dxy_rows = [_temporal_row(dxy, tf, as_of) for tf in TIMEFRAMES]
     zones = _three_zones(xau, price) if price else {
         "current_or_approaching_focus": None, "nearest_proven_support": None,
         "nearest_proven_resistance": None, "selection_rule": "unavailable_without_price"}
+    zone_plan = _zone_context(zones) if price else {
+        "status": "unavailable", "source": "neo4j_market_levels", "execution_authority": False}
     packet = {
         "schema_version": 3, "packet_version": "neo4j-market-memory-shadow-v1",
         "status": "shadow_ready", "mode": "shadow_only", "execution_authority": False,
@@ -224,6 +260,7 @@ def compile_market_memory(raw: dict, max_bytes: int = 14_000) -> dict:
         "market_clock_and_sessions": _session_block(raw, xau, as_of),
         "xauusd_all_timeframe_temporal_structure": temporal,
         "active_zone_positions": zones,
+        "active_zone_plan": zone_plan,
         "structure_and_volume_participation": {
             "note": "tick volume is participation proxy, not true buy/sell volume",
             "by_timeframe": {tf: _volume(xau.get(tf) or []) for tf in TIMEFRAMES},

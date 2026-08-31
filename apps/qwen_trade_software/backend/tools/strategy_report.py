@@ -40,14 +40,29 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parent.parent
 LOG_DIR = BACKEND / "logs"
 
+# 2026-08-28: Import narrative composer for trade review
+import sys
+sys.path.insert(0, str(BACKEND))
+try:
+    import trade_review_narrator
+    HAS_NARRATIVE = True
+except ImportError:
+    HAS_NARRATIVE = False
+
 # Below this, print the shortfall instead of a verdict. Matches the ledger's
 # promotion threshold so the two tools never disagree about what "enough" means.
 DEFAULT_MIN_SAMPLE = 12
 PRE_MANIFEST = "pre-manifest"
 
 
-def load_closed() -> list[dict]:
-    """Closed trades with settled P&L, joined to their proposal."""
+def load_closed() -> tuple[list[dict], dict[str, dict]]:
+    """Closed trades with settled P&L, joined to their proposal.
+
+    2026-08-28: Also returns proposals dict for narrative composition.
+
+    Returns:
+        (trades, proposals): trades list + proposals lookup for narrative
+    """
     proposals: dict[str, dict] = {}
     for path in sorted(LOG_DIR.glob("paper-proposals-*.jsonl")):
         for line in path.open(encoding="utf-8", errors="ignore"):
@@ -62,6 +77,7 @@ def load_closed() -> list[dict]:
                 proposals[row["proposal_id"]] = row
 
     trades: list[dict] = []
+    executions: list[dict] = []  # Raw executions for narrative
     for path in sorted(LOG_DIR.glob("paper-executions-*.jsonl")):
         for line in path.open(encoding="utf-8", errors="ignore"):
             if '"mt5_execution_closed"' not in line:
@@ -86,6 +102,9 @@ def load_closed() -> list[dict]:
             reconstructed = bool(row.get("reconstructed_from_broker"))
             proposal = proposals.get(row.get("proposal_id")) or {}
             plan = ((proposal.get("qwen") or {}).get("execution_plan") or {})
+
+            executions.append(row)  # Keep for narrative
+
             trades.append({
                 "build_id": row.get("build_id") or PRE_MANIFEST,
                 "reconstructed": reconstructed,
@@ -100,8 +119,10 @@ def load_closed() -> list[dict]:
                 "geometry_source": next(
                     (f.get("sl_source") for f in (row.get("fills") or [])), None
                 ),
+                # Store raw execution for narrative
+                "_execution": row,
             })
-    return trades
+    return trades, proposals
 
 
 def configuration_key(t: dict) -> str:
@@ -119,14 +140,29 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--min-sample", type=int, default=DEFAULT_MIN_SAMPLE)
     parser.add_argument("--build", help="restrict to one build_id")
+    parser.add_argument("--narrative", action="store_true",
+                       help="include trade narratives (requires trade_review_narrator)")
     args = parser.parse_args()
 
-    trades = load_closed()
+    trades, proposals = load_closed()
     if not trades:
         print("No closed trades with settled P&L.")
         return 0
     if args.build:
         trades = [t for t in trades if t["build_id"].startswith(args.build)]
+
+    # 2026-08-28: Generate narratives if requested and available
+    if args.narrative and HAS_NARRATIVE:
+        executions = [t.get("_execution") for t in trades if t.get("_execution")]
+        if executions:
+            print("\n" + "=" * 78)
+            print(" TRADE NARRATIVES (for Qwen analysis)")
+            print("=" * 78)
+            narrative = trade_review_narrator.compose_trade_review_narrative(
+                executions, proposals
+            )
+            print(narrative)
+            print("=" * 78 + "\n")
 
     by_build: dict[str, list[dict]] = defaultdict(list)
     for t in trades:

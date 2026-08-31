@@ -58,6 +58,12 @@ function TradeCard({ trade }: { trade: TradeJournalRow }) {
   const analysis = trade.qwen_analysis;
   const exitLegs = trade.exit_legs || [];
   const partialCloses = exitLegs.filter((leg) => leg.kind === "partial");
+  const entryEvidence = trade.entry_evidence || {};
+  const selectedZone = entryEvidence.selected_zone || {};
+  const trigger = entryEvidence.execution_trigger || {};
+  const invalidation = entryEvidence.invalidation || {};
+  const target = entryEvidence.target || {};
+  const decision = entryEvidence.decision || {};
   return <article className={`overflow-hidden rounded-xl border ${positive ? "border-emerald-900/70" : "border-rose-900/70"} bg-panel/90`}>
     <button type="button" onClick={() => setOpen(!open)} className="grid w-full gap-3 p-4 text-left md:grid-cols-[1.1fr_.7fr_.7fr_.7fr_auto] md:items-center">
       <div>
@@ -142,6 +148,52 @@ function TradeCard({ trade }: { trade: TradeJournalRow }) {
           </div> : <p className="mt-4 text-sm text-amber-200">Facts are already saved. Qwen analysis is queued and will appear automatically.</p>}
         </section>
       </div>
+      <section className="mt-5 rounded-lg border border-sky-900/60 bg-sky-950/10 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="font-semibold text-sky-200">Structure evidence used for this trade</h3>
+          <span className="text-xs text-slate-500">Decision evidence and actual execution trigger are kept separate</span>
+        </div>
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <Metric
+            label="Selected zone band"
+            value={`${price(selectedZone.zone_low)}–${price(selectedZone.zone_high)}`}
+            tone="text-sky-200"
+          />
+          <Metric
+            label="Zone / owner"
+            value={`${selectedZone.low_id || "—"} · ${selectedZone.owning_timeframe || "—"}`}
+          />
+          <Metric
+            label="Invalidation"
+            value={`${invalidation.level_id || "—"} · ${price(invalidation.broker_price ?? invalidation.planned_price)}`}
+          />
+          <Metric
+            label="Target"
+            value={`${target.level_id || "—"} · ${price(target.broker_price ?? target.planned_price)}`}
+          />
+        </div>
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          <div className="rounded border border-slate-800 bg-slate-950/45 p-3 text-sm">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Decision claim</div>
+            <p className="mt-1 text-slate-200">{decision.reason || trade.idea_reason || "No decision reason recorded"}</p>
+            <p className="mt-2 text-xs text-slate-500">
+              Regime {decision.regime_hint || "—"} / {decision.regime_state || "—"} · trend {decision.trend_direction || "—"} · decided {when(decision.decision_time_utc)}
+            </p>
+          </div>
+          <div className="rounded border border-slate-800 bg-slate-950/45 p-3 text-sm">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">Actual closed M1 trigger</div>
+            {trigger.evidence_id ? <>
+              <p className={`mt-1 font-medium ${trigger.direction === "up" ? "text-emerald-300" : trigger.direction === "down" ? "text-rose-300" : "text-slate-300"}`}>
+                {trigger.direction || "—"} · O {price(trigger.open)} H {price(trigger.high)} L {price(trigger.low)} C {price(trigger.close)}
+              </p>
+              <p className="mt-2 text-xs text-slate-500">{trigger.evidence_id} · gate {trigger.gate || "—"}</p>
+            </> : <p className="mt-1 text-amber-300">Actual execution-trigger candle was not recorded by this older trade.</p>}
+          </div>
+        </div>
+        <div className="mt-3 break-all text-xs text-slate-600">
+          Evidence IDs: {trade.evidence_ids.length ? trade.evidence_ids.join(" · ") : "none recorded"}
+        </div>
+      </section>
       <div className="mt-4 text-xs text-slate-600">Proposal {trade.proposal_id} · Execution {trade.execution_id || "—"}</div>
     </div>}
   </article>;

@@ -24,7 +24,7 @@ def test_m1_failure_for_buy_support():
 
 def test_suggested_target_mode_by_regime():
     assert re.suggested_target_mode("range") == "scalp"
-    assert re.suggested_target_mode("breakout") == "starter_basket"
+    assert re.suggested_target_mode("breakout") == "scalp"
     assert re.suggested_target_mode("unknown") is None
 
 

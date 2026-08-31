@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from candle_clock import candle_clock
@@ -41,6 +41,7 @@ ALLOWED_CONFIRMATIONS = {
     "reward_risk_inverted",
     "time_stop_expired",
     "protected_profit_exit",
+    "early_entry_failure_confirmed",
 }
 
 
@@ -152,6 +153,11 @@ def build_management_facts(
             "price": float(entry_plan["stop_loss"]),
             "source": "immutable_entry_plan",
         },
+        "entry_failure_boundary": {
+            "level_id": "ENTRY_PRICE",
+            "price": entry,
+            "source": "immutable_broker_fill",
+        },
     }
     for level_id, price in dict(nearby + traversed).items():
         level_references[f"current:{level_id}"] = {
@@ -186,6 +192,7 @@ def build_management_facts(
             "favorable_price_move": round(current_move, 3),
             "broker_stop": float(position.get("stop_loss") or 0.0),
             "broker_target": float(position.get("take_profit") or 0.0),
+            "opened_at": opened_at,
         },
         "entry_thesis": {
             "reason": entry_plan.get("reason"),
@@ -346,6 +353,55 @@ def _favorable_candidates(facts: dict, *, reached: list, m5_only: bool) -> list[
         reverse=True,
     )
     return out
+
+
+def early_entry_failure_guard(facts: dict) -> dict | None:
+    """Close a failed first fully post-entry M1, never an ordinary pullback."""
+    position = facts.get("position") or {}
+    opened_at = position.get("opened_at")
+    latest_id = facts.get("latest_completed_m1")
+    candles = {
+        row.get("evidence_id"): row
+        for row in facts.get("completed_candles") or []
+        if row.get("timeframe") == "M1" and row.get("evidence_id")
+    }
+    latest = candles.get(latest_id)
+    if not opened_at or not latest or not latest.get("closed_at_utc"):
+        return None
+    try:
+        opened = datetime.fromisoformat(str(opened_at).replace("Z", "+00:00"))
+        candle_open = datetime.fromisoformat(
+            str(latest["closed_at_utc"]).replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError):
+        return None
+    first_full_open = opened.replace(second=0, microsecond=0)
+    if opened > first_full_open:
+        first_full_open += timedelta(minutes=1)
+    if candle_open != first_full_open:
+        return None
+
+    side = str(position.get("side") or "").lower()
+    entry = float(position.get("entry") or 0.0)
+    open_ = float(latest.get("open") or 0.0)
+    close = float(latest.get("close") or 0.0)
+    failed = (
+        close < open_ and close < entry
+        if side == "buy"
+        else close > open_ and close > entry if side == "sell" else False
+    )
+    if not failed:
+        return None
+    return {
+        "action": "close",
+        "thesis_state": "weakening",
+        "decision_level_ref": "entry_failure_boundary",
+        "next_target_ref": None,
+        "confirmation_type": "early_entry_failure_confirmed",
+        "confirmation_evidence_ids": [latest_id],
+        "close_confirmed": True,
+        "summary": "First full post-entry M1 opposed the trade and closed through entry.",
+    }
 
 
 def safety_guard(facts: dict) -> dict | None:
@@ -573,6 +629,7 @@ def validate_management_decision(
     required_close = safety_guard(facts)
     scalp_ok = scalp_regime(facts)
     if action == "close":
+        early_entry_failure = confirmation == "early_entry_failure_confirmed"
         protected_profit_exit = (
             confirmation == "protected_profit_exit"
             and bool((facts.get("profit_protection") or {}).get("armed"))
@@ -586,9 +643,9 @@ def validate_management_decision(
             failures.append("management:close_without_level")
         if latest_m1 not in cited:
             failures.append("management:close_without_latest_m1")
-        if not protected_profit_exit and len(set(cited)) < 2:
+        if not protected_profit_exit and not early_entry_failure and len(set(cited)) < 2:
             failures.append("management:close_needs_two_closed_candles")
-        if not protected_profit_exit and not any(
+        if not protected_profit_exit and not early_entry_failure and not any(
             supplied_candles[item].get("timeframe") == "M5"
             for item in cited
             if item in supplied_candles
@@ -611,7 +668,12 @@ def validate_management_decision(
             failures.append("management:countermove_without_thesis_failure")
         if protected_profit_exit and level_ref != "profit_protection_floor":
             failures.append("management:protected_exit_without_floor")
-        if level_ref in levels and latest_m1 in supplied_candles and not protected_profit_exit:
+        if (
+            level_ref in levels
+            and latest_m1 in supplied_candles
+            and not protected_profit_exit
+            and not early_entry_failure
+        ):
             level_price = float(levels[level_ref]["price"])
             latest = supplied_candles[latest_m1]
             touched = any(

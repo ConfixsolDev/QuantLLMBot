@@ -129,6 +129,7 @@ export default function PlanViewPage() {
             planner_alive: plan?.planner_alive,
           }
         }
+        regime={snapshot?.regime_context}
       />
 
       <div className="flex flex-wrap gap-2">

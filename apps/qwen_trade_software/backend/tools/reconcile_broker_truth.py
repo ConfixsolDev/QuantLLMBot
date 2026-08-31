@@ -115,14 +115,46 @@ def main() -> int:
 
     orphans = []
     for position_id, deals in grouped.items():
+        entries = [d for d in deals if d.entry == mt5.DEAL_ENTRY_IN]
         exits = [d for d in deals if d.entry != mt5.DEAL_ENTRY_IN]
-        if not exits:
+        entry_volume = sum(float(d.volume) for d in entries)
+        exit_volume = sum(float(d.volume) for d in exits)
+        if not exits or exit_volume + 1e-9 < entry_volume:
             continue  # still open at the broker; nothing to reconcile
         if position_id in recorded:
             continue
+        recorded_fill = fills.get(position_id) or {}
+        fill = dict(recorded_fill.get("fill") or {})
+        entry = min(entries, key=lambda d: (d.time_msc, d.ticket)) if entries else None
         gross = sum(float(d.profit) for d in deals)
         costs = sum(float(d.commission) + float(d.swap) + float(d.fee) for d in deals)
         volume = sum(float(d.volume) for d in exits)
+        remaining = sum(float(d.volume) for d in entries)
+        exit_legs = []
+        for index, deal in enumerate(sorted(exits, key=lambda d: (d.time_msc, d.ticket))):
+            remaining = max(0.0, remaining - float(deal.volume))
+            leg_costs = float(deal.commission) + float(deal.swap) + float(deal.fee)
+            exit_legs.append({
+                "kind": "final" if index == len(exits) - 1 else "partial",
+                "deal": int(deal.ticket),
+                "order": int(deal.order),
+                "volume": float(deal.volume),
+                "price": float(deal.price),
+                "gross_pnl": float(deal.profit),
+                "costs": leg_costs,
+                "net_pnl": float(deal.profit) + leg_costs,
+                "comment": str(deal.comment),
+                "closed_at_utc": datetime.fromtimestamp(
+                    deal.time_msc / 1000.0, timezone.utc
+                ).isoformat(),
+                "remaining_volume": remaining,
+            })
+        if fill:
+            fill.setdefault("symbol", str(entry.symbol) if entry else "XAUUSDr")
+            fill.setdefault(
+                "side",
+                "buy" if entry and entry.type == mt5.DEAL_TYPE_BUY else "sell",
+            )
         orphans.append({
             "position_id": position_id,
             "net_pnl": round(gross + costs, 2),
@@ -135,14 +167,27 @@ def main() -> int:
                 max(d.time for d in exits), timezone.utc
             ).isoformat(),
             "comments": [str(d.comment) for d in exits],
-            "proposal_id": (fills.get(position_id) or {}).get("proposal_id"),
-            "execution_id": (fills.get(position_id) or {}).get("execution_id"),
+            "proposal_id": recorded_fill.get("proposal_id"),
+            "execution_id": recorded_fill.get("execution_id"),
+            "symbol": str(entry.symbol) if entry else "XAUUSDr",
+            "fills": [fill] if fill else [],
+            "average_entry": float(entry.price) if entry else None,
+            "exit_legs": exit_legs,
+            "position_holding_seconds": (
+                max(d.time_msc for d in exits) - entry.time_msc
+            ) / 1000.0 if entry else None,
         })
 
     print("=" * 76)
     print(" BROKER RECONCILIATION — MT5 truth vs our records")
     print("=" * 76)
-    print(f"\n  Qwen positions closed at the broker : {sum(1 for d in grouped.values() if any(x.entry != mt5.DEAL_ENTRY_IN for x in d))}")
+    closed_count = sum(
+        1 for deals in grouped.values()
+        if sum(float(d.volume) for d in deals if d.entry != mt5.DEAL_ENTRY_IN) + 1e-9
+        >= sum(float(d.volume) for d in deals if d.entry == mt5.DEAL_ENTRY_IN)
+        and any(d.entry == mt5.DEAL_ENTRY_IN for d in deals)
+    )
+    print(f"\n  Qwen positions closed at the broker : {closed_count}")
     print(f"  of those, missing from our logs     : {len(orphans)}")
 
     if not orphans:
@@ -163,18 +208,23 @@ def main() -> int:
 
     written = 0
     for o in orphans:
-        paper_executor.append_event({
+        close = {
             "schema_version": 1,
             "event": "mt5_execution_closed",
             "execution_id": o["execution_id"],
             "proposal_id": o["proposal_id"],
+            "symbol": o["symbol"],
             "created_at_utc": o["closed_at_utc"],
             "reason": "reconstructed_from_broker",
+            "fills": o["fills"],
+            "average_entry": o["average_entry"],
             "exit_price": o["exit_price"],
             "gross_pnl": o["gross_pnl"],
             "costs": o["costs"],
             "net_pnl": o["net_pnl"],
             "close_comments": o["comments"],
+            "exit_legs": o["exit_legs"],
+            "position_holding_seconds": o["position_holding_seconds"],
             "pnl_is_complete": True,
             "exit_deal_count": len(o["comments"]),
             "attribution_source": "broker_reconciliation",
@@ -184,11 +234,17 @@ def main() -> int:
             # for nothing else.
             "reconstructed_from_broker": True,
             "reconstruction_note": (
-                "written by tools/reconcile_broker_truth.py after the "
-                "2026-08-11 append_event incident; no monitor path, no entry "
-                "context, P&L is the broker's own figure"
+                "written by tools/reconcile_broker_truth.py because MT5 had a "
+                "closed Qwen position missing from the execution log; P&L and "
+                "exit legs are the broker's own figures"
             ),
-        })
+        }
+        paper_executor.append_event(close)
+        # The graph hook normally materializes this row. Do it explicitly too:
+        # append_event is deliberately best-effort and must never make a repair
+        # command claim success while the dashboard journal is still stale.
+        from market_intelligence.trade_journal import journal_closed_trade
+        journal_closed_trade(close)
         written += 1
     print(f"\n  Wrote {written} reconstructed close record(s).")
     print("  They are marked reconstructed_from_broker so no report or training")

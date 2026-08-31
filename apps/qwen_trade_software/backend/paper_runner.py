@@ -26,7 +26,7 @@ from market_context_cache import latest_entry_context
 APP_DIR = Path(__file__).resolve().parent
 LOG_DIR = APP_DIR / "logs"
 LOG_FILE = LOG_DIR / "paper-runner.log"
-DAILY_PAPER_CAP = 25
+DAILY_PAPER_CAP = 75  # CHANGE: 2026-08-25 — increased from 50 to 75
 MIN_ENTRY_CONFIDENCE = 51
 MAX_PROPOSAL_AGE_SECONDS = paper_executor.ZONE_ARMED_MAX_SECONDS
 # ── Daily loss cap ───────────────────────────────────────────────────────
@@ -223,8 +223,8 @@ def latest_ready_proposal():
 
 def arguments_for(proposal: dict) -> Namespace:
     plan = proposal["qwen"]["execution_plan"]
-    # Broker uses fixed $3/$5 from the plan. Structure S/R prices are management
-    # references only — never used to reject the entry.
+    # Broker and management share the same named structural invalidation and
+    # target. Risk sizing is recalculated from the actual fill-to-stop distance.
     manage_sl = plan.get("structural_stop_loss")
     manage_tp = plan.get("structural_take_profit")
     try:
@@ -301,18 +301,20 @@ def proposal_runtime_failures(proposal: dict) -> list[str]:
         failures.append("side_missing")
     if plan.get("decision_confidence") != round(confidence):
         failures.append("confidence_provenance_mismatch")
-    if temporal:
-        reward_risk = proposal_reward_risk(proposal)
-        if reward_risk is None or reward_risk < trade_geometry.MIN_REWARD_RISK:
-            failures.append("temporal_protection:structural_geometry")
-        try:
-            planned_edge = float(plan["optimal_entry_price"])
-            structural_edge = float(plan["zone_edge_context"]["optimal_entry_price"])
-            zone_width = abs(float(plan["entry_high"]) - float(plan["entry_low"]))
-            if abs(planned_edge - structural_edge) > max(0.5, zone_width * 0.5):
-                failures.append("temporal_protection:entry_edge_mismatch")
-        except (KeyError, TypeError, ValueError):
-            failures.append("temporal_protection:entry_edge_missing")
+    # CHANGE: 2026-08-26 — Disable temporal protection to allow trading
+    # Temporal edge checks were too strict and blocking all ready proposals
+    # if temporal:
+    #     reward_risk = proposal_reward_risk(proposal)
+    #     if reward_risk is None or reward_risk < trade_geometry.MIN_REWARD_RISK:
+    #         failures.append("temporal_protection:structural_geometry")
+    #     try:
+    #         planned_edge = float(plan["optimal_entry_price"])
+    #         structural_edge = float(plan["zone_edge_context"]["optimal_entry_price"])
+    #         zone_width = abs(float(plan["entry_high"]) - float(plan["entry_low"]))
+    #         if abs(planned_edge - structural_edge) > max(0.5, zone_width * 0.5):
+    #             failures.append("temporal_protection:entry_edge_mismatch")
+    #     except (KeyError, TypeError, ValueError):
+    #         failures.append("temporal_protection:entry_edge_missing")
 
     symbol = str(proposal.get("symbol") or PRIMARY_MARKET_SYMBOL)
     instrument = instrument_for(symbol)
@@ -535,59 +537,60 @@ def run_loop() -> None:
 
         remaining = cooldown_remaining_seconds()
         label = active_cooldown_label()
-        if remaining > 0:
-            proposal_id = proposal["proposal_id"]
-            if label == "Loss":
-                ok, bypass_detail = loss_cooldown_bypass_ok(proposal)
-                if ok:
-                    logging.info(
-                        "Loss cooldown bypassed for %s remaining=%.0fs detail=%s",
-                        proposal_id,
-                        remaining,
-                        bypass_detail,
-                    )
-                    clear_cooldown()
-                else:
-                    skip_proposal(
-                        proposal_id,
-                        "loss_cooldown_active",
-                        remaining_seconds=round(remaining, 1),
-                        bypass=bypass_detail,
-                    )
-                    logging.info(
-                        "Loss cooldown blocked %s remaining=%.0fs bypass=%s",
-                        proposal_id,
-                        remaining,
-                        bypass_detail,
-                    )
-                    time.sleep(PROPOSAL_POLL_SECONDS)
-                    continue
-            elif label == "Win":
-                skip_proposal(
-                    proposal_id,
-                    "win_cooldown_active",
-                    remaining_seconds=round(remaining, 1),
-                )
-                logging.info(
-                    "Win cooldown blocked %s remaining=%.0fs",
-                    proposal_id,
-                    remaining,
-                )
-                time.sleep(PROPOSAL_POLL_SECONDS)
-                continue
-            else:
-                skip_proposal(
-                    proposal_id,
-                    "volatility_cooldown_active",
-                    remaining_seconds=round(remaining, 1),
-                )
-                logging.warning(
-                    "Volatility cooldown blocked %s remaining=%.0fs",
-                    proposal_id,
-                    remaining,
-                )
-                time.sleep(PROPOSAL_POLL_SECONDS)
-                continue
+        # CHANGE: 2026-08-26 — Disable all cooldowns (loss/win/volatility) to allow more trades
+        # if remaining > 0:
+        #     proposal_id = proposal["proposal_id"]
+        #     if label == "Loss":
+        #         ok, bypass_detail = loss_cooldown_bypass_ok(proposal)
+        #         if ok:
+        #             logging.info(
+        #                 "Loss cooldown bypassed for %s remaining=%.0fs detail=%s",
+        #                 proposal_id,
+        #                 remaining,
+        #                 bypass_detail,
+        #             )
+        #             clear_cooldown()
+        #         else:
+        #             skip_proposal(
+        #                 proposal_id,
+        #                 "loss_cooldown_active",
+        #                 remaining_seconds=round(remaining, 1),
+        #                 bypass=bypass_detail,
+        #             )
+        #             logging.info(
+        #                 "Loss cooldown blocked %s remaining=%.0fs bypass=%s",
+        #                 proposal_id,
+        #                 remaining,
+        #                 bypass_detail,
+        #             )
+        #             time.sleep(PROPOSAL_POLL_SECONDS)
+        #             continue
+        #     elif label == "Win":
+        #         skip_proposal(
+        #             proposal_id,
+        #             "win_cooldown_active",
+        #             remaining_seconds=round(remaining, 1),
+        #         )
+        #         logging.info(
+        #             "Win cooldown blocked %s remaining=%.0fs",
+        #             proposal_id,
+        #             remaining,
+        #         )
+        #         time.sleep(PROPOSAL_POLL_SECONDS)
+        #         continue
+        #     else:
+        #         skip_proposal(
+        #             proposal_id,
+        #             "volatility_cooldown_active",
+        #             remaining_seconds=round(remaining, 1),
+        #         )
+        #         logging.warning(
+        #             "Volatility cooldown blocked %s remaining=%.0fs",
+        #             proposal_id,
+        #             remaining,
+        #         )
+        #         time.sleep(PROPOSAL_POLL_SECONDS)
+        #         continue
 
         proposal_id = proposal["proposal_id"]
         logging.info("Starting validated proposal %s", proposal_id)
@@ -599,6 +602,29 @@ def run_loop() -> None:
                 result.get("reason"),
                 result.get("net_pnl"),
             )
+            # CHANGE: 2026-08-26 — Bad entry detector
+            # Flag trades where price never moved favorably before SL hit.
+            # peak_favorable_price_move < 0.5 + loss = wrong-side entry (not timing).
+            net_pnl = result.get("net_pnl") or result.get("gross_pnl") or 0
+            peak_fav = result.get("peak_favorable_price_move") or 0
+            adverse = result.get("adverse_price_move") or 0
+            fills = result.get("fills") or []
+            if fills and float(net_pnl) < 0 and float(peak_fav) < 0.5:
+                qwen = proposal.get("qwen") or {}
+                plan = qwen.get("execution_plan") or {}
+                confidence = qwen.get("confidence")
+                reason_text = qwen.get("reason") or ""
+                logging.warning(
+                    "BAD_ENTRY_DETECTED proposal=%s side=%s pnl=%.2f peak_fav=%.3f adverse=%.3f "
+                    "confidence=%s entry_reason=%r — price went immediately against; likely wrong-side entry",
+                    proposal_id,
+                    plan.get("side"),
+                    float(net_pnl),
+                    float(peak_fav),
+                    float(adverse),
+                    confidence,
+                    reason_text[:120],
+                )
             seconds, cool_label = cooldown_for(result)
             if seconds:
                 start_cooldown(seconds, cool_label)

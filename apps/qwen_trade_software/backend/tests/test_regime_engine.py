@@ -36,6 +36,17 @@ def _hh_hl_swings() -> list[dict]:
     ]
 
 
+def _lh_ll_swings() -> list[dict]:
+    return [
+        _swing("high", 4405.0, 0),
+        _swing("low", 4400.0, 1),
+        _swing("high", 4403.0, 2),
+        _swing("low", 4397.0, 3),
+        _swing("high", 4401.0, 4),
+        _swing("low", 4394.0, 5),
+    ]
+
+
 def test_mapped_level_distance_filter():
     assert re.mapped_level_within_distance(4395.0, 4398.0)
     assert not re.mapped_level_within_distance(4349.0, 4398.0)
@@ -108,3 +119,129 @@ def test_unknown_without_atr():
     )
     assert ctx.regime_hint == "unknown"
     assert ctx.regime_state == "unknown"
+
+
+def test_mixed_structure_after_trend_is_a_tradable_pullback():
+    swings = _mixed_range_swings()
+    ctx = re.compute_regime(
+        atr_m1_51=1.2,
+        atr_m1_3=1.2,
+        m5_candle={"open": 4395.0, "high": 4395.6, "low": 4394.4, "close": 4395.2},
+        m5_swings=swings,
+        m15_swings=_hh_hl_swings(),
+        current_price=4395.0,
+        levels={"M5_PREVIOUS_LOW": 4394.5},
+        prev_regime="trend",
+        prev_regime_state="trend_channel",
+        prev_trend_direction="buy",
+    )
+    assert ctx.regime_state == "trend_channel"
+    assert ctx.pullback_active is True
+    assert ctx.trend_direction == "buy"
+    assert ctx.local_swing_direction is None
+    assert ctx.prior_trend_direction == "buy"
+
+
+def test_unresolved_pullback_becomes_range_at_fifteen_minutes():
+    swings = _mixed_range_swings()
+    ctx = re.compute_regime(
+        atr_m1_51=1.2,
+        atr_m1_3=1.2,
+        m5_candle={"open": 4395.0, "high": 4395.6, "low": 4394.4, "close": 4395.2},
+        m5_swings=swings,
+        m15_swings=_hh_hl_swings(),
+        current_price=4395.0,
+        levels={"M5_PREVIOUS_LOW": 4394.5},
+        prev_regime="trend",
+        prev_regime_state="trend_channel",
+        prev_trend_direction="buy",
+        transition_age_minutes=15.0,
+    )
+    assert ctx.regime_state == "range"
+    assert ctx.pullback_active is False
+    assert ctx.transition_expired is True
+
+
+def test_reversal_attempt_confirms_only_after_opposite_displacement():
+    ctx = re.compute_regime(
+        atr_m1_51=1.2,
+        atr_m1_3=1.32,
+        m5_candle={"open": 4399.7, "high": 4400.0, "low": 4397.8, "close": 4398.0},
+        m5_swings=_lh_ll_swings(),
+        m15_swings=_mixed_range_swings(),
+        current_price=4398.0,
+        levels={"M5_BREAK_LEVEL": 4398.5},
+        prev_regime="range",
+        prev_atr_ratio=1.0,
+        prev_regime_state="reversal_attempt",
+        prev_trend_direction="buy",
+    )
+    assert ctx.displacement_through is True
+    assert ctx.trend_direction == "sell"
+    assert ctx.regime_state == "reversal_confirmed"
+
+
+def test_opposite_pattern_without_structural_displacement_stays_attempt():
+    ctx = re.compute_regime(
+        atr_m1_51=1.2,
+        atr_m1_3=1.2,
+        m5_candle={"open": 4399.0, "high": 4399.4, "low": 4398.5, "close": 4398.8},
+        m5_swings=_lh_ll_swings(),
+        m15_swings=_mixed_range_swings(),
+        current_price=4398.8,
+        levels={"M5_BREAK_LEVEL": 4398.7},
+        prev_regime="range",
+        prev_regime_state="reversal_attempt",
+        prev_trend_direction="buy",
+    )
+    assert ctx.displacement_through is None
+    assert ctx.regime_state == "reversal_attempt"
+
+
+def test_sustained_opposite_structure_confirms_by_fifteen_minutes():
+    ctx = re.compute_regime(
+        atr_m1_51=1.2,
+        atr_m1_3=1.2,
+        m5_candle={"open": 4399.0, "high": 4399.4, "low": 4398.5, "close": 4398.8},
+        m5_swings=_lh_ll_swings(),
+        m15_swings=_mixed_range_swings(),
+        current_price=4398.8,
+        levels={"M5_BREAK_LEVEL": 4398.7},
+        prev_regime="trend",
+        prev_regime_state="reversal_attempt",
+        prev_trend_direction="buy",
+        transition_age_minutes=15.0,
+    )
+    assert ctx.regime_state == "reversal_confirmed"
+    assert ctx.trend_direction == "sell"
+    assert ctx.transition_expired is True
+
+
+def test_reversal_attempt_memory_preserves_prior_trend_anchor():
+    memory = {
+        "hint": "range",
+        "atr_ratio": 1.0,
+        "state": "reversal_attempt",
+        "trend_direction": "buy",
+        "transition_started_at_utc": None,
+    }
+    re.update_regime_memory(memory, {
+        "regime_hint": "trend",
+        "atr_ratio_3_51": 1.0,
+        "regime_state": "reversal_attempt",
+        "trend_direction": "sell",
+        "observation_time_utc": "2026-08-25T01:00:00Z",
+    })
+    assert memory["state"] == "reversal_attempt"
+    assert memory["trend_direction"] == "buy"
+    assert memory["transition_started_at_utc"] == "2026-08-25T01:00:00Z"
+
+    re.update_regime_memory(memory, {
+        "regime_hint": "trend",
+        "atr_ratio_3_51": 1.1,
+        "regime_state": "reversal_confirmed",
+        "trend_direction": "sell",
+        "observation_time_utc": "2026-08-25T01:15:00Z",
+    })
+    assert memory["trend_direction"] == "sell"
+    assert memory["transition_started_at_utc"] is None

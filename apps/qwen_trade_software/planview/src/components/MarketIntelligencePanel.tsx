@@ -27,6 +27,7 @@ export function MarketIntelligencePanel({
   const zonePositions = Object.entries(graph?.active_zone_positions ?? {})
     .filter(([key, zone]) => key !== "selection_rule" && zone && typeof zone === "object")
     .map(([key, zone]) => ({ key, zone: zone as Record<string, unknown> }));
+  const zonePlan = graph?.active_zone_plan;
   return (
     <section className="space-y-3 rounded-lg border border-slate-700 bg-slate-900/60 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -97,6 +98,18 @@ export function MarketIntelligencePanel({
         </div>
         {temporalStructure.length > 0 ? (
           <div className="mt-3 space-y-3">
+            <div className="rounded border border-gold/40 bg-gold/5 p-3 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-semibold uppercase tracking-wide text-gold">Neutral zone relationships</div>
+                <div className="text-slate-400">No directional authority · {value(zonePlan?.status)}</div>
+              </div>
+              <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                <div><span className="text-slate-500">Focus: </span><span className="text-slate-100">{value(zonePlan?.focus_zone?.zone_low)}–{value(zonePlan?.focus_zone?.zone_high)}</span> <span className="text-slate-500">({value(zonePlan?.focus_zone?.primary_owning_timeframe)})</span></div>
+                <div><span className="text-slate-500">Support below: </span><span className="text-slate-100">{value(zonePlan?.support_below?.zone_low)}–{value(zonePlan?.support_below?.zone_high)}</span></div>
+                <div><span className="text-slate-500">Resistance above: </span><span className="text-slate-100">{value(zonePlan?.resistance_above?.zone_low)}–{value(zonePlan?.resistance_above?.zone_high)}</span></div>
+              </div>
+              <div className="mt-2 text-slate-500">Zones remain explicit bands. Distance is measured to the nearest boundary, never a midpoint.</div>
+            </div>
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
               {temporalStructure.map((row) => (
                 <div key={row.timeframe} className="rounded bg-slate-950/70 p-2 text-xs">

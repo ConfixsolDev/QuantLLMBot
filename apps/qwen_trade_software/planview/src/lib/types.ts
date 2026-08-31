@@ -174,6 +174,18 @@ export interface RuntimeStatus {
   planner_alive?: boolean;
 }
 
+export interface RegimeContext {
+  regime_state?: string;
+  regime_hint?: string;
+  regime_family?: "trend" | "range" | "reversal" | string;
+  trend_direction?: "buy" | "sell" | null;
+  volatility_state?: string | null;
+  regime_transition?: boolean | null;
+  pullback_active?: boolean;
+  transition_age_minutes?: number | null;
+  source?: "live_management" | "latest_entry_decision" | "runtime_memory" | string;
+}
+
 /**
  * A day plan is a CONTAINER of two branches, not a directional bet.
  * It has no status of its own — each branch resolves independently, and only a
@@ -388,6 +400,7 @@ export interface Snapshot {
   market_intelligence?: MarketIntelligence;
   qwen_trace?: QwenTrace;
   qwen_event_gate?: { fingerprint?: string; called_at_epoch?: number; reason?: string };
+  regime_context?: RegimeContext;
 }
 
 export interface StructureMemoryState {
@@ -443,10 +456,22 @@ export interface GraphContext {
     volume_confirmation?: { ratio?: number | null; sample_count?: number };
   }>;
   active_zone_positions?: Record<string, {
-    zone_id?: string; zone_low?: number; zone_high?: number; distance?: number;
+    zone_id?: string; zone_low?: number; zone_high?: number; distance_to_zone?: number;
+    distance_to_low_boundary?: number; distance_to_high_boundary?: number;
+    current_relation?: string;
     contributing_timeframes?: string[]; primary_owning_timeframe?: string;
     structural_proof?: string; history?: string; evidence_ids?: string[];
   } | string | null>;
+  active_zone_plan?: {
+    status?: string; source?: string; selection_rule?: string;
+    focus_zone?: {
+      zone_low?: number; zone_high?: number; primary_owning_timeframe?: string;
+      distance_to_zone?: number; current_relation?: string;
+    } | null;
+    support_below?: { zone_low?: number; zone_high?: number; distance_to_zone?: number } | null;
+    resistance_above?: { zone_low?: number; zone_high?: number; distance_to_zone?: number } | null;
+    directional_authority?: boolean; execution_authority?: boolean;
+  };
   symbols?: Record<string, {
     structure_evidence?: Record<string, GraphStructureEvidence[]>;
     [key: string]: unknown;

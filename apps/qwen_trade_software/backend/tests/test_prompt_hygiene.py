@@ -47,6 +47,9 @@ PRIMING_PHRASES = (
 
 MODEL_FACING_SECTIONS = (
     "qwen_cached_entry",
+    "qwen_entry_trend",
+    "qwen_entry_range",
+    "qwen_entry_reversal",
     "qwen_dual_side_entry",
     "qwen_trade_management",
     "qwen_intraday_observer",
@@ -98,6 +101,15 @@ def test_live_entry_contract_uses_one_direction_not_dual_assessment():
     assert "build one directional assessment rather than separate long and short" in body
 
 
+def test_shared_entry_contract_keeps_strategy_inside_regime_modules():
+    body = load_section("qwen_cached_entry").lower()
+    assert "shared structure, location, closed-response" in body
+    assert "range uses scalp" not in body
+    assert "trend/breakout uses" not in body
+    assert "use the matching playbook to organize the evidence" in body
+    assert "fresh mapped-level response" in body
+
+
 def test_live_entry_contract_has_no_prohibition_wall():
     """v1.9's nine-item prohibition list zeroed the confidence distribution.
 
@@ -115,6 +127,16 @@ def test_live_entry_contract_has_no_prohibition_wall():
     body = load_section("qwen_cached_entry")
     assert "Hard traps" not in body
     assert body.lower().count("do not ") <= 8
+
+
+def test_range_playbook_repeats_edges_and_skips_only_to_mapped_next_level():
+    body = load_section("qwen_entry_range").lower()
+    assert "repeating two-sided auction" in body
+    assert "buying completed\nfailures at its lower boundary" in body
+    assert "selling completed failures at its upper\nboundary" in body
+    assert "wait for the next mapped support or\nresistance" in body
+    assert "runtime promotes the market to breakout_confirmed" in body
+    assert "never promotes\nthe regime from expectation alone" in body
 
 
 def test_prohibitions_are_directionally_balanced():

@@ -1,3 +1,5 @@
+import json
+
 from market_intelligence.store import IntelligenceStore
 from market_intelligence import trade_journal
 from market_intelligence.trade_journal import build_journal, journal_closed_trade
@@ -50,6 +52,13 @@ def losing_close():
             "filled_at_utc": "2026-08-21T06:53:05+00:00",
             "stop_loss": 97.0, "take_profit": 105.0,
             "sl_source": "fixed_3_5_after_geometry:reward_risk_too_low",
+            "entry_gate": "armed_m1_failure_at_optimal",
+            "entry_trigger_candle": {
+                "evidence_id": "candle:XAUUSDr:M1:trigger",
+                "open_time_utc": "2026-08-21T06:52:00Z",
+                "close_time_utc": "2026-08-21T06:53:00Z",
+                "open": 100.8, "high": 101.1, "low": 99.8, "close": 100.1,
+            },
         }],
     }
 
@@ -62,6 +71,10 @@ def test_builds_evidence_based_loss_postmortem():
     assert "structural_geometry_rejected_fallback" in journal["loss_reasons_json"]
     assert "favorable_excursion_not_secured" in journal["loss_reasons_json"]
     assert "entry_edge_mismatch" in journal["loss_reasons_json"]
+    evidence = json.loads(journal["entry_evidence_json"])
+    assert evidence["selected_zone"]["zone_low"] == 100.0
+    assert evidence["execution_trigger"]["evidence_id"] == "candle:XAUUSDr:M1:trigger"
+    assert evidence["execution_trigger"]["direction"] == "down"
 
 
 def test_sqlite_journal_is_idempotent(tmp_path):
@@ -76,6 +89,7 @@ def test_sqlite_journal_is_idempotent(tmp_path):
         assert rows[0]["loss_reasons"]
         assert rows[0]["qwen_analysis_status"] == "pending"
         assert rows[0]["exit_legs"] == []
+        assert rows[0]["entry_evidence"]["execution_trigger"]["direction"] == "down"
     finally:
         store.db.close()
 

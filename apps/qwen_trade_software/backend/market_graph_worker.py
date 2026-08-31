@@ -12,9 +12,8 @@ import uuid
 from pathlib import Path
 
 from market_graph.client import Neo4jMarketGraph
-from market_graph.context_compiler import compile_market_memory
 from market_graph.config import graph_config, graph_context_path, graph_health_path
-from market_graph.projector import GraphProjector
+from market_graph.live_updater import Neo4jLiveUpdater
 from market_graph.market_state import load_current_market_state
 from market_intelligence.store import IntelligenceStore
 import process_logging
@@ -103,27 +102,30 @@ def run(db_path: Path, once: bool = False) -> None:
         try:
             graph = Neo4jMarketGraph.connect(config)
             graph.ensure_schema()
-            projector = GraphProjector(store, graph, config)
+            updater = Neo4jLiveUpdater(store, graph, config)
             logging.info("graph connection ready")
             process_logging.structured_event("graph_connection", status="ready")
             last_health_log = 0.0
             while True:
                 started = time.monotonic()
                 context = None
-                result = projector.project_once()
-                graph.upsert_market_state(load_current_market_state(MARKET_CONTEXT_DB, config.symbols))
-                stats = store.graph_outbox_stats()
+                market_state = load_current_market_state(MARKET_CONTEXT_DB, config.symbols)
+                cycle = updater.update(market_state)
+                result = cycle["projection"]
+                stats = cycle["outbox"]
                 health = {
-                    "status": "ready" if result["status"] != "error" else "degraded",
+                    "status": (
+                        "ready" if result["status"] != "error" and cycle["m1_freshness"]["fresh"]
+                        else "degraded"
+                    ),
                     "updated_at_epoch": time.time(),
                     "configuration": config.public(),
                     "projection": result,
                     "outbox": stats,
+                    "m1_freshness": cycle["m1_freshness"],
                 }
                 try:
-                    raw_context = graph.context(config.symbols)
-                    raw_context.update({"projection": stats, "schema_version": config.schema_version})
-                    context = compile_market_memory(raw_context)
+                    context = cycle["context"]
                     atomic_json(graph_context_path(APP_DIR), context)
                     health["context_compiler"] = {
                         "packet_bytes": context["packet_bytes"],

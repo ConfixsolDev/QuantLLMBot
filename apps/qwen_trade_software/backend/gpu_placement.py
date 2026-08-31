@@ -18,12 +18,22 @@ class GpuPlacementRequired(RuntimeError):
 def classify_residency(
     running: list[dict], model: str, *, min_vram_share: float = MIN_VRAM_SHARE
 ) -> dict:
+    # 2026-08-28: matched only row["name"]. If an Ollama version keys the
+    # running-process entry as "model" instead of (or in addition to) "name",
+    # every row here would look nameless and this always reports "unloaded"
+    # even while the model is genuinely resident on GPU. Check both fields;
+    # this can only widen a match, never falsely narrow one.
+    base_name = model.split(":")[0].strip().lower()
+
+    def _row_name(row: dict) -> str:
+        return str(row.get("name") or row.get("model") or "").strip()
+
     resident = next(
         (
             row
             for row in running
-            if row.get("name") == model
-            or str(row.get("name") or "").startswith(model.split(":")[0])
+            if _row_name(row).lower() == model.strip().lower()
+            or _row_name(row).lower().startswith(base_name)
         ),
         None,
     )

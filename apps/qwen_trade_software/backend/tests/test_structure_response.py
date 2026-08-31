@@ -66,3 +66,15 @@ def test_nearby_responses_rank_rejection_before_acceptance():
     rows = evaluate_nearby_responses(levels, candle, atr=5, point_size=0.01)
     assert rows[0]["level_id"] == "HIGH"
     assert rows[0]["state"] == "sweep_rejection"
+
+
+def test_named_previous_low_stays_support_despite_conflicting_pattern():
+    level = {
+        "id": "M1_PREVIOUS_LOW", "tf": "M1", "lo": 100, "hi": 100,
+        "role": "previous_low", "pattern": "double_top",
+    }
+    candle = {"open": 100.2, "high": 100.5, "low": 99.5, "close": 100.3}
+    response = evaluate_zone_response(level, candle, atr=1, point_size=0.01)
+    assert response["zone_side"] == "support"
+    assert response["direction"] == "buy"
+    assert response["confirmed"] is True

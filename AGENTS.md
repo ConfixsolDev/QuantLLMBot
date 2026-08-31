@@ -15,6 +15,10 @@
 
 4. **Live doctrine** → `store/core_skill.md` + `store/sop.md` (improve, don’t inflate).
 
+5. **Every trading or architecture change** → read and obey
+   [`.cursor/rules/trading-change-evidence-gate.mdc`](.cursor/rules/trading-change-evidence-gate.mdc).
+   R&D is mandatory before mutation. Unsupported behavioral changes are vetoed.
+
 ## Sole architecture authority
 
 Use only [`XAUUSD_SYSTEM_ARCHITECTURE_V2.md`](XAUUSD_SYSTEM_ARCHITECTURE_V2.md).

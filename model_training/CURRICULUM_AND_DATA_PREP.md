@@ -313,10 +313,11 @@ Default in code is **v005**. Flip `DEFAULT_MODEL` in `review_shared.py` only aft
 
 Stage_05 must be rebuilt with `build_stage05_live_contract.py` after any stage_02/04 append. Its required alignment is:
 
-- entry contract `qwen_cached_entry:1.20`, `bias=buy|sell|wait`, confidence 1–100;
+- entry contract `qwen_cached_entry:3.0`, the minimal production decision schema: `bias`, `confidence`, `evidence_ids`, `plan_status`, `geometry_row_id`, `plan_reason`, and `data_requests`; runtime supplies epochs and resolves the complete broker plan from the selected geometry row;
 - management contract `qwen_trade_management:2.5` with only deployed enums;
 - M15, M30, H1, H4 elapsed/remaining time on every prompt, with `M15 builds M30; M30 builds H1; H1 builds H4`;
 - candle-clock phase is context, never a substitute for completed price evidence;
+- Colab training uses Transformers `>=4.45,<5`; `02_finetune.py` preserves the assistant-only `-100` label mask with `DataCollatorForSeq2Seq` and must not use removed 5.x `TrainingArguments` fields;
 - closed M1 probe/failure is the execution trigger; closed M5 adds strength but is not mandatory.
 - persistent_market_memory carries replayable parent/child state and DXY relationship context;
 - selected wait rows teach bounded `data_requests`, never arbitrary SQL or broker writes.

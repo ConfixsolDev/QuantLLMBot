@@ -383,6 +383,19 @@ def test_a_positive_protection_sl_has_no_cooldown():
     assert pr.cooldown_for(result) == (0, "")
 
 
+def test_a_positive_protection_sl_without_broker_comment_has_no_cooldown():
+    """The normalized close reason is authoritative if MT5 omits [sl ...]."""
+    import paper_runner as pr
+
+    result = {
+        "reason": "managed_or_safety_sl",
+        "net_pnl": 31.25,
+        "pnl_is_complete": True,
+        "close_comments": [],
+    }
+    assert pr.cooldown_for(result) == (0, "")
+
+
 def test_a_negative_sl_still_has_loss_cooldown():
     import paper_runner as pr
 
@@ -480,6 +493,14 @@ def test_both_cooldowns_are_in_the_build_manifest():
     assert bm.MANIFEST["tunables"]["paper_runner.LOSS_COOLDOWN_SECONDS"] == 300
     assert bm.MANIFEST["tunables"]["paper_runner.LOSS_COOLDOWN_BYPASS_MIN_CONFIDENCE"] == 82
     assert bm.MANIFEST["tunables"]["paper_runner.LOSS_COOLDOWN_BYPASS_MIN_REWARD_RISK"] == 2.5
+
+
+def test_daily_paper_cap_is_consistent_across_entry_workers():
+    import paper_runner as pr
+    import reviewer
+
+    assert pr.DAILY_PAPER_CAP == 75
+    assert reviewer.DAILY_PAPER_CAP == pr.DAILY_PAPER_CAP
 
 
 def test_the_manifest_captures_every_named_tunable():

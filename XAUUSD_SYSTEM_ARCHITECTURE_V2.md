@@ -76,6 +76,24 @@ counter-direction movement on M15/M5/M1 may be the pullback into its planned
 zone. That pullback becomes contradiction only after accepted failure of the
 named invalidation on its owning timeframe.
 
+### All-regime scalp participation
+
+Every recognized market regime may produce a paper scalp; regime labels alter
+setup shape, selectivity and risk budget rather than imposing a blanket
+no-entry state. Trend uses with-trend pullback responses, range uses outer-edge
+failures, breakout transition uses either a failed break or held retest,
+reversal transition uses only a fresh mapped response without claiming a full
+reversal, and climax/exhaustion forbids chasing but permits the first confirmed
+mapped response. Unknown state, closed/off-session market, stale evidence,
+missing response, invalid geometry and account-risk circuit breakers remain
+fail-closed.
+
+The default entry uses the named structural invalidation and named structural
+objective owned by M15 or above. Position size adapts to the real stop distance.
+M1/M5 time the entry but cannot create the trade location. Qwen management may
+extend a valid target only after post-entry continuation evidence. Trade count
+is measured rather than forced; no frequency target may manufacture an entry.
+
 ### Canonical four-phase trading lifecycle
 
 These phases are sequential and have distinct owners. A later phase may not
@@ -90,6 +108,8 @@ silently redo an earlier phase's job.
    lifecycle. A zone is a location to observe, never an order by itself. Its
    lifetime is distinct from an entry-trigger lifetime: it may remain armed
    through a later price revisit within a bounded session window.
+   A legacy M1/M5-owned idea cannot veto or preserve direction against this
+   M15+ location contract; it is timing state, not a parent trade thesis.
    A Qwen `ready` decision is fail-closed unless it names the complete entry
    zone, structural invalidation, and target. Runtime may validate those names
    but may not synthesize missing geometry, substitute a nearby zone, or move
@@ -101,6 +121,26 @@ silently redo an earlier phase's job.
    adapter converts that wire object into the internal execution plan before
    strategy validation. Strategy updates may change judgment instructions but
    may not change transport fields, sentinel rules, or fail-closed validation.
+   Before inference, Python compiles a neutral `entry_geometry_menu` from every
+   fresh confirmed response at an M15/M30/H1/H4/D1-owned level. Each row exposes one anchor and named M15+
+   stops/targets that are on valid sides with sufficient target
+   room. The menu does not rank or select a trade; Qwen must choose one complete
+   row. This prevents malformed contracts without transferring directional or
+   opportunity authority from Qwen. Runtime may publish a deterministic regime
+   label and parent-auction direction as context, but it must preserve every
+   otherwise valid structural response row for Qwen. It cannot remove a side or
+   veto Qwen merely because that response opposes the regime label. A
+   counter-auction plan still requires a fresh response at a mapped level and
+   valid geometry; only accepted failure of the owning structure, stale facts,
+   invalid geometry, or an explicit safety invariant may block it.
+   Qwen also receives a compact neutral four-hour auction window built from the
+   latest sixteen completed M15 candles. It contains outer and body bounds,
+   midpoint, width, current price region, overlap/two-sidedness facts, and a
+   description of the latest completed M15 candle. The window is context—not a
+   declared range, direction, entry signal, target, or execution veto. Qwen
+   judges whether those facts describe balance, a range leg, transition, or
+   accepted breakout together with the mapped-level responses and session/day
+   context.
 3. **Qualify the entry at the zone.** Code requires price inside the zone, a
    completed M1 probe-and-failure response in the planned direction, and price
    at the plan's optimal zone edge. Direction, zone, target and structural
@@ -108,7 +148,10 @@ silently redo an earlier phase's job.
    map and optional strength evidence, not a routine second confirmation that
    delays entry until the move is exhausted. BOS/CHoCH, liquidity sweep, FVG
    and Fibonacci/OTE location remain supporting confluence, not standalone
-   triggers. Only then may the executor submit the order.
+   triggers. The executor may submit at the next M1 open while the mapped zone,
+   structural invalidation, target, freshness and broker-risk checks remain
+   valid. Deterministic code does not add a second directional opinion after
+   Qwen has qualified that completed market-structure response.
    Expiry of the short Qwen/M1 signal does not delete the mapped zone. The
    executor keeps it armed for up to 15 minutes by default, but requires the
    latest completed M1 candle to provide a fresh probe-and-failure response at
@@ -123,6 +166,10 @@ silently redo an earlier phase's job.
    invalid, tighten SL only behind newly formed structure, and extend TP only
    after confirmed continuation. It must never widen the stop, increase entry
    risk, average, reverse, or use profit/points as an exit shortcut.
+   Ordinary post-entry candles remain Qwen-managed against the named structure.
+   Deterministic protection is reserved for broker SL/TP enforcement, immutable
+   structural invalidation, and latency-sensitive sudden-move/MFE protection;
+   it cannot close merely because the first M1 candle opposes the position.
 
 The runtime, rather than the model, enforces every safety invariant in phases
 3 and 4. Qwen supplies contextual judgment and named-level decisions; broker
@@ -289,6 +336,17 @@ based on distance, highest owner, freshness, structural proof, session
 relevance, participation, and room to the opposing zone. Zone history is a
 neutral one-line sequence: formed, tests, latest response, current status, and
 unresolved condition.
+
+A zone is always transported and reasoned about as the explicit closed band
+`[zone_low, zone_high]`; it is never replaced by a synthetic midpoint price.
+Distance is boundary-relative: zero while inside the band, distance to
+`zone_high` while above it, and distance to `zone_low` while below it. Both
+signed boundary distances remain available for replay. A legacy point level
+may be represented only as an explicitly labelled zero-width band; graph or
+observer code may not silently invent width, midpoint, direction, or role.
+The trade journal records the decision candle evidence separately from the
+latest completed M1 candle that actually armed the fill, so a stale thesis
+cannot be presented as if it were the execution trigger.
 
 Volume fields are labeled as MT5 tick-volume participation proxies, never true
 buy/sell volume. For the active zone and timeframe structure, the compiler may
@@ -720,11 +778,21 @@ leaves the mapped-zone plus closed-M1 failure gates authoritative. Replay of
 ---
 
 ### P20 — No Transition Detection (Range↔Trend)
-**Component:** Missing entirely  
+**Component:** `regime_engine.py`
 **Severity:** HIGH — transitions are where money is made or lost  
 **Evidence:** The 06:25 displacement candle that broke the range top was a range→trend transition. Trades 8-9 entered sell into the new uptrend. No mechanism flagged the transition.  
 **Root cause:** Detecting transitions requires temporal change detection: "ATR was X, now it's Y" + "displacement just occurred at a boundary" + "swing pattern just changed." This is a state machine, not a snapshot.  
-**Fix path:** Track `prev_regime` and `prev_atr_ratio`. When regime_hint changes, flag transition. Supply `regime_transition` field in context. Qwen learns to handle transitions explicitly.
+**Active rule:** Trend and range are persistent auction regimes. Pullback,
+breakout-attempt, reversal-attempt, and exhaustion are bounded transition
+conditions. The first completed M5 mixed/opposite observation starts one
+replayable transition clock. A mixed M5 leg initially remains a pullback inside
+the owning trend; it does not erase that trend or disable with-trend pullback
+entries. Before 15 completed minutes, fresh displacement and aligned structure
+may resolve the state sooner. At 15 minutes the state must resolve from closed
+facts: sustained opposite M5 structure confirms the new direction, unresolved
+mixed structure becomes range/tight-range, and restored owning-direction
+structure resumes the prior trend. A transition state may never persist beyond
+15 minutes merely because one mapped-level displacement candle was absent.
 
 ---
 
@@ -1129,6 +1197,10 @@ MFE steps. The remaining 75% keeps the existing broker floor until 2.00 ATR;
 from 2.00 ATR it may use a stepped floor 0.50 ATR behind MFE, but only when that
 floor tightens the stop already accepted by the broker. A front-floor breach
 closes the 25% layer once. The worker never moves TP.
+Parent-candle boundary windows and volatility cooldowns never force an early
+break-even stop on an open trade. They govern entry timing only. The normal
+protection ladder must earn its own MFE/ATR threshold so a small favorable tick
+cannot replace the structural target with a tiny profit.
 
 Qwen may keep, extend, or reduce TP to an exact supplied named level. Extension
 requires completed M1+M5 continuation acceptance. Reduction requires the latest
@@ -1542,7 +1614,7 @@ Every problem has a testable success criterion:
 | P14 | Tick-based reached | In trend mode, wick-only touches don't trigger rejection guard | Replay guard behavior on wick touches |
 | P15 | Wrong target mode | Range entries have first_target at M5 boundary, not H1 | Check target levels in proposals |
 | P19 | No range detection | Range detected when price bounces 3+ times between M5 levels | Replay known ranging sessions |
-| P20 | No transitions | Breakout detected within 2 M5 candles of range boundary break | Replay known breakout events |
+| P20 | No transitions | Every transition resolves within 15 completed minutes; ordinary trend pullbacks retain the owning trend and direction | Replay range breaks, opposite M5 sequences, mixed pullbacks, and trend resumptions |
 | P21 | Closed response missed by stale playbook | 100% of replayed probe-and-close fixtures appear in `structural_responses` on the next decision | Replay identical normalized fixtures for XAUUSD and a non-gold price scale |
 | P22 | Stateless intraday interpretation | Observer reproduces confirmed swing sequence and level-touch episodes exactly on replay; fresh notebook is present on >95% of open-session Qwen decisions | Replay five trading days, compare observer facts to immutable M5 evidence, and count fresh contract attachment in decision logs |
 
@@ -1555,7 +1627,7 @@ Every problem has a testable success criterion:
 | Regime detection false positives | HIGH | Log-only phase first. Regime_hint is a hint — guard can ignore when evidence is weak. Qwen can override. |
 | Scalp guard exits too early in trend | MEDIUM | Only fires when regime_hint = "range". Requires range detection (bounces + width). Falls through to Qwen if unsure. |
 | ATR cache bars stale | LOW | Cache refreshes every M1 close. ATR uses 51 bars (~51 min). Staleness < 1 min is harmless. |
-| Regime transition lag | MEDIUM | Breakout detection requires displacement (body/ATR > 0.8) which is a lagging indicator by 1 candle. Acceptable — better late than wrong. |
+| Regime transition lag | MEDIUM | Closed displacement can resolve immediately, but a single-candle requirement cannot hold Gold in transition. One deterministic clock forces trend/range resolution by 15 completed minutes. |
 | Displacement threshold too aggressive/conservative | MEDIUM | Start with body_pct > 0.65 and body_atr > 0.8. Tune from paper trade data. Log all displacement candidates for threshold analysis. |
 | Two guards create edge cases | HIGH | Both paths have invalidation check first (regime-independent). Unknown regime falls through to Qwen. Both guards log their regime + reason for audit. |
 | Curriculum doesn't stick in 7B model | MEDIUM | Qwen 7B has limited capacity. Keep regime vocabulary simple (4 states). Don't teach complex conditional logic — Python handles complexity, Qwen judges quality. |
@@ -1582,3 +1654,5 @@ Every problem has a testable success criterion:
 7. **Measure against baseline.** Every phase compares against the pre-change paper trade results. If a phase makes things worse, revert and investigate before proceeding.
 
 8. **Qwen is the sole discretionary brain, not the whole implementation.** The guard, executor, regime engine, level detection, SQLite, Neo4j, and retrieval services are deterministic support components. They compute facts, provide context, enforce approved safety, and execute validated instructions; they do not compete with Qwen for normal trade judgment. Qwen receives their mechanically sound evidence and remains the main driver for entries and routine management.
+
+9. **Minimal model contracts.** Entry Qwen returns only directional judgment, confidence, cited evidence, ready/wait, one approved geometry-row identifier, a short reason, and bounded data requests. Runtime supplies cache epochs and expands that row into side, entry, stop, target, target mode, and volume. Trade-management Qwen runs only when exactly one Qwen-owned position is already open and may manage only that position; it never searches for, proposes, adds, averages, reverses, or opens trades.

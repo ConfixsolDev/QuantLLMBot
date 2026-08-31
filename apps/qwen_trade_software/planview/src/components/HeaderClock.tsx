@@ -2,9 +2,10 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import type { Clock, RuntimeStatus } from "@/lib/types";
+import type { Clock, RegimeContext, RuntimeStatus } from "@/lib/types";
 import { SESSION_LABELS } from "@/lib/types";
 import { useHideLowConfidence } from "@/lib/hideLowConfidence";
+import { RegimeBadge } from "@/components/RegimeBadge";
 
 function countdown(nextBoundaryUtc: string): string {
   const target = new Date(nextBoundaryUtc).getTime();
@@ -53,11 +54,13 @@ export function HeaderClock({
   plannerStatus,
   plannerAlive,
   runtime,
+  regime,
 }: {
   clock: Clock;
   plannerStatus: string;
   plannerAlive?: boolean;
   runtime?: RuntimeStatus | null;
+  regime?: RegimeContext | null;
 }) {
   const [remaining, setRemaining] = useState(countdown(clock.next_boundary_utc));
 
@@ -103,6 +106,7 @@ export function HeaderClock({
           label="Planner"
           detail={plannerStatus}
         />
+        <RegimeBadge regime={regime} />
         <label className="ml-auto flex items-center gap-2 text-xs text-slate-300">
           <input
             type="checkbox"

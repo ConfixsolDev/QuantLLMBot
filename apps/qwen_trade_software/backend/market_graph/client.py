@@ -324,8 +324,9 @@ CALL (symbol) {
   }
   CALL (story) {
     OPTIONAL MATCH (story)-[:HAS_LEVEL_READ]->(levelReadNode:IntradayLevelRead)
-    WITH levelReadNode ORDER BY levelReadNode.touch_episodes_today DESC,
-                                 levelReadNode.timeframe,levelReadNode.level_id
+    // Do not order by optional observer-only properties. Older graph stores
+    // legitimately have no touch_episodes_today field yet.
+    WITH levelReadNode ORDER BY levelReadNode.timeframe,levelReadNode.level_id
     RETURN collect(CASE WHEN levelReadNode IS NULL THEN null ELSE
       levelReadNode{.*} END) AS raw_levels
   }

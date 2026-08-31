@@ -357,6 +357,9 @@ def prepare_live_contract_data(
         role = row["role"]
         instruction = (
             f"Return only valid JSON for {row['contract_version']}. "
+            "Return exactly bias, confidence, evidence_ids, plan_status, geometry_row_id, plan_reason, and data_requests. "
+            "A ready plan must have an empty data_requests array and select one geometry_row_id. "
+            "A wait plan must use geometry_row_id __none__. "
             "Use only supplied IDs and facts. Candle time is risk context, not closed-price evidence. "
             "M15 builds M30; M30 builds H1; H1 builds H4. Near a boundary, do not chase a late "
             "move; require completed-candle confirmation and protect an open trade when its named "

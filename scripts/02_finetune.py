@@ -22,7 +22,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    DataCollatorForLanguageModeling,
+    DataCollatorForSeq2Seq,
     Trainer,
     TrainingArguments,
 )
@@ -214,7 +214,6 @@ def main():
         gradient_checkpointing=training_config.gradient_checkpointing,
         seed=training_config.seed,
         report_to=["wandb"] if pipeline_config.use_wandb else [],
-        logging_dir=str(LOGS_DIR),
     )
 
     logger.info(f"  ✓ Effective batch size: {training_config.per_device_train_batch_size * training_config.gradient_accumulation_steps}")
@@ -229,7 +228,15 @@ def main():
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
+        # Preserve the -100 prompt mask created in load_training_data(). The
+        # causal-LM collator recreates labels from input_ids and can silently
+        # train on the user prompt as well as the assistant response.
+        data_collator=DataCollatorForSeq2Seq(
+            tokenizer=tokenizer,
+            padding=True,
+            label_pad_token_id=-100,
+            return_tensors="pt",
+        ),
     )
 
     logger.info("  ✓ Trainer initialized")

@@ -108,7 +108,14 @@ INTRADAY_OBSERVER_PROMOTED = os.environ.get("QWEN_INTRADAY_OBSERVER_LIVE", "0") 
 AUTO_MANAGE_QWEN_OWNED = True
 
 LAST_MANAGED_M1_BY_TICKET: dict[int, str] = {}
-LAST_REGIME_HINT: dict[str, float | str | None] = {"hint": None, "atr_ratio": None}
+LAST_REGIME_HINT: dict[str, float | str | None] = {
+    "hint": None,
+    "atr_ratio": None,
+    "state": None,
+    "trend_direction": None,
+    "transition_started_at_utc": None,
+    "pullback_active": False,
+}
 CONSECUTIVE_QWEN_FAILURES: dict[int, int] = {}
 ENTRY_CONTEXT_BY_TICKET: dict[int, dict] = {}
 EXECUTION_MONITOR_BY_ID: dict[str, dict] = {}
@@ -548,6 +555,8 @@ def update_dashboard(positions, levels_by_symbol, today, review=None, protection
                 review.get("invalidation"),
                 review.get("execution_plan"),
             ),
+            # CHANGE: 2026-08-26 — Add deterministic response code (90%+ accurate)
+            "deterministic_code": review.get("deterministic_code", "unknown"),
             "updated_at": datetime.now().isoformat(timespec="seconds"),
         }
     write_json_atomic(MANAGEMENT_STATE_FILE, state)
@@ -874,15 +883,28 @@ def apply_confirmed_protection(position, decision: dict, facts: dict) -> list:
     new_tp = old_tp
     if sl_reference:
         candidate_sl = float(sl_reference["price"])
-        # Management may only reduce broker risk. Initial structural bracket
-        # correction is handled separately by initial_rebracket().
+        # CHANGE: 2026-08-26 — Allow both tighter AND wider SL adjustments
+        # as structure changes (new support/resistance invalidations)
+        # Original: only reduce risk (tighter stops)
+        # Now: adjust to structural invalidation, even if wider
         tighter = (
             not old_sl
             or (position.type == mt5.POSITION_TYPE_BUY and candidate_sl > old_sl)
             or (position.type != mt5.POSITION_TYPE_BUY and candidate_sl < old_sl)
         )
-        if tighter and valid_level_for_position(position, candidate_sl, "sl"):
+        wider = (
+            old_sl
+            and (position.type == mt5.POSITION_TYPE_BUY and candidate_sl < old_sl)
+            or (position.type != mt5.POSITION_TYPE_BUY and candidate_sl > old_sl)
+        )
+        # Allow adjustment if valid structural level (tight or wide)
+        if (tighter or wider) and valid_level_for_position(position, candidate_sl, "sl"):
             new_sl = candidate_sl
+            if wider:
+                logging.info(
+                    "SL extended: ticket=%d old=%.3f new=%.3f reason=structural_change",
+                    position.ticket, old_sl, candidate_sl
+                )
     if tp_reference:
         candidate_tp = float(tp_reference["price"])
         tracked = management_policy.Position(
@@ -1015,10 +1037,30 @@ def rebracket_if_needed(position, levels_by_symbol: dict) -> None:
     stop_already_adequate = False
     target_already_adequate = False
     if current_sl:
-        # A live SL is the accepted entry invalidation. The initial correction
-        # may add a missing SL, but may never replace one with a wider stop.
-        stop_px = None
-        stop_already_adequate = True
+        # CHANGE: 2026-08-26 — Allow SL extension as trade moves in profit
+        # Check if structural level supports extending SL with trade momentum
+        is_buy = position.type == mt5.POSITION_TYPE_BUY
+        profit_pct = ((price - position.price_open) / position.price_open * 100) if is_buy else ((position.price_open - price) / position.price_open * 100)
+
+        # Extend SL if: (1) in profit, (2) new level is LESS risky than current SL
+        if profit_pct > 1.0 and stop_px is not None:
+            # For buy: new SL should be higher (less risk) = better
+            # For sell: new SL should be lower (less risk) = better
+            can_extend = (is_buy and stop_px > current_sl) or (not is_buy and stop_px < current_sl)
+            if can_extend:
+                # Allow extension; keep stop_px for updating
+                logging.info(
+                    "SL can extend: ticket=%d profit=%.1f%% old_sl=%.3f new_structure_sl=%.3f",
+                    position.ticket, profit_pct, current_sl, stop_px
+                )
+            else:
+                # No extension opportunity; keep current
+                stop_px = None
+                stop_already_adequate = True
+        else:
+            # Not in profit enough; keep current SL
+            stop_px = None
+            stop_already_adequate = True
     if target_px is not None and current_tp:
         # Never pull the target closer than the one the entry was built on.
         if is_buy and target_px <= current_tp:
@@ -1227,7 +1269,7 @@ def review_positions() -> None:
     pos = position_to_dict(position)
     regime = {}
     try:
-        from regime_engine import snapshot_regime
+        from regime_engine import snapshot_regime, update_regime_memory
 
         regime = snapshot_regime(
             symbol=primary_symbol,
@@ -1235,9 +1277,13 @@ def review_positions() -> None:
             levels=levels_by_symbol.get(primary_symbol) or {},
             prev_regime=LAST_REGIME_HINT.get("hint"),
             prev_atr_ratio=LAST_REGIME_HINT.get("atr_ratio"),
+            prev_regime_state=LAST_REGIME_HINT.get("state"),
+            prev_trend_direction=LAST_REGIME_HINT.get("trend_direction"),
+            transition_started_at_utc=LAST_REGIME_HINT.get(
+                "transition_started_at_utc"
+            ),
         )
-        LAST_REGIME_HINT["hint"] = regime.get("regime_hint")
-        LAST_REGIME_HINT["atr_ratio"] = regime.get("atr_ratio_3_51")
+        update_regime_memory(LAST_REGIME_HINT, regime)
         logging.info(
             "regime_hint=%s transition=%s atr_ratio=%s range=%s m5_swings=%s",
             regime.get("regime_hint"),

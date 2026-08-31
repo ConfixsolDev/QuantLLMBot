@@ -52,6 +52,10 @@ DECISION_MODULES = (
     # Decide what to trade, how to size it, and when to leave.
     "entry_policy.py",
     "entry_contract.py",
+    "entry_geometry_menu.py",
+    "entry_regime_prompts.py",
+    "structure_response.py",
+    "market_runtime.py",
     "trade_geometry.py",
     "management_policy.py",
     "trade_manager.py",
@@ -79,9 +83,11 @@ DECISION_MODULES = (
     "market_intelligence/retrieval.py",
     "market_intelligence/service.py",
     "market_intelligence/collector.py",
+    "market_intelligence/live_structure_updater.py",
     "market_intelligence/decision_events.py",
     "market_intelligence/execution_events.py",
     "market_intelligence/trade_journal.py",
+    "broker_reconciliation_worker.py",
     "trade_journal_worker.py",
     "market_intelligence/historical_backfill.py",
     "market_memory_worker.py",
@@ -90,6 +96,7 @@ DECISION_MODULES = (
     "market_graph/client.py",
     "market_graph/context_compiler.py",
     "market_graph/projector.py",
+    "market_graph/live_updater.py",
     "market_graph/market_state.py",
     "market_graph/rag_protocol.py",
     "market_graph/semantic_memory.py",
@@ -203,7 +210,15 @@ def _tunables() -> dict:
             values[f"{module_name}.<missing>"] = sorted(missing)
 
     grab("entry_policy", "MIN_ENTRY_CONFIDENCE", "MAX_INVALIDATION_GAP",
-         "POLICY_VERSION", "SCORE_WEIGHTS")
+         "POLICY_VERSION", "SCORE_WEIGHTS",
+         # 2026-08-28: SYMMETRY_CONFIDENCE_SURCHARGE was halved (10->5) on
+         # 2026-08-25 to allow "more one-sided day volume." That is exactly
+         # the kind of change this manifest exists to make visible, and it
+         # was not tracked -- the side-imbalance safeguard's own strength
+         # could change with nothing here moving the build id. Tracking it
+         # now does not change today's value; it only means the NEXT change
+         # to it shows up as drift instead of disappearing silently.
+         "SYMMETRY_WINDOW", "SYMMETRY_MAX_SHARE", "SYMMETRY_CONFIDENCE_SURCHARGE")
     grab("trade_geometry", "MIN_REWARD_RISK", "TF_MIN_STOP", "TF_MIN_TARGET",
          "ROUND_TRIP_COST", "VALUE_PER_PRICE_UNIT_PER_LOT")
     grab("management_policy", "MAX_RISK_MULTIPLE", "INITIAL_REBRACKET_SECONDS",

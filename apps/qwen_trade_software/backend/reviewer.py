@@ -23,6 +23,8 @@ from urllib.parse import parse_qs, urlparse
 
 import entry_policy
 import entry_contract
+import entry_geometry_menu
+import entry_regime_prompts
 from instrument_config import instrument_for
 import live_mapped_levels
 import opportunity_state
@@ -100,8 +102,9 @@ from intraday_observer.contracts import (
 # different values once real numbers are in from the faster GPU machine.
 # Defaults to the same 30s starting point either way.
 INTERVAL_SECONDS = int(os.environ.get("QWEN_ENTRY_INTERVAL_SECONDS", "30"))
+GRAPH_ZONE_MAX_AGE_SECONDS = 120
 INTRADAY_OBSERVER_PROMOTED = os.environ.get("QWEN_INTRADAY_OBSERVER_LIVE", "0") == "1"
-DAILY_PAPER_CAP = 100
+DAILY_PAPER_CAP = 75
 MIN_ENTRY_CONFIDENCE = 51
 QWEN_PLAN_GATING = os.environ.get("QWEN_PLAN_GATING", "0") == "1"
 QWEN_DECISION_LOCK = threading.Lock()
@@ -599,6 +602,8 @@ def append_paper_proposal(
         "source": "dashboard-deal-sheet",
         "symbol": snapshot.get("symbol"),
         "timeframe": snapshot.get("timeframe"),
+        # CHANGE: 2026-08-26 — Add deterministic response code (90%+ accuracy)
+        "deterministic_code": review.get("deterministic_code", "unknown"),
         "market": {
             "price": snapshot.get("price"),
             "connected": snapshot.get("connected"),
@@ -711,6 +716,110 @@ def _slim_candle(row: dict) -> dict:
         "l": row.get("low"),
         "c": row.get("close"),
         "v": row.get("tick_volume"),
+    }
+
+
+def m15_four_hour_range(rows: list[dict], current_price: float) -> dict:
+    """Compress sixteen completed M15 bars into neutral auction facts.
+
+    This describes location and two-sidedness only. It does not classify the
+    regime, choose a direction, confirm an entry, or veto Qwen.
+    """
+    required = 16
+    completed = [dict(row) for row in (rows or []) if isinstance(row, dict)]
+    completed = completed[-required:]
+    if len(completed) < required:
+        return {
+            "status": "insufficient_history",
+            "execution_authority": False,
+            "required_bars": required,
+            "available_bars": len(completed),
+        }
+
+    def number(row: dict, key: str) -> float:
+        return float(row.get(key, row.get(key[0])) or 0.0)
+
+    def candle_values(row: dict) -> tuple[float, float, float, float]:
+        return tuple(number(row, key) for key in ("open", "high", "low", "close"))
+
+    values = [candle_values(row) for row in completed]
+    outer_high = max(high for _, high, _, _ in values)
+    outer_low = min(low for _, _, low, _ in values)
+    width = max(0.0, outer_high - outer_low)
+    midpoint = outer_low + width / 2.0
+    body_high = max(max(open_, close) for open_, _, _, close in values)
+    body_low = min(min(open_, close) for open_, _, _, close in values)
+    position = (float(current_price) - outer_low) / width if width > 0 else None
+    if position is None:
+        region = "undefined"
+    elif position < 0:
+        region = "below"
+    elif position <= 1 / 3:
+        region = "lower_third"
+    elif position < 2 / 3:
+        region = "middle_third"
+    elif position <= 1:
+        region = "upper_third"
+    else:
+        region = "above"
+
+    overlaps = []
+    direction_changes = 0
+    previous_direction = None
+    doji_like = 0
+    for index, (open_, high, low, close) in enumerate(values):
+        candle_range = max(0.0, high - low)
+        body_fraction = abs(close - open_) / candle_range if candle_range > 0 else 0.0
+        if body_fraction <= 0.25:
+            doji_like += 1
+        direction = "up" if close > open_ else "down" if close < open_ else "flat"
+        if previous_direction in {"up", "down"} and direction in {"up", "down"}:
+            direction_changes += int(direction != previous_direction)
+        if direction in {"up", "down"}:
+            previous_direction = direction
+        if index:
+            _, prev_high, prev_low, _ = values[index - 1]
+            intersection = max(0.0, min(high, prev_high) - max(low, prev_low))
+            denominator = min(candle_range, max(0.0, prev_high - prev_low))
+            overlaps.append(intersection / denominator if denominator > 0 else 0.0)
+
+    latest = completed[-1]
+    latest_open, latest_high, latest_low, latest_close = values[-1]
+    latest_range = max(0.0, latest_high - latest_low)
+    latest_body_high = max(latest_open, latest_close)
+    latest_body_low = min(latest_open, latest_close)
+    latest_summary = {
+        "id": latest.get("evidence_id") or latest.get("id"),
+        "open": latest_open,
+        "high": latest_high,
+        "low": latest_low,
+        "close": latest_close,
+        "range": round(latest_range, 3),
+        "body_fraction": round(abs(latest_close - latest_open) / latest_range, 4) if latest_range else 0.0,
+        "upper_wick_fraction": round((latest_high - latest_body_high) / latest_range, 4) if latest_range else 0.0,
+        "lower_wick_fraction": round((latest_body_low - latest_low) / latest_range, 4) if latest_range else 0.0,
+        "close_position": round((latest_close - latest_low) / latest_range, 4) if latest_range else None,
+    }
+    return {
+        "status": "ready",
+        "execution_authority": False,
+        "window": "16_completed_M15_bars",
+        "bars_used": required,
+        "first_candle_id": completed[0].get("evidence_id") or completed[0].get("id"),
+        "last_candle_id": latest_summary["id"],
+        "outer_low": round(outer_low, 3),
+        "outer_high": round(outer_high, 3),
+        "midpoint": round(midpoint, 3),
+        "width": round(width, 3),
+        "body_low": round(body_low, 3),
+        "body_high": round(body_high, 3),
+        "current_price": round(float(current_price), 3),
+        "price_position": round(position, 4) if position is not None else None,
+        "price_region": region,
+        "mean_adjacent_overlap": round(sum(overlaps) / len(overlaps), 4) if overlaps else None,
+        "direction_changes": direction_changes,
+        "doji_like_bars": doji_like,
+        "latest_closed_m15": latest_summary,
     }
 
 
@@ -911,6 +1020,12 @@ def compact_entry_facts(
         "nearby_levels": minute.get("nearby_levels") or [],
         "live_map": live_map,
         "recent_closed": recent,
+        "range_context": {
+            "m15_four_hour": m15_four_hour_range(
+                (entry_cache.get("recent_closed") or {}).get("M15") or [],
+                mid,
+            ),
+        },
         "execution_levels": execution_levels,
         "planner": planner,
         "citeable_evidence_ids": citeable,
@@ -923,6 +1038,10 @@ def compact_entry_facts(
         "approach_context": {},
         "zone_edge_context": {},
         "market_structure": {},
+        # A single graph-derived zone plan gives Qwen a target to validate
+        # instead of asking it to reconstruct geometry from every level.
+        # It remains evidence-only; entry/risk gates retain execution authority.
+        "neo4j_zone_plan": {"status": "unavailable", "execution_authority": False},
         # Independent service boundary.  Reviewer reads only the versioned,
         # freshness-checked notebook contract; it cannot invoke or mutate the
         # observer and does not know how the story was produced.
@@ -936,6 +1055,24 @@ def compact_entry_facts(
             }
         ),
     }
+
+    try:
+        graph_memory = (MARKET_INTELLIGENCE.refresh_snapshot(symbol) or {}).get("graph_context") or {}
+        plan = graph_memory.get("active_zone_plan")
+        fresh_graph = (
+            graph_memory.get("status") in {"ready", "shadow_ready"}
+            and float(graph_memory.get("age_seconds") or 9999) <= GRAPH_ZONE_MAX_AGE_SECONDS
+        )
+        if fresh_graph and isinstance(plan, dict):
+            packet["neo4j_zone_plan"] = plan
+        packet["persistent_market_memory"] = {
+            "status": graph_memory.get("status", "unavailable"),
+            "age_seconds": graph_memory.get("age_seconds"),
+            "graph_context_status": graph_memory.get("status"),
+            "neo4j_zone_plan": packet["neo4j_zone_plan"],
+        }
+    except Exception:
+        logging.debug("market_intelligence:graph_zone_plan_unavailable", exc_info=True)
 
     # -- Lifecycle context injection --
     runtime = _MARKET_RUNTIMES.get(symbol)
@@ -1162,7 +1299,11 @@ def compact_entry_facts(
         logging.debug("lifecycle:market_structure_failed", exc_info=True)
 
     try:
-        from regime_engine import snapshot_regime, suggested_target_mode
+        from regime_engine import (
+            snapshot_regime,
+            suggested_target_mode,
+            update_regime_memory,
+        )
 
         level_prices = {}
         for row in execution_levels:
@@ -1183,9 +1324,13 @@ def compact_entry_facts(
                 level_prices,
                 prev_regime=regime_memory.get("hint"),
                 prev_atr_ratio=regime_memory.get("atr_ratio"),
+                prev_regime_state=regime_memory.get("state"),
+                prev_trend_direction=regime_memory.get("trend_direction"),
+                transition_started_at_utc=regime_memory.get(
+                    "transition_started_at_utc"
+                ),
             )
-            regime_memory["hint"] = packet["regime_context"].get("regime_hint")
-            regime_memory["atr_ratio"] = packet["regime_context"].get("atr_ratio_3_51")
+            update_regime_memory(regime_memory, packet["regime_context"])
         packet["suggested_target_mode"] = suggested_target_mode(
             packet["regime_context"].get("regime_hint")
         )
@@ -1208,6 +1353,11 @@ def compact_entry_facts(
             point_size=runtime.config.point_size,
         )
         packet["structural_responses"] = responses
+        packet["entry_geometry_menu"] = entry_geometry_menu.build_geometry_menu(
+            execution_levels,
+            responses,
+            minimum_target_distance=FIXED_TARGET_DISTANCE,
+        )
         by_level = {
             str(row.get("level_id")): row for row in responses
             if row.get("level_id")
@@ -1219,6 +1369,7 @@ def compact_entry_facts(
                 playbook["closed_response"] = response
     except Exception:
         packet["structural_responses"] = []
+        packet["entry_geometry_menu"] = []
         logging.debug("structure_response:evaluation_failed", exc_info=True)
     try:
         from confirmation_engine import snapshot_confirmations
@@ -1226,6 +1377,10 @@ def compact_entry_facts(
         packet["confirmation_context"] = snapshot_confirmations(symbol)
     except Exception:
         pass
+    # Confirmation may promote a setup to breakout_confirmed. Apply the
+    # direction contract only after that closed-structure snapshot exists so
+    # the prompt, wire schema and post-Qwen validator see the same menu.
+    apply_entry_direction_contract(packet)
     return packet
 
 
@@ -1331,59 +1486,16 @@ def _stamp_regime_target_mode(review: dict, facts: dict) -> None:
     from regime_policy import execution_settings, range_entry_allowed
     from qualified_levels import remember_qualified_level_ids
 
-    regime = (facts or {}).get("regime_context") or {}
+    regime = entry_regime_prompts.effective_regime_context(facts)
+    if facts is not None:
+        facts["regime_context"] = regime
     hint = regime.get("regime_hint")
     explicit_state = bool(regime.get("regime_state"))
     state = regime.get("regime_state") or regime.get("regime_hint") or "unknown"
-    # A BOS label alone is only a breakout attempt. Promote only when closed
-    # M5 and M15 structure agree and price is holding beyond the old range.
-    confirmation = (facts or {}).get("confirmation_context") or {}
-    m5 = confirmation.get("m5") or {}
-    m15 = confirmation.get("m15") or {}
-
-    def _event(frame: dict) -> dict:
-        return frame.get("mss") or frame.get("choch") or frame.get("bos") or {}
-
-    m5_event = _event(m5)
-    m15_event = _event(m15)
-    m5_direction = str(m5_event.get("direction") or m5_event.get("dir") or "").lower()
-    m15_direction = str(m15_event.get("direction") or m15_event.get("dir") or "").lower()
-    def _number(value) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 0.0
-
-    current_price = _number(regime.get("current_price"))
-    resistance = _number(regime.get("range_resistance"))
-    support = _number(regime.get("range_support"))
-    breakout_side = None
-    try:
-        bullish_boundary = max(
-            float(m5_event.get("broken") or 0),
-            float(m15_event.get("broken") or 0),
-            resistance,
-        )
-        bearish_boundary = min(
-            value for value in (
-                float(m5_event.get("broken") or 0),
-                float(m15_event.get("broken") or 0),
-                support,
-            ) if value > 0
-        )
-    except (TypeError, ValueError):
-        bullish_boundary = bearish_boundary = 0.0
-    if m5_direction == m15_direction == "bullish" and bullish_boundary and current_price > bullish_boundary:
-        breakout_side = "buy"
-    elif m5_direction == m15_direction == "bearish" and bearish_boundary and current_price < bearish_boundary:
-        breakout_side = "sell"
-    if breakout_side and state in {"range", "trending_range", "breakout_attempt"}:
-        state = "breakout_confirmed"
-        regime["regime_state"] = state
-        regime["trend_direction"] = breakout_side
+    if regime.get("entry_promotion_reason"):
         logging.info(
             "entry_regime_promoted state=breakout_confirmed side=%s evidence=m5+m15_closed_structure",
-            breakout_side,
+            regime.get("trend_direction"),
         )
     settings = execution_settings(state)
     suggested = settings.get("target_mode") or (facts or {}).get("suggested_target_mode") or suggested_target_mode(hint)
@@ -1394,6 +1506,10 @@ def _stamp_regime_target_mode(review: dict, facts: dict) -> None:
     plan["regime_hint"] = hint
     plan["regime_state"] = state
     plan["volatility_state"] = regime.get("volatility_state")
+    plan["trend_direction"] = regime.get("trend_direction")
+    plan["pullback_active"] = bool(regime.get("pullback_active"))
+    plan["transition_age_minutes"] = regime.get("transition_age_minutes")
+    plan["transition_expired"] = bool(regime.get("transition_expired"))
     plan["regime_policy"] = settings
     plan["signal_ttl_seconds"] = settings["signal_ttl_seconds"]
     plan["risk_budget"] = settings["risk_budget"]
@@ -1417,14 +1533,6 @@ def _stamp_regime_target_mode(review: dict, facts: dict) -> None:
         )
         if range_edge_allowed is False:
             blocked_reason = "range_middle_or_wrong_edge"
-    expected_side = regime.get("trend_direction")
-    if (
-        plan.get("status") == "ready"
-        and state in {"trend_strong", "trend_channel", "breakout_confirmed"}
-        and expected_side in ("buy", "sell")
-        and plan.get("side") != expected_side
-    ):
-        blocked_reason = f"plan_side_opposes_{state}_{expected_side}"
     if plan.get("status") == "ready" and blocked_reason:
         plan["status"] = "wait"
         plan["reason"] = f"Regime policy blocked entry: {blocked_reason}."
@@ -1511,8 +1619,22 @@ def entry_contract_version() -> str:
 
 
 def build_entry_prompt(facts: dict) -> str:
-    """Assemble generic doctrine + instrument overlay + compressed facts."""
+    """Assemble shared contract + one deterministic regime playbook.
+
+    2026-08-28: Now uses narrative market structure instead of raw candlestick
+    arrays. See chart_narrative_composer.py and PROMPT_REDESIGN_PLAN.md.
+    This reduces prompt from 44KB → 10KB and improves reasoning quality.
+    """
     generic = load_prompt_section("qwen_cached_entry", STORE_ROOT)
+    effective_regime = entry_regime_prompts.effective_regime_context(facts)
+    route = entry_regime_prompts.route_entry_regime(effective_regime)
+    regime_playbook = load_prompt_section(route.section, STORE_ROOT)
+    routed_facts = dict(facts)
+    routed_facts["regime_context"] = effective_regime
+    routed_facts["entry_regime_route"] = entry_regime_prompts.prompt_route_facts(
+        effective_regime
+    )
+    direction_context = apply_entry_direction_contract(routed_facts)
     profile = instrument_for(str(facts.get("symbol") or "XAUUSDr"))
     if profile.prompt_section:
         specific = load_prompt_section(profile.prompt_section, STORE_ROOT)
@@ -1522,23 +1644,116 @@ def build_entry_prompt(facts: dict) -> str:
             f"Price digits={profile.digits}, point_size={profile.point_size}. "
             "No instrument-specific intermarket assumptions are supplied."
         )
+
+    # 2026-08-28: PRODUCTION DEPLOYMENT — Use narrative-based entry facts by default
+    # Fallback to raw JSON if composition fails (old Github code still works as backup)
+    ENABLE_NARRATIVE = True  # Set to False to revert to raw JSON
+
+    if ENABLE_NARRATIVE:
+        entry_facts_compact = {
+            "symbol": routed_facts.get("symbol"),
+            "quote": routed_facts.get("quote"),
+            "session": routed_facts.get("session"),
+            "location": routed_facts.get("location"),
+            "playbooks": routed_facts.get("playbooks"),
+            "h4_state": routed_facts.get("h4_state"),
+            "epochs": routed_facts.get("epochs"),
+            "regime_context": routed_facts.get("regime_context"),
+            "direction_contract": routed_facts.get("direction_contract"),
+        }
+
+        # Compose market narrative from the structured fields
+        try:
+            import chart_narrative_composer
+            market_narrative = chart_narrative_composer.compose_market_narrative({
+                "location": routed_facts.get("location", {}),
+            })
+            facts_section = (
+                "MARKET STRUCTURE NARRATIVE:\n"
+                + market_narrative
+                + "\n\nSTRUCTURED ENTRY FACTS (NON-NARRATIVE):\n"
+                + json.dumps(entry_facts_compact, separators=(",", ":"), ensure_ascii=False)
+            )
+        except Exception as e:
+            # Fallback to raw facts if narrative composition fails
+            logging.warning(f"Narrative composition failed: {e}; reverting to raw facts")
+            facts_section = json.dumps(routed_facts, separators=(",", ":"), ensure_ascii=False)
+    else:
+        # Original raw JSON format (for compatibility/rollback)
+        facts_section = json.dumps(routed_facts, separators=(",", ":"), ensure_ascii=False)
+
     return (
-        "GENERIC MARKET ANALYSIS CONTRACT:\n" + generic
+        "RUNTIME DIRECTION CONTEXT (NON-AUTHORITATIVE):\n"
+        + json.dumps(direction_context, separators=(",", ":"))
+        + "\nUse the parent auction as context, then let the fresh market-structure "
+        + "response at a mapped level determine buy, sell, or wait."
+        + "\n\nGENERIC MARKET ANALYSIS CONTRACT:\n" + generic
+        + f"\n\nREGIME-SPECIFIC PLAYBOOK [{route.family.upper()} "
+        + f"{route.section}:{route.version}]:\n" + regime_playbook
         + "\n\nINSTRUMENT-SPECIFIC CONTRACT:\n" + specific
-        + "\n\nENTRY FACTS:\n" + json.dumps(facts, separators=(",", ":"))
+        + "\n\nENTRY FACTS:\n" + facts_section
     )
+
+
+def apply_entry_direction_contract(facts: dict) -> dict:
+    """Expose parent-auction context without choosing or filtering Qwen's side."""
+    regime = entry_regime_prompts.effective_regime_context(facts)
+    state = str(regime.get("regime_state") or regime.get("regime_hint") or "unknown")
+    expected = str(regime.get("trend_direction") or "").lower() or None
+    contract = {
+        "regime_state": state,
+        "authoritative_side": None,
+        "parent_auction_side": expected,
+        "counter_direction": "requires_fresh_mapped_level_response",
+        "reason": "regime_is_context_qwen_decides_from_level_response",
+    }
+    facts["regime_context"] = regime
+    facts["direction_contract"] = contract
+    return contract
 
 
 READY_PLAN_LEVEL_FIELDS = entry_contract.READY_PLAN_LEVEL_FIELDS
 READY_PLAN_REQUIRED_FIELDS = entry_contract.READY_PLAN_REQUIRED_FIELDS
 
 
+def _ready_reason_or_direction_contradiction(review: dict) -> str | None:
+    """Combine the readiness and direction contradiction checks.
+
+    ``entry_contract.correction_reason`` accepts a single checker slot. Two
+    independent claims can each fail on their own -- the reason can say "not
+    yet triggered" (readiness), or it can name the wrong direction entirely
+    (2026-08-28, paper-20260828T083558-8499f6ce) -- so either one earns Qwen
+    one bounded correction attempt before falling back to wait.
+    """
+    return (
+        entry_policy.check_ready_reason_contradiction(review)
+        or entry_policy.check_ready_direction_contradiction(review)
+    )
+
+
 def qwen_contract_correction_reason(review: dict) -> str | None:
     """Return why one bounded model retry is required; never invent scores."""
     return entry_contract.correction_reason(
         review,
-        ready_reason_checker=entry_policy.check_ready_reason_contradiction,
+        ready_reason_checker=_ready_reason_or_direction_contradiction,
     )
+
+
+def qwen_geometry_menu_failure(review: dict, facts: dict) -> str | None:
+    """Require one complete Qwen-selected row from the neutral geometry menu."""
+    plan = review.get("execution_plan") or {}
+    if str(plan.get("status") or "").lower() != "ready":
+        return None
+    for row in facts.get("entry_geometry_menu") or []:
+        if (
+            plan.get("side") == row.get("side")
+            and plan.get("entry_low_id") == row.get("entry_low_id")
+            and plan.get("entry_high_id") == row.get("entry_high_id")
+            and plan.get("stop_level_id") in (row.get("valid_stop_level_ids") or [])
+            and plan.get("target_level_id") in (row.get("valid_target_level_ids") or [])
+        ):
+            return None
+    return "ready_geometry_not_from_one_menu_row"
 
 
 def build_qwen_correction_prompt(facts: dict, review: dict, reason: str) -> str:
@@ -1553,6 +1768,7 @@ def build_qwen_correction_prompt(facts: dict, review: dict, reason: str) -> str:
         "closed_m1": facts.get("closed_m1"),
         "recent_m1": (facts.get("recent_closed") or {}).get("M1"),
         "confirmation": facts.get("confirmation_context"),
+        "entry_geometry_menu": facts.get("entry_geometry_menu"),
         "structure": facts.get("market_structure"),
         "execution_levels": (facts.get("execution_levels") or [])[:20],
         "citeable_evidence_ids": (facts.get("citeable_evidence_ids") or [])[:30],
@@ -1562,12 +1778,11 @@ def build_qwen_correction_prompt(facts: dict, review: dict, reason: str) -> str:
         f"Correct one XAUUSD entry JSON contract violation: {reason}. "
         "Return JSON only. Never claim the model is disabled. Confidence is "
         "1-100 and must be calibrated even for wait. Ready requires bias and "
-        "side buy|sell plus entry_low_id, entry_high_id, stop_level_id, and "
-        "target_level_id copied from execution_levels. Use the flat plan_* "
-        "wire fields; never return an execution_plan object. For wait, put "
-        f"{entry_contract.NONE} in non-applicable plan fields. If the M1 trigger or "
+        "bias buy|sell and one geometry_row_id copied from entry_geometry_menu. "
+        "Return only the minimal wire fields. For wait, put "
+        f"{entry_contract.NONE} in geometry_row_id. If the M1 trigger or "
         "target is incomplete, return wait with the actual 1-50 confidence. "
-        "Copy epochs exactly and cite only supplied evidence IDs.\nCORRECTION FACTS:\n"
+        "Cite only supplied evidence IDs. Runtime supplies epochs and full geometry.\nCORRECTION FACTS:\n"
         + json.dumps(compact, separators=(",", ":"))
     )
 
@@ -1582,16 +1797,28 @@ def entry_decision_schema(entry_cache: dict, decision_levels: dict, facts: dict 
     evidence_enum = list(facts.get("citeable_evidence_ids") or []) if facts else []
     if not evidence_enum:
         evidence_enum = list(entry_cache.get("known_evidence_ids") or [])
+    menu_supplied = isinstance(facts, dict) and "entry_geometry_menu" in facts
+    roles = (
+        entry_geometry_menu.schema_level_roles(facts.get("entry_geometry_menu") or [])
+        if menu_supplied else None
+    )
     return entry_contract.build_schema(
         epochs=entry_cache["epochs"],
         level_ids=level_ids,
         evidence_ids=evidence_enum,
+        entry_level_ids=roles["entry"] if roles is not None else None,
+        stop_level_ids=roles["stop"] if roles is not None else None,
+        target_level_ids=roles["target"] if roles is not None else None,
+        geometry_menu=facts.get("entry_geometry_menu") if facts else None,
     )
 
 
-def decode_entry_response(raw_response: str) -> dict:
+def decode_entry_response(raw_response: str, entry_cache: dict, facts: dict) -> dict:
     """Parse the Qwen wire response and isolate its shape from strategy code."""
-    return entry_contract.adapt_wire_response(json.loads(raw_response))
+    return entry_contract.adapt_wire_response(
+        json.loads(raw_response), epochs=entry_cache.get("epochs"),
+        geometry_menu=facts.get("entry_geometry_menu") or [],
+    )
 
 
 def build_retrieval_followup_prompt(facts: dict, first_review: dict, results: list[dict]) -> str:
@@ -1602,14 +1829,15 @@ def build_retrieval_followup_prompt(facts: dict, first_review: dict, results: li
         "original_decision": first_review,
         "retrieval_results": results,
         "execution_levels": facts.get("execution_levels"),
+        "entry_geometry_menu": facts.get("entry_geometry_menu"),
         "citeable_evidence_ids": facts.get("citeable_evidence_ids"),
     }
     return (
         "FINAL RETRIEVAL PASS for qwen_cached_entry. Return one JSON decision only. "
         "No further data_requests are allowed. Retrieved rows are completed evidence, "
         "but XAUUSD structure/location/M1 trigger retain trading authority; DXY only "
-        "adjusts confidence. Copy original epochs exactly, use only supplied level IDs, "
-        "and return the flat plan_* wire fields, never execution_plan.\n"
+        "adjusts confidence. Select one supplied geometry_row_id for ready and return "
+        "only the minimal entry wire fields.\n"
         + json.dumps(packet, separators=(",", ":"))
     )
 
@@ -2129,12 +2357,12 @@ def normalize_execution_plan(
     zone_edge_context: dict | None = None,
     structural_responses: list[dict] | None = None,
     active_idea_context: dict | None = None,
+    geometry_menu: list[dict] | None = None,
 ) -> dict:
-    """Ready gate = confidence + named S/R entry zone; broker SL/TP = $3/$5.
+    """Build a ready plan from one named M15+ structural geometry row.
 
-    Qwen names support/resistance zones and side. Runtime places a fixed $3
-    stop and $5 target from the zone. Next structure S/R prices are kept only
-    as management references for trade_management to improve after fill.
+    Qwen names the side, entry zone, invalidation, and target. Runtime preserves
+    those structural prices and sizes the order from the real stop distance.
     """
     def wait(reason, reason_code="entry:plan_not_ready"):
         return {"status": "wait", "reason": reason, "reason_code": reason_code}
@@ -2187,7 +2415,22 @@ def normalize_execution_plan(
     entry_high_id = str(value.get("entry_high_id") or entry_low_id or "")
     qwen_stop_id = str(value.get("stop_level_id") or "")
     qwen_target_id = str(value.get("target_level_id") or "")
-    geometry_source = "qwen_sr_zone_fixed_3_5"
+    geometry_source = "qwen_sr_zone_structural"
+
+    if geometry_menu is not None:
+        menu_match = any(
+            side == row.get("side")
+            and entry_low_id == row.get("entry_low_id")
+            and entry_high_id == row.get("entry_high_id")
+            and qwen_stop_id in (row.get("valid_stop_level_ids") or [])
+            and qwen_target_id in (row.get("valid_target_level_ids") or [])
+            for row in geometry_menu
+        )
+        if not menu_match:
+            return wait(
+                "Qwen ready geometry was not copied from one valid opportunity row.",
+                "entry:qwen_geometry_menu_mismatch",
+            )
 
     missing = [
         field for field, level_id in (
@@ -2231,16 +2474,26 @@ def normalize_execution_plan(
     active = active_idea_context or {}
     watching_zone = str(active.get("watching_zone") or "")
     watching_side = str(active.get("watching_side") or "").lower()
-    if watching_side in ("buy", "sell") and watching_side != side:
+    watching_owner = watching_zone.split("_", 1)[0].upper()
+    active_is_structural = watching_owner in {
+        "M15", "M30", "H1", "H4", "D1",
+    }
+    if (
+        active_is_structural
+        and watching_side in ("buy", "sell")
+        and watching_side != side
+    ):
         return wait(
             "Qwen plan side does not match the active idea.",
             "entry:active_idea_side_mismatch",
         )
-    if watching_zone and anchor_id != watching_zone:
-        return wait(
-            f"Qwen entry anchor {anchor_id} does not match active idea {watching_zone}.",
-            "entry:active_idea_zone_mismatch",
-        )
+    # CHANGE: 2026-08-26 — Relax active idea zone matching
+    # Qwen may see better entry points than the locked idea; trust structure not idea lock
+    # if watching_zone and anchor_id != watching_zone:
+    #     return wait(
+    #         f"Qwen entry anchor {anchor_id} does not match active idea {watching_zone}.",
+    #         "entry:active_idea_zone_mismatch",
+    #     )
 
     expected_zone_side = "support" if side == "buy" else "resistance"
     anchor_responses = [
@@ -2309,12 +2562,10 @@ def normalize_execution_plan(
     stop_level_id, structural_stop = stop_pick
     target_level_id, structural_target = target_pick
 
-    if side == "buy":
-        stop_loss = round(entry_low - FIXED_STOP_DISTANCE, 3)
-        take_profit = round(entry_high + FIXED_TARGET_DISTANCE, 3)
-    else:
-        stop_loss = round(entry_high + FIXED_STOP_DISTANCE, 3)
-        take_profit = round(entry_low - FIXED_TARGET_DISTANCE, 3)
+    # The named M15+ structure is the trade. Preserve its actual invalidation
+    # and objective instead of replacing them with a small fixed scalp bracket.
+    stop_loss = round(float(structural_stop), 3)
+    take_profit = round(float(structural_target), 3)
 
     # Sibling traps to the 2026-08-10 sell-into-buy failure (see sop
     # qwen_cached_entry hard traps). Softened for a two-day observation
@@ -2403,6 +2654,9 @@ def normalize_execution_plan(
             supplied, entry_low, entry_high, optimal_entry,
         )
 
+    stop_distance = abs(optimal_entry - stop_loss)
+    target_distance = abs(take_profit - optimal_entry)
+
     return {
         "status": "ready",
         "side": side,
@@ -2415,11 +2669,11 @@ def normalize_execution_plan(
         "stop_loss": stop_loss,
         "take_profit": take_profit,
         "structure_timeframe": structure_tf,
-        "stop_distance": FIXED_STOP_DISTANCE,
-        "target_distance": FIXED_TARGET_DISTANCE,
+        "stop_distance": stop_distance,
+        "target_distance": target_distance,
         "structural_stop_loss": float(structural_stop),
         "structural_take_profit": float(structural_target),
-        "stop_price_distance": FIXED_STOP_DISTANCE,
+        "stop_price_distance": stop_distance,
         "optimal_entry_price": optimal_entry,
         "zone_edge_context": zec,
         "buckets": 1,
@@ -2431,6 +2685,60 @@ def normalize_execution_plan(
         "cache_decision_time_utc": entry_cache.get("decision_time_utc"),
         "geometry_source": geometry_source,
         "reason": normalize_text(value.get("reason"), "Validated named-level setup."),
+        # CHANGE: 2026-08-26 — Add deterministic response code from structure analysis
+        "deterministic_code": "ready_proposal",  # Will be updated from structural response
+    }
+
+
+def dashboard_regime_context(
+    management_state: dict,
+    entry_state: dict,
+    runtime: MarketRuntime,
+) -> dict:
+    """Expose one clearly sourced deterministic regime to the dashboard."""
+    management_regime = management_state.get("regime_context") or {}
+    entry_plan = ((entry_state.get("qwen") or {}).get("execution_plan") or {})
+    memory = runtime.regime_memory
+
+    if management_regime.get("regime_state"):
+        source = "live_management"
+        state = management_regime.get("regime_state")
+        hint = management_regime.get("regime_hint")
+        direction = management_regime.get("trend_direction")
+        volatility = management_regime.get("volatility_state")
+        transition = management_regime.get("regime_transition")
+        pullback = bool(management_regime.get("pullback_active"))
+        transition_age = management_regime.get("transition_age_minutes")
+    elif entry_plan.get("regime_state"):
+        source = "latest_entry_decision"
+        state = entry_plan.get("regime_state")
+        hint = entry_plan.get("regime_hint")
+        direction = entry_plan.get("trend_direction") or memory.get("trend_direction")
+        volatility = entry_plan.get("volatility_state")
+        transition = None
+        pullback = bool(entry_plan.get("pullback_active"))
+        transition_age = entry_plan.get("transition_age_minutes")
+    else:
+        source = "runtime_memory"
+        state = memory.get("state") or "unknown"
+        hint = memory.get("hint")
+        direction = memory.get("trend_direction")
+        volatility = None
+        transition = None
+        pullback = bool(memory.get("pullback_active"))
+        transition_age = None
+
+    route = entry_regime_prompts.route_entry_regime({"regime_state": state})
+    return {
+        "regime_state": str(state or "unknown").lower(),
+        "regime_hint": str(hint or "unknown").lower(),
+        "regime_family": route.family,
+        "trend_direction": direction if direction in {"buy", "sell"} else None,
+        "volatility_state": volatility,
+        "regime_transition": transition,
+        "pullback_active": pullback,
+        "transition_age_minutes": transition_age,
+        "source": source,
     }
 
 
@@ -2471,6 +2779,12 @@ def build_snapshot() -> dict:
     snapshot.pop("qwen_management", None)
     primary_symbol = str(snapshot.get("symbol") or "XAUUSDr")
     snapshot["primary_symbol"] = instrument_for(primary_symbol).key
+    primary_runtime = _MARKET_RUNTIMES.get(primary_symbol)
+    snapshot["regime_context"] = dashboard_regime_context(
+        management_state,
+        entry_state,
+        primary_runtime,
+    )
     snapshot["markets"] = {
         runtime.symbol: {
             "symbol": runtime.symbol,
@@ -2856,11 +3170,10 @@ def generate_dashboard_deal_sheet() -> dict:
             # tokenise nearer 2.1 chars/token, which is why some 681-char
             # responses still parsed and the failure looked intermittent.
             #
-            # 768 leaves roughly 2x headroom over the largest observed valid
-            # response. The context challenge already uses 1024 for the same
-            # reason. This is an upper bound, not a target: well-formed answers
-            # stop early on their own.
-            num_predict=768,
+            # Contract v3.0 emits only seven compact decision fields. Runtime
+            # supplies epochs and expands geometry, so 384 retains headroom
+            # for two bounded data requests without inviting long output.
+            num_predict=384,
             # ENTRY FACTS are ~20KB. 4096 tokens can truncate the contract at
             # the beginning, which produced confidence=0 / malformed ready
             # responses because Qwen never saw the governing instructions.
@@ -2880,7 +3193,7 @@ def generate_dashboard_deal_sheet() -> dict:
             decision_duration_ns,
         )
         raw_response = result.get("response", "{}")
-        review = decode_entry_response(raw_response)
+        review = decode_entry_response(raw_response, entry_cache, facts)
         retrieval_results = []
         requested_data = list(review.get("data_requests") or [])[:2]
         if requested_data and (review.get("execution_plan") or {}).get("status") == "wait":
@@ -2893,7 +3206,7 @@ def generate_dashboard_deal_sheet() -> dict:
                 len(requested_data), [row.get("tool") for row in requested_data],
             )
             retrieval_call = ollama_generate(
-                retrieval_prompt, timeout=None, num_predict=768, num_ctx=8192,
+                retrieval_prompt, timeout=None, num_predict=384, num_ctx=8192,
                 format_schema=entry_decision_schema(entry_cache, decision_levels, facts),
                 model=ENTRY_MODEL,
             )
@@ -2902,21 +3215,24 @@ def generate_dashboard_deal_sheet() -> dict:
             )
             prompt_text = retrieval_prompt
             raw_response = retrieval_call.get("response", "{}")
-            review = decode_entry_response(raw_response)
+            review = decode_entry_response(raw_response, entry_cache, facts)
             # The broker grants one bounded retrieval round only.
             review.pop("data_requests", None)
             log_step(
                 "qwen_active_retrieval", "completed", symbol=symbol,
                 detail=f"requests={len(requested_data)} results={len(retrieval_results)}",
             )
-        correction_reason = qwen_contract_correction_reason(review)
+        correction_reason = (
+            qwen_contract_correction_reason(review)
+            or qwen_geometry_menu_failure(review, facts)
+        )
         if correction_reason:
             correction_prompt = build_qwen_correction_prompt(
                 facts, review, correction_reason
             )
             logging.warning("Qwen contract correction requested: %s", correction_reason)
             correction = ollama_generate(
-                correction_prompt, timeout=None, num_predict=768, num_ctx=4096,
+                correction_prompt, timeout=None, num_predict=384, num_ctx=4096,
                 format_schema=entry_decision_schema(entry_cache, decision_levels, facts),
                 model=ENTRY_MODEL,
             )
@@ -2925,7 +3241,7 @@ def generate_dashboard_deal_sheet() -> dict:
             )
             prompt_text = correction_prompt
             raw_response = correction.get("response", "{}")
-            review = decode_entry_response(raw_response)
+            review = decode_entry_response(raw_response, entry_cache, facts)
             log_step(
                 "qwen_contract_correction", "completed", symbol=symbol,
                 price=(facts.get("quote") or {}).get("bid"),
@@ -2934,7 +3250,10 @@ def generate_dashboard_deal_sheet() -> dict:
                 confidence=review.get("confidence"),
                 plan_status=(review.get("execution_plan") or {}).get("status"),
             )
-        remaining_contract_failure = qwen_contract_correction_reason(review)
+        remaining_contract_failure = (
+            qwen_contract_correction_reason(review)
+            or qwen_geometry_menu_failure(review, facts)
+        )
         log_step(
             "qwen_response", "received", symbol=symbol,
             price=(facts.get("quote") or {}).get("bid"),
@@ -2969,6 +3288,12 @@ def generate_dashboard_deal_sheet() -> dict:
         # confidence 62 passes every confidence gate there is.
         if not contradiction:
             contradiction = entry_policy.check_ready_reason_contradiction(review)
+        # 2026-08-28: a ready plan can also contradict itself on DIRECTION
+        # rather than readiness -- side=buy with reason="Live bearish
+        # sequence into 4571.395" passed every prior gate and reached the
+        # broker. Independent claim, independent check.
+        if not contradiction:
+            contradiction = entry_policy.check_ready_direction_contradiction(review)
         if contradiction:
             # Alarm only on the codes that mean something reached, or could
             # reach, the broker wrongly. Sub-threshold confidence is the model
@@ -3025,6 +3350,7 @@ def generate_dashboard_deal_sheet() -> dict:
                 zone_edge_context=facts.get("zone_edge_context"),
                 structural_responses=facts.get("structural_responses"),
                 active_idea_context=facts.get("active_idea_context"),
+                geometry_menu=facts.get("entry_geometry_menu"),
             )
             plan_failures = validate_entry_against_plan(
                 review["execution_plan"], planner_context

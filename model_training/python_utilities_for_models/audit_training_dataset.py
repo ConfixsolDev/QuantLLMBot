@@ -269,28 +269,26 @@ def live_contract_readiness(s2: list[dict], s4: list[dict], s5: list[dict]) -> l
     checks.append((
         "current prompt contract versions",
         bool(entry) and bool(management)
-        and all(r.get("contract_version") == "qwen_cached_entry:1.20" for r in entry)
+        and all(r.get("contract_version") == "qwen_cached_entry:3.0" for r in entry)
         and all(r.get("contract_version") == "qwen_trade_management:2.5" for r in management),
         f"entry={len(entry)} management={len(management)}",
     ))
 
-    entry_keys = {"bias", "confidence", "summary", "acknowledged_epochs", "evidence_ids", "execution_plan"}
-    plan_ready = {
-        "status", "side", "entry_low_id", "entry_high_id", "stop_level_id",
-        "target_level_id", "target_mode", "volume_each", "reason",
+    entry_keys = {
+        "bias", "confidence", "evidence_ids", "plan_status",
+        "geometry_row_id", "plan_reason", "data_requests",
     }
-    plan_wait = {"status", "reason"}
     bad_entry = []
     for row in entry:
         out = row.get("expected_response") or {}
-        plan = out.get("execution_plan") or {}
-        expected_plan_keys = plan_ready if plan.get("status") == "ready" else plan_wait
         facts = row.get("prompt_facts") or {}
         level_ids = {x.get("id") for x in facts.get("execution_levels", [])}
         evidence_enum = set(facts.get("citeable_evidence_ids") or ["__no_evidence__"])
-        valid_geometry = all(plan.get(k) in level_ids for k in (
-            "entry_low_id", "entry_high_id", "stop_level_id", "target_level_id"
-        )) if plan.get("status") == "ready" else True
+        menu_match = any(
+            out.get("geometry_row_id") == menu.get("geometry_row_id")
+            and out.get("bias") == menu.get("side")
+            for menu in facts.get("entry_geometry_menu") or []
+        ) if out.get("plan_status") == "ready" else True
         requests = out.get("data_requests") or []
         request_ok = len(requests) <= 2 and all(
             set(req) == {"tool", "symbol", "timeframe", "count", "missing_fact", "why_needed"}
@@ -298,18 +296,16 @@ def live_contract_readiness(s2: list[dict], s4: list[dict], s5: list[dict]) -> l
             and 1 <= req["count"] <= 80 for req in requests
         )
         if not (
-            frozenset(out) in {frozenset(entry_keys), frozenset(entry_keys | {"data_requests"})}
+            set(out) == entry_keys
             and out.get("bias") in {"buy", "sell", "wait"}
             and isinstance(out.get("confidence"), int) and 1 <= out["confidence"] <= 100
             and 1 <= len(out.get("evidence_ids") or []) <= 6
             and set(out.get("evidence_ids") or []) <= evidence_enum
-            and set(plan) == expected_plan_keys
-            and plan.get("status") in {"ready", "wait"}
-            and (plan.get("target_mode") in {"scalp", "starter_basket", "directional_basket"}
-                 if plan.get("status") == "ready" else True)
-            and valid_geometry
+            and out.get("plan_status") in {"ready", "wait"}
+            and menu_match
             and request_ok
-            and (not requests or plan.get("status") == "wait")
+            and (not requests or out.get("plan_status") == "wait")
+            and (out.get("geometry_row_id") != "__none__" if out.get("plan_status") == "ready" else out.get("geometry_row_id") == "__none__")
         ):
             bad_entry.append(row.get("example_id"))
     checks.append(("entry schema exact", not bad_entry, f"{len(bad_entry)} offenders {bad_entry[:5]}"))

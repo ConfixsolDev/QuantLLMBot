@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import displacement
@@ -11,6 +12,13 @@ from market_atr import snapshot_atr_from_cache
 from instrument_config import instrument_for
 
 MAPPED_LEVEL_MAX_DISTANCE = 30.0
+TRANSITION_MAX_MINUTES = 15.0
+TREND_STATES = frozenset({"trend_strong", "trend_channel"})
+TRANSITION_STATES = frozenset({
+    "breakout_attempt",
+    "reversal_attempt",
+    "climax_exhaustion",
+})
 
 
 @dataclass
@@ -36,8 +44,14 @@ class RegimeContext:
     regime_state: str
     volatility_state: str
     trend_direction: str | None
+    local_swing_direction: str | None
+    prior_trend_direction: str | None
+    pullback_active: bool
+    transition_age_minutes: float | None
+    transition_expired: bool
     current_price: float
     prev_regime_hint: str | None
+    prev_regime_state: str | None
     regime_transition: bool
 
     def to_dict(self) -> dict[str, Any]:
@@ -175,15 +189,101 @@ def _regime_state(
     range_info: dict | None,
     displacement_through: bool | None,
     prev_regime: str | None,
+    prev_regime_state: str | None = None,
+    prev_trend_direction: str | None = None,
+    transition_age_minutes: float | None = None,
 ) -> str:
     aligned = m5_pattern in ("hh_hl", "lh_ll")
     same_direction = m5_pattern == m15_pattern and aligned
+    current_direction = {"hh_hl": "buy", "lh_ll": "sell"}.get(m5_pattern)
+    transition_expired = (
+        transition_age_minutes is not None
+        and transition_age_minutes >= TRANSITION_MAX_MINUTES
+    )
+
+    def stable_from_current() -> str:
+        if aligned:
+            if same_direction and ((atr_ratio or 0) >= 1.1 or (body_atr or 0) >= 1.0):
+                return "trend_strong"
+            if same_direction:
+                return "trend_channel"
+            return "trending_range"
+        if hint == "range":
+            if (atr_ratio or 0) < 0.75 or (
+                range_info and range_info["width_atr"] <= 3.0
+            ):
+                return "tight_range"
+            return "range"
+        return "unknown"
+
+    # A reversal is a multi-cycle transition, not a pattern label.  The first
+    # mixed M5 structure after a trend arms observation only.  Confirmation
+    # requires a new opposite M5 swing sequence, structural displacement, and
+    # M15 no longer maintaining the old sequence.  This makes the previously
+    # dead reversal_confirmed policy reachable without allowing one double
+    # top/bottom or wick to flip the market state.
+    if prev_regime_state == "reversal_attempt":
+        opposite_structure = (
+            current_direction is not None
+            and prev_trend_direction in {"buy", "sell"}
+            and current_direction != prev_trend_direction
+        )
+        m15_old_pattern = {
+            "buy": "hh_hl",
+            "sell": "lh_ll",
+        }.get(prev_trend_direction)
+        structural_break = (
+            displacement_through is True and (body_atr or 0.0) >= 0.8
+        )
+        if opposite_structure and structural_break and m15_pattern != m15_old_pattern:
+            return "reversal_confirmed"
+        if opposite_structure and transition_expired:
+            return "reversal_confirmed"
+        if current_direction == prev_trend_direction:
+            return stable_from_current()
+        if m5_pattern == "mixed" and transition_expired:
+            return "range" if (atr_ratio or 0) >= 0.75 else "tight_range"
+        if m5_pattern == "mixed" or opposite_structure:
+            return "reversal_attempt"
+
+    if prev_regime_state == "climax_exhaustion" and transition_expired:
+        return stable_from_current()
     if hint == "breakout":
         return "breakout_confirmed"
     if hint == "exhaustion":
         return "climax_exhaustion"
+
+    if prev_regime_state in TREND_STATES:
+        opposite_structure = (
+            current_direction is not None
+            and prev_trend_direction in {"buy", "sell"}
+            and current_direction != prev_trend_direction
+        )
+        if opposite_structure:
+            m15_old_pattern = {
+                "buy": "hh_hl",
+                "sell": "lh_ll",
+            }.get(prev_trend_direction)
+            structural_break = (
+                displacement_through is True and (body_atr or 0.0) >= 0.8
+            )
+            if (
+                structural_break and m15_pattern != m15_old_pattern
+            ) or transition_expired:
+                return "reversal_confirmed"
+            return "reversal_attempt"
+        if m5_pattern == "mixed":
+            if transition_expired:
+                return "range" if (atr_ratio or 0) >= 0.75 else "tight_range"
+            # A mixed local leg inside an established trend is the normal
+            # pullback state. Keep the owning trend tradable while Qwen waits
+            # for the mapped with-trend response.
+            return prev_regime_state
+
+    if prev_regime_state == "breakout_attempt" and transition_expired:
+        return stable_from_current()
     if prev_regime in ("trend", "breakout") and m5_pattern == "mixed":
-        return "reversal_attempt"
+        return "trend_channel"
     if displacement_through is True and prev_regime == "range":
         return "breakout_attempt"
     if aligned:
@@ -209,6 +309,9 @@ def compute_regime(
     levels: dict[str, float],
     prev_regime: str | None = None,
     prev_atr_ratio: float | None = None,
+    prev_regime_state: str | None = None,
+    prev_trend_direction: str | None = None,
+    transition_age_minutes: float | None = None,
     price_digits: int = 3,
 ) -> RegimeContext:
     """Compute regime from combined signals. Called every M1 close."""
@@ -245,6 +348,27 @@ def compute_regime(
     state = _regime_state(
         hint, atr_ratio, m5_body_atr, m5_pattern, m15_pattern,
         range_info, disp_through, prev_regime,
+        prev_regime_state, prev_trend_direction, transition_age_minutes,
+    )
+    local_direction = {"hh_hl": "buy", "lh_ll": "sell"}.get(m5_pattern)
+    pullback_active = (
+        (
+            prev_regime_state in TREND_STATES
+            or (
+                prev_regime_state is None
+                and prev_regime in {"trend", "breakout"}
+                and prev_trend_direction in {"buy", "sell"}
+            )
+        )
+        and state in TREND_STATES
+        and m5_pattern == "mixed"
+    )
+    effective_direction = (
+        prev_trend_direction if pullback_active else local_direction
+    )
+    transition_expired = (
+        transition_age_minutes is not None
+        and transition_age_minutes >= TRANSITION_MAX_MINUTES
     )
     return RegimeContext(
         atr_m1_51=atr_m1_51,
@@ -265,9 +389,19 @@ def compute_regime(
         regime_hint=hint,
         regime_state=state,
         volatility_state=_volatility_state(atr_ratio, prev_atr_ratio),
-        trend_direction={"hh_hl": "buy", "lh_ll": "sell"}.get(m5_pattern),
+        trend_direction=effective_direction,
+        local_swing_direction=local_direction,
+        prior_trend_direction=prev_trend_direction,
+        pullback_active=pullback_active,
+        transition_age_minutes=(
+            round(transition_age_minutes, 2)
+            if transition_age_minutes is not None
+            else None
+        ),
+        transition_expired=transition_expired,
         current_price=round(float(current_price), price_digits),
         prev_regime_hint=prev_regime,
+        prev_regime_state=prev_regime_state,
         regime_transition=transition,
     )
 
@@ -278,6 +412,9 @@ def snapshot_regime(
     levels: dict[str, float],
     prev_regime: str | None = None,
     prev_atr_ratio: float | None = None,
+    prev_regime_state: str | None = None,
+    prev_trend_direction: str | None = None,
+    transition_started_at_utc: str | None = None,
 ) -> dict[str, Any]:
     """Build a loggable regime packet from cached bars. Never raises."""
     from market_context_cache import get_cached_completed_bars
@@ -287,6 +424,14 @@ def snapshot_regime(
     m15_bars = get_cached_completed_bars(symbol, "M15", 96)
     atr = snapshot_atr_from_cache(m1_bars, symbol) if m1_bars else {}
     m5_candle = m5_bars[-1] if m5_bars else None
+    observation_time = _bar_close_time(m1_bars[-1] if m1_bars else None)
+    transition_started = _parse_utc(transition_started_at_utc)
+    transition_age_minutes = None
+    if observation_time is not None and transition_started is not None:
+        transition_age_minutes = max(
+            0.0,
+            (observation_time - transition_started).total_seconds() / 60.0,
+        )
     m5_wing = live_mapped_levels.WING["M5"]
     m15_wing = live_mapped_levels.WING["M15"]
     ctx = compute_regime(
@@ -299,9 +444,17 @@ def snapshot_regime(
         levels,
         prev_regime=prev_regime,
         prev_atr_ratio=prev_atr_ratio,
+        prev_regime_state=prev_regime_state,
+        prev_trend_direction=prev_trend_direction,
+        transition_age_minutes=transition_age_minutes,
         price_digits=instrument_for(symbol).digits,
     )
     packet = ctx.to_dict()
+    packet["observation_time_utc"] = (
+        observation_time.isoformat().replace("+00:00", "Z")
+        if observation_time is not None
+        else None
+    )
     packet["atr_ok"] = bool(atr.get("ok"))
     packet["atr_error"] = atr.get("error")
     packet["atr_source"] = atr.get("source")
@@ -310,11 +463,72 @@ def snapshot_regime(
     return packet
 
 
+def update_regime_memory(
+    memory: dict[str, float | str | None],
+    context: dict,
+) -> None:
+    """Persist classifier continuity while preserving a reversal's anchor.
+
+    An opposite M5 sequence can appear before the required structural
+    displacement.  While state remains ``reversal_attempt``, keep the prior
+    trend direction so another cycle cannot relabel that unconfirmed sequence
+    as an ordinary trend merely because memory forgot what is being reversed.
+    """
+    memory["hint"] = context.get("regime_hint")
+    memory["atr_ratio"] = context.get("atr_ratio_3_51")
+    memory["state"] = context.get("regime_state")
+    memory["pullback_active"] = bool(context.get("pullback_active"))
+    state = context.get("regime_state")
+    transition_active = bool(context.get("pullback_active")) or state in TRANSITION_STATES
+    if transition_active:
+        if not memory.get("transition_started_at_utc"):
+            memory["transition_started_at_utc"] = context.get("observation_time_utc")
+    else:
+        memory["transition_started_at_utc"] = None
+    current_direction = context.get("trend_direction")
+    if (
+        current_direction in {"buy", "sell"}
+        and context.get("regime_state") != "reversal_attempt"
+    ):
+        memory["trend_direction"] = current_direction
+
+
+def _parse_utc(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _bar_close_time(row: dict | None) -> datetime | None:
+    if not isinstance(row, dict):
+        return None
+    for key in ("close_time_utc", "event_time_utc", "time_utc", "time"):
+        value = row.get(key)
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(float(value), tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                continue
+        parsed = _parse_utc(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def suggested_target_mode(hint: str | None) -> str | None:
     """Python suggestion for entry target_mode. Qwen may override."""
     return {
         "range": "scalp",
         "exhaustion": "scalp",
-        "trend": "starter_basket",
-        "breakout": "starter_basket",
+        "trend": "scalp",
+        "breakout": "scalp",
     }.get(str(hint or "").strip().lower())

@@ -21,7 +21,7 @@ from peft import PeftModel
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
-    STAGE_02_PATH, STAGE_04_PATH, LORA_WEIGHTS_DIR, EVAL_RESULTS_PATH,
+    STAGE_02_PATH, STAGE_04_PATH, STAGE_05_PATH, LORA_WEIGHTS_DIR, EVAL_RESULTS_PATH,
     model_config, pipeline_config
 )
 from utils import (
@@ -31,6 +31,16 @@ from utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+ENTRY_KEYS = {
+    "bias", "confidence", "evidence_ids", "plan_status",
+    "geometry_row_id", "plan_reason", "data_requests",
+}
+MANAGEMENT_KEYS = {
+    "action", "thesis_state", "decision_level_ref", "next_target_ref",
+    "confirmation_type", "confirmation_evidence_ids", "close_confirmed",
+    "regime_assessment", "summary",
+}
 
 
 def load_model_with_lora():
@@ -133,6 +143,82 @@ Based on the principles above and the trade setup, decide using this contract:
 Action open|wait|skip; Direction buy|sell|none; Confidence 1-100;
 named Key Levels; Entry/Stop Loss/Take Profit when Action=open.
 Session permission and closed-bar acceptance override pattern names."""
+
+
+def live_contract_instruction(row: Dict[str, Any]) -> str:
+    return (
+        f"Return only valid JSON for {row['contract_version']}. "
+        "Return exactly the required fields and use only supplied IDs and facts. "
+        "For entry ready, select one geometry_row_id and leave data_requests empty; "
+        "for wait use geometry_row_id __none__.\n\n"
+        + json.dumps(row["prompt_facts"], ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+def validate_live_contract(row: Dict[str, Any], raw: str) -> tuple[dict | None, list[str]]:
+    failures = []
+    try:
+        out = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None, ["invalid_json"]
+    expected = row["expected_response"]
+    facts = row["prompt_facts"]
+    if row["role"] == "live_contract":
+        if set(out) != ENTRY_KEYS:
+            failures.append("wrong_keys")
+        if out.get("bias") not in {"buy", "sell", "wait"}:
+            failures.append("invalid_bias")
+        if not isinstance(out.get("confidence"), int) or not 1 <= out.get("confidence", 0) <= 100:
+            failures.append("invalid_confidence")
+        known = set(facts.get("citeable_evidence_ids") or ["__no_evidence__"])
+        cited = out.get("evidence_ids")
+        if not isinstance(cited, list) or not 1 <= len(cited) <= 6 or not set(cited) <= known:
+            failures.append("invalid_evidence")
+        status = out.get("plan_status")
+        requests = out.get("data_requests")
+        if status not in {"ready", "wait"} or not isinstance(requests, list) or len(requests) > 2:
+            failures.append("invalid_status_or_requests")
+        if status == "ready":
+            menu = {x.get("geometry_row_id"): x for x in facts.get("entry_geometry_menu") or []}
+            selected = menu.get(out.get("geometry_row_id"))
+            if not selected or selected.get("side") != out.get("bias"):
+                failures.append("invalid_geometry_row")
+            if requests:
+                failures.append("ready_with_requests")
+        elif out.get("geometry_row_id") != "__none__":
+            failures.append("wait_without_sentinel")
+    else:
+        if set(out) != MANAGEMENT_KEYS:
+            failures.append("wrong_keys")
+        if out.get("action") not in {"hold", "protect", "close"}:
+            failures.append("invalid_action")
+    return out, failures
+
+
+def evaluate_live_contracts(model, tokenizer, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    predictions = []
+    for row in tqdm(rows, desc="live contract"):
+        raw = generate_prediction(model, tokenizer, live_contract_instruction(row), max_length=384)
+        parsed, failures = validate_live_contract(row, raw)
+        expected = row["expected_response"]
+        semantic_match = bool(parsed) and (
+            (parsed.get("bias"), parsed.get("plan_status")) ==
+            (expected.get("bias"), expected.get("plan_status"))
+            if row["role"] == "live_contract"
+            else parsed.get("action") == expected.get("action")
+        )
+        predictions.append({
+            "example_id": row["example_id"], "role": row["role"],
+            "valid_contract": not failures, "semantic_match": semantic_match,
+            "failures": failures, "raw_response": raw,
+        })
+    return {
+        "num_examples": len(rows),
+        "valid_contract_count": sum(x["valid_contract"] for x in predictions),
+        "semantic_match_count": sum(x["semantic_match"] for x in predictions),
+        "deployment_gate_passed": all(x["valid_contract"] for x in predictions),
+        "predictions": predictions,
+    }
 
 
 def evaluate_on_test_set(
@@ -308,6 +394,12 @@ def main():
     # ========================================================================
     logger.info("\n[STEP 4] Running evaluation...")
     results = evaluate_on_test_set(model, tokenizer, test_examples, test_contracts, principles_data)
+    live_rows = load_jsonl(
+        STAGE_05_PATH,
+        start_line=pipeline_config.test_lines_start,
+        end_line=pipeline_config.test_lines_end,
+    )
+    results["live_contract"] = evaluate_live_contracts(model, tokenizer, live_rows)
 
     # ========================================================================
     # STEP 5: Save results
@@ -334,6 +426,13 @@ def main():
     logger.info(f"Conviction Score MAE: {metrics['conviction_score_mae']}")
     logger.info(f"Conviction Score RMSE: {metrics['conviction_score_rmse']}")
     logger.info(f"Evidence Label Accuracy: {metrics['evidence_label_accuracy']}%")
+    live = results["live_contract"]
+    logger.info(
+        "Live Contract: %d/%d valid; semantic match %d/%d; deployment gate=%s",
+        live["valid_contract_count"], live["num_examples"],
+        live["semantic_match_count"], live["num_examples"],
+        "PASS" if live["deployment_gate_passed"] else "FAIL",
+    )
 
     logger.info("\n✓ Evaluation complete!")
 

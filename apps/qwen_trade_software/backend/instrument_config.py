@@ -67,8 +67,11 @@ XAUUSD = InstrumentConfig(
         "H1": 7.0, "H4": 10.0, "D1": 10.0,
     },
     min_target_by_timeframe={
-        "M1": 3.0, "M5": 4.0, "M15": 5.0, "M30": 5.0,
-        "H1": 10.0, "H4": 20.0, "D1": 20.0,
+        # Gold scalps use the same five-point minimum on every timeframe;
+        # higher timeframes may improve the target, but may not reject a
+        # valid five-point opportunity solely because of their label.
+        "M1": 5.0, "M5": 5.0, "M15": 5.0, "M30": 5.0,
+        "H1": 5.0, "H4": 5.0, "D1": 5.0,
     },
     default_min_stop=5.0,
     default_min_target=5.0,

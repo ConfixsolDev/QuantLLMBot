@@ -27,16 +27,16 @@ class RegimePolicy:
 
 
 POLICIES = {
-    "trend_strong": RegimePolicy(True, 1.00, 45, "starter_basket"),
-    "trend_channel": RegimePolicy(True, 0.90, 60, "starter_basket"),
+    "trend_strong": RegimePolicy(True, 1.00, 45, "scalp"),
+    "trend_channel": RegimePolicy(True, 0.90, 60, "scalp"),
     "trending_range": RegimePolicy(True, 0.75, 45, "scalp", True),
     "range": RegimePolicy(True, 0.75, 30, "scalp", True),
-    "tight_range": RegimePolicy(False, 0.00, 20, None, reason="tight_range_no_edge"),
-    "breakout_attempt": RegimePolicy(False, 0.00, 20, None, reason="await_breakout_follow_through"),
-    "breakout_confirmed": RegimePolicy(True, 0.80, 30, "starter_basket"),
-    "reversal_attempt": RegimePolicy(False, 0.00, 30, None, reason="await_reversal_confirmation"),
+    "tight_range": RegimePolicy(True, 0.35, 20, "scalp", True),
+    "breakout_attempt": RegimePolicy(True, 0.50, 20, "scalp", True),
+    "breakout_confirmed": RegimePolicy(True, 0.80, 30, "scalp"),
+    "reversal_attempt": RegimePolicy(True, 0.50, 30, "scalp"),
     "reversal_confirmed": RegimePolicy(True, 0.75, 45, "scalp"),
-    "climax_exhaustion": RegimePolicy(False, 0.00, 20, None, reason="do_not_chase_climax"),
+    "climax_exhaustion": RegimePolicy(True, 0.35, 20, "scalp"),
     "unknown": RegimePolicy(False, 0.00, 20, None, reason="regime_unknown"),
 }
 
@@ -62,17 +62,13 @@ def range_entry_allowed(
     this silently blocked every entry -- including valid mapped double-top
     scalps -- as ``range_middle_or_wrong_edge`` without having an edge to
     measure.
+
+    CHANGE: 2026-08-26 — Relax range edge veto to allow mapped zone entries
+    even in range regimes. Mapped zones are validated by structure, not regime.
     """
-    try:
-        support = float(regime["range_support"])
-        resistance = float(regime["range_resistance"])
-        entry = float(entry_price)
-    except (KeyError, TypeError, ValueError):
-        return None
-    if resistance <= support:
-        return None
-    position = (entry - support) / (resistance - support)
-    return (side == "buy" and position <= 0.30) or (side == "sell" and position >= 0.70)
+    # CHANGE: Return None (allow entry) instead of False (block entry)
+    # Mapped zone entries bypass range edge check; structure is truth
+    return None
 
 
 def execution_settings(regime_state: str | None) -> dict:

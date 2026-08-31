@@ -20,7 +20,7 @@ def evidence_confidence(level: dict) -> int:
 
 def load_current_market_state(path: Path, symbols: tuple[str, ...]) -> dict:
     if not path.exists():
-        return {"levels": [], "structures": []}
+        return {"levels": [], "structures": [], "prices": {}}
     connection = sqlite3.connect(path, timeout=1.0)
     connection.row_factory = sqlite3.Row
     try:
@@ -35,10 +35,12 @@ def load_current_market_state(path: Path, symbols: tuple[str, ...]) -> dict:
     for row in rows:
         if row["symbol"] in symbols:
             latest.setdefault((row["symbol"], row["cache_type"]), row)
-    levels, structures = [], []
+    levels, structures, prices = [], [], {}
     for (symbol, cache_type), row in latest.items():
         payload = json.loads(row["payload_json"])
         if cache_type == "levels":
+            if payload.get("price") is not None:
+                prices[symbol] = float(payload["price"])
             for level in payload.get("levels") or []:
                 if not level.get("level_id") or not level.get("timeframe"):
                     continue
@@ -67,4 +69,4 @@ def load_current_market_state(path: Path, symbols: tuple[str, ...]) -> dict:
                     "confidence": min(95, 55 + 5 * len(state.get("evidence_ids") or [])),
                     "evidence_ids": list(dict.fromkeys(state.get("evidence_ids") or []))[:24],
                 })
-    return {"levels": levels, "structures": structures}
+    return {"levels": levels, "structures": structures, "prices": prices}

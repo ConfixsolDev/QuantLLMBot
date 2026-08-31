@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from intraday_observer.contracts import CONTRACT_VERSION, read_for_trader, write_state
 from intraday_observer.deterministic import (
+    _normalize_levels,
     build_snapshot,
     confirmed_swings,
     structure_state,
@@ -82,6 +83,26 @@ def test_confirmed_swings_reconstruct_hh_hl_sequence_from_closed_bars():
     swings = confirmed_swings(rows, order=2)
     assert [row["label"] for row in swings] == ["H", "L", "HH", "HL"]
     assert structure_state(swings) == "bullish_sequence"
+
+
+def test_observer_keeps_zone_band_without_inventing_midpoint_price():
+    levels = _normalize_levels(
+        [{
+            "level_id": "H1_BAND", "timeframe": "H1", "role": "support",
+            "zone_low": 99.0, "zone_high": 101.0,
+        }],
+        current_price=103.0,
+        day_range={"low": 95.0, "high": 105.0, "range": 10.0},
+    )
+    assert len(levels) == 1
+    level = levels[0]
+    assert "price" not in level
+    assert level["zone_low"] == 99.0
+    assert level["zone_high"] == 101.0
+    assert level["current_relation"] == "above"
+    assert level["distance_to_zone"] == 2.0
+    assert level["distance_to_low_boundary"] == 4.0
+    assert level["distance_to_high_boundary"] == 2.0
 
 
 def test_consecutive_level_touches_count_as_one_market_episode():

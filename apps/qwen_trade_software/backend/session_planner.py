@@ -1828,13 +1828,45 @@ class SessionPlanner:
 
         readiness = latest_readiness(SYMBOL)
         if not readiness or readiness.get("status") != "ready":
-            logging.info(
-                "Defer planner Qwen until cache is ready (status=%s failures=%s)",
-                (readiness or {}).get("status"),
-                (readiness or {}).get("failures"),
-            )
-            self._set_status("waiting_cache")
-            return
+            # CHANGE: 2026-08-25 — Add timeout to prevent indefinite waiting_cache
+            last_wait_time = self.state.get("_cache_wait_start_time")
+            # Persisted planner state is JSON, so datetimes are restored as
+            # ISO-8601 strings after a restart. Normalize before arithmetic;
+            # this keeps the cache timeout durable without making state writes
+            # fail or changing planner decisions.
+            if isinstance(last_wait_time, str):
+                try:
+                    last_wait_time = datetime.fromisoformat(last_wait_time)
+                except ValueError:
+                    last_wait_time = None
+            if last_wait_time:
+                wait_duration = (now - last_wait_time).total_seconds()
+                if wait_duration > 300:  # 5 minutes timeout
+                    logging.warning(
+                        "Cache stuck waiting for %.0f seconds; proceeding anyway (failures=%s)",
+                        wait_duration,
+                        (readiness or {}).get("failures"),
+                    )
+                    # Don't return; proceed to attempt generation anyway
+                else:
+                    logging.info(
+                        "Defer planner Qwen until cache is ready (status=%s failures=%s wait_duration=%.1fs)",
+                        (readiness or {}).get("status"),
+                        (readiness or {}).get("failures"),
+                        wait_duration,
+                    )
+                    self._set_status("waiting_cache")
+                    return
+            else:
+                # First time waiting; record the time
+                self.state["_cache_wait_start_time"] = now.isoformat()
+                logging.info(
+                    "Defer planner Qwen until cache is ready (status=%s failures=%s)",
+                    (readiness or {}).get("status"),
+                    (readiness or {}).get("failures"),
+                )
+                self._set_status("waiting_cache")
+                return
 
         if should_generate_day_plan(now, self.state):
             self._set_status("generating")

@@ -15,7 +15,7 @@ from copy import deepcopy
 from typing import Callable, Mapping
 
 
-WIRE_CONTRACT_VERSION = "2.0"
+WIRE_CONTRACT_VERSION = "3.0"
 NONE = "__none__"
 
 READY_PLAN_LEVEL_FIELDS = (
@@ -35,13 +35,7 @@ READY_PLAN_REQUIRED_FIELDS = (
 
 WIRE_PLAN_FIELDS = (
     "plan_status",
-    "plan_side",
-    "entry_low_id",
-    "entry_high_id",
-    "stop_level_id",
-    "target_level_id",
-    "target_mode",
-    "volume_each",
+    "geometry_row_id",
     "plan_reason",
 )
 
@@ -51,10 +45,20 @@ def build_schema(
     epochs: Mapping[str, str],
     level_ids: list[str],
     evidence_ids: list[str],
+    entry_level_ids: list[str] | None = None,
+    stop_level_ids: list[str] | None = None,
+    target_level_ids: list[str] | None = None,
+    geometry_menu: list[dict] | None = None,
 ) -> dict:
-    """Return the flat schema supported by the live Ollama decoder."""
+    """Return the minimal decision schema; runtime supplies transport fields."""
     available_levels = sorted(set(level_ids)) or ["__no_level__"]
-    level_enum = available_levels + [NONE]
+    def role_enum(values: list[str] | None) -> list[str]:
+        selected = available_levels if values is None else sorted(set(values))
+        return selected + ([NONE] if NONE not in selected else [])
+
+    entry_enum = role_enum(entry_level_ids)
+    stop_enum = role_enum(stop_level_ids)
+    target_enum = role_enum(target_level_ids)
     evidence_enum = list(dict.fromkeys(evidence_ids)) or ["__no_evidence__"]
     request_schema = {
         "type": "object",
@@ -80,34 +84,17 @@ def build_schema(
     properties = {
         "bias": {"type": "string", "enum": ["buy", "sell", "wait"]},
         "confidence": {"type": "integer", "minimum": 1, "maximum": 100},
-        "summary": {"type": "string", "maxLength": 120},
-        "acknowledged_epochs": {
-            "type": "object",
-            "properties": {
-                key: {"type": "string", "const": value}
-                for key, value in epochs.items()
-            },
-            "required": sorted(epochs),
-            "additionalProperties": False,
-        },
         "evidence_ids": {
             "type": "array",
             "items": {"type": "string", "enum": evidence_enum},
             "minItems": 1,
             "maxItems": 6,
         },
-        # All plan fields are top-level and always required. Wait uses NONE for
-        # non-applicable geometry; ready must use actual enum values.
         "plan_status": {"type": "string", "enum": ["ready", "wait"]},
-        "plan_side": {"type": "string", "enum": ["buy", "sell", NONE]},
-        "entry_low_id": {"type": "string", "enum": level_enum},
-        "entry_high_id": {"type": "string", "enum": level_enum},
-        "stop_level_id": {"type": "string", "enum": level_enum},
-        "target_level_id": {"type": "string", "enum": level_enum},
-        "target_mode": {"type": "string", "enum": [
-            "scalp", "starter_basket", "directional_basket", NONE,
+        "geometry_row_id": {"type": "string", "enum": [
+            *[str(row["geometry_row_id"]) for row in (geometry_menu or []) if row.get("geometry_row_id")],
+            NONE,
         ]},
-        "volume_each": {"type": "number", "const": 0.5},
         "plan_reason": {"type": "string", "minLength": 1, "maxLength": 120},
         "data_requests": {
             "type": "array",
@@ -123,7 +110,10 @@ def build_schema(
     }
 
 
-def adapt_wire_response(value: dict) -> dict:
+def adapt_wire_response(
+    value: dict, *, epochs: Mapping[str, str] | None = None,
+    geometry_menu: list[dict] | None = None,
+) -> dict:
     """Convert the flat wire response into the stable internal plan shape.
 
     Legacy nested responses are returned unchanged so a schema rollout fails
@@ -132,22 +122,24 @@ def adapt_wire_response(value: dict) -> dict:
     if not isinstance(value, dict) or "plan_status" not in value:
         return value
     review = deepcopy(value)
+    review["acknowledged_epochs"] = dict(epochs or {})
+    review["summary"] = str(review.get("plan_reason") or "")[:120]
     status = str(review.get("plan_status") or "").lower()
     plan = {
         "status": status,
         "reason": str(review.get("plan_reason") or ""),
     }
     if status == "ready":
-        mapped = {
-            "side": review.get("plan_side"),
-            "entry_low_id": review.get("entry_low_id"),
-            "entry_high_id": review.get("entry_high_id"),
-            "stop_level_id": review.get("stop_level_id"),
-            "target_level_id": review.get("target_level_id"),
-            "target_mode": review.get("target_mode"),
-            "volume_each": review.get("volume_each"),
-        }
-        plan.update({key: item for key, item in mapped.items() if item != NONE})
+        selected = next((row for row in (geometry_menu or []) if row.get("geometry_row_id") == review.get("geometry_row_id")), {})
+        plan.update({
+            "side": selected.get("side"),
+            "entry_low_id": selected.get("entry_low_id"),
+            "entry_high_id": selected.get("entry_high_id"),
+            "stop_level_id": next(iter(selected.get("valid_stop_level_ids") or []), None),
+            "target_level_id": next(iter(selected.get("valid_target_level_ids") or []), None),
+            "target_mode": "scalp",
+            "volume_each": 0.5,
+        })
     review["execution_plan"] = plan
     for key in WIRE_PLAN_FIELDS:
         review.pop(key, None)

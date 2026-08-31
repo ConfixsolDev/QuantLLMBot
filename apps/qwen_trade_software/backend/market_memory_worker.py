@@ -14,6 +14,7 @@ from pathlib import Path
 import MetaTrader5 as mt5
 
 from market_intelligence.collector import collect_once
+from market_intelligence.live_structure_updater import update_live_structure
 from market_intelligence.projection import reduce_event
 from market_intelligence.store import IntelligenceStore
 from runtime_config import PRIMARY_MARKET_SYMBOL
@@ -86,9 +87,15 @@ def run(db_path: Path, symbol: str, interval: float, once: bool = False) -> None
                 raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
             result = collect_once(store, mt5, symbol, lookback=300 if first_cycle else 20)
             first_cycle = False
+            updated_timeframes = [
+                key.rsplit(":", 1)[-1]
+                for key, count in result.get("inserted", {}).items()
+                if key.startswith(f"{symbol}:") and int(count or 0) > 0
+            ]
+            structure = update_live_structure(store, symbol, updated_timeframes)
             health = {"status": "ready", "symbol": symbol,
                       "updated_at_epoch": time.time(), "replayed_events": replayed,
-                      **result}
+                      "live_structure": structure, **result}
             write_health(health)
             if result["inserted_total"]:
                 logging.info("candle backfill %s", json.dumps(result, sort_keys=True))

@@ -1,0 +1,1 @@
+{"schema_version":1,"label":"Volatility","started_at_utc":"2026-08-28T18:25:58.204917+00:00","until_utc":"2026-08-28T18:30:58.204917+00:00","event":{"symbol":"XAUUSDr","window_seconds":60,"threshold":5.0,"observed_move":5.07,"price":4457.643}}

@@ -42,6 +42,14 @@ def test_compiler_is_bounded_neutral_and_preserves_temporal_hierarchy():
     assert packet["active_zone_positions"]["current_or_approaching_focus"]["zone_id"].startswith("price-area:")
     assert packet["active_zone_positions"]["nearest_proven_support"]["primary_owning_timeframe"] == "H4"
     assert packet["active_zone_positions"]["nearest_proven_resistance"]["primary_owning_timeframe"] == "H1"
+    assert packet["active_zone_plan"]["status"] == "ready"
+    assert packet["active_zone_plan"]["execution_authority"] is False
+    assert packet["active_zone_plan"]["directional_authority"] is False
+    assert "side" not in packet["active_zone_plan"]
+    assert "zone" not in packet["active_zone_plan"]
+    focus = packet["active_zone_plan"]["focus_zone"]
+    assert focus["current_relation"] == "inside"
+    assert focus["distance_to_zone"] == 0.0
     assert len(packet["dxy_cross_reference"]["lines"]) == 5
 
 
