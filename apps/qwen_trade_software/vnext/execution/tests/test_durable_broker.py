@@ -1,0 +1,31 @@
+from vnext.execution.broker import IdempotentBrokerAdapter, BrokerSubmissionError
+
+
+class Client:
+    def __init__(self): self.calls = 0
+    def order_send(self, request): self.calls += 1; return {"broker_order_id": "b1"}
+
+
+class Store:
+    def __init__(self): self.rows = {}
+    def get(self, order_id): return self.rows.get(order_id)
+    def put(self, order_id, fingerprint, result): self.rows[order_id] = {"fingerprint": fingerprint, "result": result}
+
+
+def test_durable_submission_store_prevents_restart_duplicate():
+    client, store = Client(), Store()
+    order = {"order_id": "o1", "candidate_id": "c1", "volume": 1}
+    assert IdempotentBrokerAdapter(client, submission_store=store).submit(order)["state"] == "SUBMITTED"
+    assert IdempotentBrokerAdapter(client, submission_store=store).submit(order)["state"] == "SUBMITTED"
+    assert client.calls == 1
+
+
+def test_durable_submission_store_rejects_collision():
+    client, store = Client(), Store()
+    adapter = IdempotentBrokerAdapter(client, submission_store=store)
+    adapter.submit({"order_id": "o1", "candidate_id": "c1", "volume": 1})
+    try:
+        adapter.submit({"order_id": "o1", "candidate_id": "c1", "volume": 2})
+    except BrokerSubmissionError:
+        return
+    raise AssertionError("order ID collision must be rejected")

@@ -8,6 +8,7 @@ from typing import Any, Iterable
 from vnext.platform.events import EventEnvelope
 from vnext.storage.neo4j_projection import Neo4jProjection
 from vnext.storage.timescale_ledger import TimescaleEventLedger
+from vnext.storage.broker_submissions import TimescaleSubmissionStore
 from vnext.storage.working_memory import WorkingMemory
 
 
@@ -34,11 +35,14 @@ class VNextPersistence:
         self.ledger = ledger
         self.projection = projection
         self.working_memory = working_memory
+        self.submissions = None
         self._session = None
         self._driver = None
 
     def ensure_ready(self) -> PersistenceHealth:
         self.ledger.ensure_schema()
+        if self.submissions is not None:
+            self.submissions.ensure_schema()
         return PersistenceHealth(timescale=True, neo4j=True, redis=True)
 
     def append_events(self, events: Iterable[EventEnvelope]) -> int:
@@ -81,6 +85,7 @@ def from_environment(*, dsn: str, redis_url: str, neo4j_uri: str,
                                        working_memory=working_memory)
         persistence._session = session
         persistence._driver = driver
+        persistence.submissions = TimescaleSubmissionStore(dsn)
         return persistence
     except Exception:
         session.close()
