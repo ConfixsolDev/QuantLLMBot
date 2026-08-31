@@ -22,7 +22,7 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 
-from market_intelligence.store import IntelligenceStore  # noqa: E402
+from storage_factory import create_intelligence_store  # noqa: E402
 from tools.reconcile_broker_truth import broker_positions, our_fills  # noqa: E402
 
 DEFAULT_DB = BACKEND / "cache" / "market-intelligence.sqlite3"
@@ -72,7 +72,7 @@ def _broker_rows(target: date, days: int, local_tz) -> dict[str, float]:
 def _journal_rows(target: date, db_path: Path, local_tz) -> dict[str, float]:
     local_start = datetime.combine(target, time.min, tzinfo=local_tz)
     local_end = local_start + timedelta(days=1)
-    store = IntelligenceStore(db_path)
+    store = create_intelligence_store(db_path)
     try:
         rows = store.trade_journals(
             limit=10000,

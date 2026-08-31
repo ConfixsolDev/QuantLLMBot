@@ -9,7 +9,7 @@ import logging.handlers
 import time
 from pathlib import Path
 
-from market_intelligence.store import IntelligenceStore
+from storage_factory import create_intelligence_store
 from review_shared import ollama_generate
 from runtime_config import model_for_role
 
@@ -164,7 +164,7 @@ def run(db_path: Path, interval: float, once: bool = False) -> None:
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
-    store = IntelligenceStore(db_path)
+    store = create_intelligence_store(db_path)
     while True:
         rows = store.pending_trade_journals(limit=1)
         if not rows:

@@ -10,7 +10,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .store import IntelligenceStore, canonical
+from .store import canonical
+from storage_factory import create_intelligence_store
 
 log = logging.getLogger(__name__)
 BACKEND = Path(__file__).resolve().parents[1]
@@ -254,7 +255,7 @@ def journal_closed_trade(close: dict, proposal: dict | None = None,
     for attempt in range(4):
         store = None
         try:
-            store = IntelligenceStore(db_path, busy_timeout_ms=15000)
+            store = create_intelligence_store(db_path)
             store.upsert_trade_journal(journal)
             break
         except sqlite3.OperationalError as error:

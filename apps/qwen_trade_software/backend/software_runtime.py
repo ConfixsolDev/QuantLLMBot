@@ -184,6 +184,9 @@ class QwenTradeSoftware:
     def start(self) -> None:
         self._acquire_singleton()
         logging.info("Runtime Python: %s", self.PYTHON)
+        from storage_config import StorageConfig
+        storage_health = StorageConfig.from_env().validate_activation()
+        logging.info("Storage activation health: %s", storage_health)
         from tick_data_archive import sync_all_archives, write_all_day_manifests, write_day_manifest
 
         synced = sync_all_archives()

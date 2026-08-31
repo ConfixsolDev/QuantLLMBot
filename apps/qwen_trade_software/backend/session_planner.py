@@ -25,6 +25,7 @@ from market_context_cache import (
     load_prompt_section,
     session_at,
 )
+from market_context_cache import MarketContextCache
 from review_shared import (
     APP_DIR,
     DEFAULT_TERMINAL,
@@ -165,19 +166,11 @@ def read_chart_candles(
 ) -> list[dict]:
     if timeframe not in ("M5", "M15", "H1", "H4"):
         raise ValueError(f"Unsupported timeframe: {timeframe}")
-    if not db_path.exists():
-        return []
-    connection = sqlite3.connect(str(db_path))
-    connection.row_factory = sqlite3.Row
+    cache = MarketContextCache(db_path)
     try:
-        rows = connection.execute(
-            "SELECT open_time_utc, open, high, low, close, tick_volume "
-            "FROM completed_candles WHERE symbol=? AND timeframe=? "
-            "ORDER BY open_time_utc DESC LIMIT ?",
-            (symbol, timeframe, count),
-        ).fetchall()
+        rows = cache.latest_completed(symbol, timeframe, count)
     finally:
-        connection.close()
+        cache.close()
     candles = []
     for row in reversed(rows):
         ts = datetime.fromisoformat(str(row["open_time_utc"]).replace("Z", "+00:00"))
@@ -196,34 +189,17 @@ def read_chart_candles(
 
 def hour_ohlc_from_h1(symbol: str, hour_start: datetime) -> dict | None:
     """Aggregate H1 candle whose open matches the hour, else nearest completed H1."""
-    if not DEFAULT_DB.exists():
-        return None
-    connection = sqlite3.connect(str(DEFAULT_DB))
-    connection.row_factory = sqlite3.Row
+    cache = MarketContextCache(DEFAULT_DB)
     try:
         target = iso_utc(hour_start.replace(minute=0, second=0, microsecond=0))
-        row = connection.execute(
-            "SELECT open, high, low, close FROM completed_candles "
-            "WHERE symbol=? AND timeframe='H1' AND open_time_utc=? LIMIT 1",
-            (symbol, target),
-        ).fetchone()
-        if row is None:
-            row = connection.execute(
-                "SELECT open, high, low, close FROM completed_candles "
-                "WHERE symbol=? AND timeframe='H1' AND open_time_utc <= ? "
-                "ORDER BY open_time_utc DESC LIMIT 1",
-                (symbol, target),
-            ).fetchone()
-        if row is None:
+        rows = cache.completed(symbol, "H1")
+        rows = [row for row in rows if str(row["open_time_utc"]) <= target]
+        if not rows:
             return None
-        return {
-            "o": float(row["open"]),
-            "h": float(row["high"]),
-            "l": float(row["low"]),
-            "c": float(row["close"]),
-        }
+        row = rows[-1]
+        return {"o": float(row["open"]), "h": float(row["high"]), "l": float(row["low"]), "c": float(row["close"])}
     finally:
-        connection.close()
+        cache.close()
 
 
 def compute_levels_touched(

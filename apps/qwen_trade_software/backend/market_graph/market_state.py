@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -19,6 +20,53 @@ def evidence_confidence(level: dict) -> int:
 
 
 def load_current_market_state(path: Path, symbols: tuple[str, ...]) -> dict:
+    if os.environ.get("QWEN_CONTEXT_BACKEND", "sqlite").strip().lower() == "timescale":
+        from timescale_context_store import TimescaleMarketContextCache
+        from storage_config import StorageConfig
+        config = StorageConfig.from_env()
+        cache = TimescaleMarketContextCache(config.timescale_dsn)
+        try:
+            levels, structures, prices = [], [], {}
+            for symbol in symbols:
+                for cache_type in ("levels", "structural"):
+                    row = cache.object(cache_type, symbol)
+                    if not row:
+                        continue
+                    payload = row["payload"]
+                    if cache_type == "levels":
+                        if payload.get("price") is not None:
+                            prices[symbol] = float(payload["price"])
+                        source_epoch = row["cache_epoch"]
+                        source_as_of = row["valid_as_of_utc"]
+                        for level in payload.get("levels") or []:
+                            if not level.get("level_id") or not level.get("timeframe"):
+                                continue
+                            levels.append({
+                                "key": f"{symbol}:{level['timeframe']}:{level['level_id']}",
+                                "symbol": symbol, "timeframe": level["timeframe"],
+                                "level_id": level["level_id"], "role": level.get("role"),
+                                "label": level.get("label"), "pattern": level.get("pattern"),
+                                "zone_low": float(level["zone_low"]), "zone_high": float(level["zone_high"]),
+                                "method": level.get("calculation_method"), "test_count": int(level.get("test_count") or 0),
+                                "left_after_first": bool(level.get("left_after_first", False)),
+                                "valid_from": level.get("valid_from_utc") or source_as_of,
+                                "last_seen": source_as_of, "snapshot_epoch": source_epoch,
+                                "confidence": evidence_confidence(level),
+                                "evidence_ids": list(dict.fromkeys(level.get("source_candle_ids") or []))[:24],
+                            })
+                    else:
+                        for timeframe, state in (payload.get("timeframe_location") or {}).items():
+                            structures.append({
+                                "id": f"{symbol}:{timeframe}:{row['cache_epoch']}", "symbol": symbol,
+                                "timeframe": timeframe, "snapshot_epoch": row["cache_epoch"],
+                                "observed_at": row["valid_as_of_utc"], "location": state.get("location"),
+                                "auction_state": state.get("auction_state"),
+                                "confidence": min(95, 55 + 5 * len(state.get("evidence_ids") or [])),
+                                "evidence_ids": list(dict.fromkeys(state.get("evidence_ids") or []))[:24],
+                            })
+            return {"levels": levels, "structures": structures, "prices": prices}
+        finally:
+            cache.close()
     if not path.exists():
         return {"levels": [], "structures": [], "prices": {}}
     connection = sqlite3.connect(path, timeout=1.0)

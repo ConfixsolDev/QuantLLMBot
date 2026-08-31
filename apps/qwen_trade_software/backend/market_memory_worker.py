@@ -16,7 +16,7 @@ import MetaTrader5 as mt5
 from market_intelligence.collector import collect_once
 from market_intelligence.live_structure_updater import update_live_structure
 from market_intelligence.projection import reduce_event
-from market_intelligence.store import IntelligenceStore
+from storage_factory import create_intelligence_store
 from runtime_config import PRIMARY_MARKET_SYMBOL
 
 APP_DIR = Path(__file__).resolve().parent
@@ -76,7 +76,7 @@ def write_health(
 
 def run(db_path: Path, symbol: str, interval: float, once: bool = False) -> None:
     configure_logging()
-    store = IntelligenceStore(db_path)
+    store = create_intelligence_store(db_path)
     replayed = store.rebuild(reduce_event)
     logging.info("startup replay complete events=%d", replayed)
     first_cycle = True

@@ -9,7 +9,7 @@ import MetaTrader5 as mt5
 
 from market_intelligence.historical_backfill import aggregate_ny_h4, candle_events, native_rows
 from market_intelligence.projection import reduce_event
-from market_intelligence.store import IntelligenceStore
+from storage_factory import create_intelligence_store
 
 DB = Path(__file__).resolve().parent / "cache" / "market-intelligence.sqlite3"
 
@@ -17,7 +17,7 @@ DB = Path(__file__).resolve().parent / "cache" / "market-intelligence.sqlite3"
 def main() -> int:
     if not mt5.initialize():
         raise RuntimeError(f"MT5 initialization failed: {mt5.last_error()}")
-    store = IntelligenceStore(DB, busy_timeout_ms=30_000)
+    store = create_intelligence_store(DB)
     report = {}
     try:
         for broker, logical in (("XAUUSDr", "XAUUSDr"), ("DXYr", "DXY")):

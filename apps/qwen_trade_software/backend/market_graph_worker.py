@@ -15,7 +15,7 @@ from market_graph.client import Neo4jMarketGraph
 from market_graph.config import graph_config, graph_context_path, graph_health_path
 from market_graph.live_updater import Neo4jLiveUpdater
 from market_graph.market_state import load_current_market_state
-from market_intelligence.store import IntelligenceStore
+from storage_factory import create_intelligence_store
 import process_logging
 
 APP_DIR = Path(__file__).resolve().parent
@@ -77,7 +77,7 @@ def run(db_path: Path, once: bool = False) -> None:
     store = None
     while store is None:
         try:
-            store = IntelligenceStore(db_path)
+            store = create_intelligence_store(db_path)
             store.enqueue_unprojected_graph_events()
         except Exception as error:
             process_logging.structured_event(

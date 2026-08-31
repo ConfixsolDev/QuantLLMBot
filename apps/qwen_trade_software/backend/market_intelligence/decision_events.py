@@ -13,12 +13,13 @@ import logging
 import os
 import threading
 from pathlib import Path
+from typing import Any
 
-from .store import IntelligenceStore
+from storage_factory import create_intelligence_store
 
 log = logging.getLogger(__name__)
 _lock = threading.Lock()
-_store: IntelligenceStore | None = None
+_store: Any = None
 
 
 def _intelligence_store() -> IntelligenceStore:
@@ -26,7 +27,7 @@ def _intelligence_store() -> IntelligenceStore:
     with _lock:
         if _store is None:
             path = Path(__file__).resolve().parents[1] / "cache" / "market-intelligence.sqlite3"
-            _store = IntelligenceStore(path, busy_timeout_ms=50)
+            _store = create_intelligence_store(path)
         return _store
 
 
