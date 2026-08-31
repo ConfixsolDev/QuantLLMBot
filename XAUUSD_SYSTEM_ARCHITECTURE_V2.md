@@ -213,6 +213,13 @@ with `QWEN_CONTEXT_BACKEND=timescale` only after source/target counts and
 content hashes match. The SQLite file must remain read-only rollback evidence
 until that parity check is recorded.
 
+The shared strategy boundary is implemented by `strategy_contract.py` and
+`strategy_runtime.py`. Each candidate carries pair, strategy ID/version, trade
+class, magic number, trigger, mapped zone, structural invalidation, target
+references, expiry, statistics/narrator references, and a state hash. Its
+replayable lifecycle prevents a strategy or LLM from skipping directly to an
+active position or from crossing strategy ownership boundaries.
+
 ### Persistent market-intelligence subsystem
 
 The live cognition layer uses selective event sourcing and materialized views.

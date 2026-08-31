@@ -88,6 +88,8 @@ DECISION_MODULES = (
     "storage_config.py",
     "storage_factory.py",
     "timescale_context_store.py",
+    "strategy_contract.py",
+    "strategy_runtime.py",
     "market_intelligence/collector.py",
     "market_intelligence/live_structure_updater.py",
     "market_intelligence/decision_events.py",
