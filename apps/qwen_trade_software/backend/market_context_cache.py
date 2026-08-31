@@ -544,6 +544,17 @@ class MT5MarketSource:
 
 
 class MarketContextCache:
+    def __new__(cls, path: Path | str = DEFAULT_DB, *args, **kwargs):
+        # Explicit opt-in keeps offline tools and rollback deterministic while
+        # allowing the live context worker to use the same Timescale authority
+        # as the intelligence ledger.
+        if cls is MarketContextCache and os.environ.get("QWEN_CONTEXT_BACKEND", "sqlite").strip().lower() == "timescale":
+            from timescale_context_store import TimescaleMarketContextCache
+            return TimescaleMarketContextCache(
+                report_metadata_corrections=kwargs.get("report_metadata_corrections", True)
+            )
+        return super().__new__(cls)
+
     def __init__(
         self,
         path: Path | str = DEFAULT_DB,

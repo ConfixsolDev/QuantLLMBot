@@ -204,6 +204,15 @@ Redis failure falls back to the durable store unless the operator explicitly
 sets `QWEN_REDIS_REQUIRED=1`, in which case startup fails closed. Cache writes
 occur only after durable projection reads/writes succeed.
 
+The former `market_context.sqlite3` persistence surface has a compatible
+Timescale implementation in `timescale_context_store.py`, covering completed
+and forming candles, ticks, cache objects, readiness manifests, model
+validation records, and latency records. Its source migration is
+`tools/migrate_context_sqlite_to_timescale.py`; the live context worker opts in
+with `QWEN_CONTEXT_BACKEND=timescale` only after source/target counts and
+content hashes match. The SQLite file must remain read-only rollback evidence
+until that parity check is recorded.
+
 ### Persistent market-intelligence subsystem
 
 The live cognition layer uses selective event sourcing and materialized views.

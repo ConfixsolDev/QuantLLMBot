@@ -87,6 +87,7 @@ DECISION_MODULES = (
     "redis_context.py",
     "storage_config.py",
     "storage_factory.py",
+    "timescale_context_store.py",
     "market_intelligence/collector.py",
     "market_intelligence/live_structure_updater.py",
     "market_intelligence/decision_events.py",
