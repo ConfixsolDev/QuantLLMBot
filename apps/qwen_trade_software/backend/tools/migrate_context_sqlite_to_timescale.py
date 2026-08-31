@@ -10,6 +10,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from itertools import islice
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -33,20 +34,25 @@ def migrate(source: Path, dsn: str, *, dry_run: bool = False) -> dict[str, int]:
         if "forming_candles" in tables:
             target.upsert_forming([dict(row) for row in db.execute("SELECT * FROM forming_candles")])
         if "ticks" in tables:
-            for row in db.execute("SELECT symbol,time_utc,bid,ask,spread,flags FROM ticks ORDER BY id"):
-                target.insert_tick(dict(row))
+            rows = db.execute("SELECT symbol,time_utc,bid,ask,spread,flags FROM ticks ORDER BY id")
+            while batch := list(islice(rows, 1000)):
+                target.copy_batch("ticks", [dict(row) for row in batch])
         if "cache_objects" in tables:
-            for row in db.execute("SELECT * FROM cache_objects"):
-                target.copy_cache_object(dict(row))
+            rows = db.execute("SELECT * FROM cache_objects")
+            while batch := list(islice(rows, 1000)):
+                target.copy_batch("cache_objects", [dict(row) for row in batch])
         if "readiness_manifests" in tables:
-            for row in db.execute("SELECT symbol,payload_json FROM readiness_manifests"):
-                target.write_manifest(row["symbol"], json.loads(row["payload_json"]))
+            rows = db.execute("SELECT symbol,validated_at_utc,status,payload_json FROM readiness_manifests")
+            while batch := list(islice(rows, 1000)):
+                target.copy_batch("readiness_manifests", [dict(row) for row in batch])
         if "qwen_validations" in tables:
-            for row in db.execute("SELECT * FROM qwen_validations"):
-                target.copy_qwen_validation(dict(row))
+            rows = db.execute("SELECT * FROM qwen_validations")
+            while batch := list(islice(rows, 1000)):
+                target.copy_batch("qwen_validations", [dict(row) for row in batch])
         if "latency_events" in tables:
-            for row in db.execute("SELECT * FROM latency_events"):
-                target.copy_latency(dict(row))
+            rows = db.execute("SELECT * FROM latency_events")
+            while batch := list(islice(rows, 1000)):
+                target.copy_batch("latency_events", [dict(row) for row in batch])
         return counts
     finally:
         db.close()
