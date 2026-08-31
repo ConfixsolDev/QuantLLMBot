@@ -60,6 +60,14 @@ def test_approved_candidate_passes_risk_then_broker_adapter():
     assert broker.orders == [{"candidate_id": "c1", "volume": 1}]
 
 
+def test_engine_without_qwen_response_fails_closed_to_wait():
+    engine = VNextEngine(pair="XAUUSD", frontier=TimeFrontier.from_value("2026-01-01T00:05:00Z"))
+    state = engine.compose_state(bars())
+    result = engine.evaluate(state, spec(), candidate_inputs={"candidate_id": "c1", "direction": "buy",
+        "zone_id": "z1", "invalidation": "z1-low", "target_zone_ids": ("z2",)})
+    assert result.arbitration.decision == "WAIT"
+
+
 def test_engine_persists_state_and_evaluation_events():
     ledger = InMemoryLedger()
     engine = VNextEngine(pair="XAUUSD", frontier=TimeFrontier.from_value("2026-01-01T00:05:00Z"), ledger=ledger)
