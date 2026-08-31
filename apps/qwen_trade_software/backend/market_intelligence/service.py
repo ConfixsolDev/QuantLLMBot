@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,10 @@ from storage_factory import create_intelligence_store
 
 log = logging.getLogger(__name__)
 GRAPH_CONTEXT_MAX_AGE_SECONDS = 120
+
+
+def _database_only() -> bool:
+    return os.environ.get("QWEN_WEB_DB_ONLY", "0").strip().lower() in {"1", "true", "yes"}
 
 
 class MarketIntelligenceService:
@@ -143,7 +148,7 @@ class MarketIntelligenceService:
             from runtime_store import live_runtime_store
             runtime = live_runtime_store()
             worker_health = runtime.get_state(health_path) if runtime is not None else None
-            if not worker_health:
+            if not worker_health and not _database_only():
                 worker_health = json.loads(health_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             worker_health = {"status": "unavailable"}
@@ -154,7 +159,7 @@ class MarketIntelligenceService:
             from runtime_store import live_runtime_store
             runtime = live_runtime_store()
             graph_context = runtime.get_state(graph_path) if runtime is not None else None
-            if not graph_context:
+            if not graph_context and not _database_only():
                 graph_context = json.loads(graph_path.read_text(encoding="utf-8"))
             as_of = datetime.fromisoformat(
                 str(graph_context.get("as_of_utc")).replace("Z", "+00:00")
@@ -170,7 +175,7 @@ class MarketIntelligenceService:
             from runtime_store import live_runtime_store
             runtime = live_runtime_store()
             graph_health = runtime.get_state(health_path) if runtime is not None else None
-            if not graph_health:
+            if not graph_health and not _database_only():
                 graph_health = json.loads(health_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             pass

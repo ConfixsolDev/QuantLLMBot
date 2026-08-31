@@ -236,6 +236,10 @@ def read_json_safe(path: Path, default: dict) -> dict:
                 return stored
     except Exception:
         logging.getLogger(__name__).debug("runtime state read failed", exc_info=True)
+    # In database-only operation, a missing database state is intentionally
+    # unavailable; never silently resurrect a stale JSON dashboard snapshot.
+    if os.environ.get("QWEN_WEB_DB_ONLY", "0").strip().lower() in {"1", "true", "yes"}:
+        return json.loads(json.dumps(default))
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError, OSError):
@@ -254,6 +258,8 @@ def write_json_atomic(path: Path, data: dict) -> None:
             return
     except Exception:
         logging.getLogger(__name__).debug("runtime state write failed", exc_info=True)
+    if os.environ.get("QWEN_WEB_DB_ONLY", "0").strip().lower() in {"1", "true", "yes"}:
+        raise RuntimeError(f"database-only mode could not persist state: {path.name}")
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(
         json.dumps(data, separators=(",", ":")), encoding="utf-8"

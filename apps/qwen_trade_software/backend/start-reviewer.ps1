@@ -10,6 +10,17 @@ $runtime = Join-Path $reviewerRoot "software_runtime.py"
 $starterLog = Join-Path $reviewerRoot "logs\start-reviewer.log"
 $dashboardHealth = "http://127.0.0.1:48632/snapshot"
 
+# The dashboard is database-only. The reviewer must be launched with the
+# Timescale store selected; JSON files are not a read-through fallback for
+# web state. QWEN_TIMESCALE_DSN and QWEN_REDIS_URL are supplied by the
+# storage activation boundary before this starter is called.
+$env:QWEN_INTELLIGENCE_BACKEND = "timescale"
+$env:QWEN_CONTEXT_BACKEND = "timescale"
+$env:QWEN_WEB_DB_ONLY = "1"
+if (-not $env:QWEN_TIMESCALE_DSN) {
+    throw "QWEN_TIMESCALE_DSN is required; refusing to start the web backend on SQLite or JSON state."
+}
+
 function Write-StarterLog([string]$Message) {
     $line = "{0:yyyy-MM-dd HH:mm:ss} {1}" -f (Get-Date), $Message
     try {
