@@ -82,6 +82,7 @@ DECISION_MODULES = (
     "market_intelligence/cross_market.py",
     "market_intelligence/retrieval.py",
     "market_intelligence/service.py",
+    "pair_market_state.py",
     "market_intelligence/collector.py",
     "market_intelligence/live_structure_updater.py",
     "market_intelligence/decision_events.py",
