@@ -30,6 +30,7 @@ if (-not $SkipMigration) {
 }
 $env:QWEN_INTELLIGENCE_BACKEND = 'timescale'
 $env:QWEN_CONTEXT_BACKEND = 'timescale'
+$env:QWEN_REDIS_REQUIRED = '1'
 & $python (Join-Path $backend 'tools/storage_acceptance.py') --context-db $contextDb --intelligence-db $intelligenceDb
 if ($LASTEXITCODE -ne 0) { throw 'Storage acceptance gate failed; live backend variables were not validated.' }
 Write-Host 'QuantLLM storage is ready for this PowerShell session.'
