@@ -548,7 +548,7 @@ class MarketContextCache:
         # Explicit opt-in keeps offline tools and rollback deterministic while
         # allowing the live context worker to use the same Timescale authority
         # as the intelligence ledger.
-        if cls is MarketContextCache and os.environ.get("QWEN_CONTEXT_BACKEND", "sqlite").strip().lower() == "timescale":
+        if cls is MarketContextCache and kwargs.get("backend", "auto") != "sqlite" and os.environ.get("QWEN_CONTEXT_BACKEND", "sqlite").strip().lower() == "timescale":
             from timescale_context_store import TimescaleMarketContextCache
             return TimescaleMarketContextCache(
                 report_metadata_corrections=kwargs.get("report_metadata_corrections", True)
@@ -560,6 +560,7 @@ class MarketContextCache:
         path: Path | str = DEFAULT_DB,
         *,
         report_metadata_corrections: bool = True,
+        backend: str = "auto",
     ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -3980,7 +3981,7 @@ def run_incremental_self_test() -> dict:
         path = Path(folder) / "fixture.sqlite3"
         symbol = "XAUUSDr"
         opened = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
-        cache = MarketContextCache(path, report_metadata_corrections=False)
+        cache = MarketContextCache(path, report_metadata_corrections=False, backend="sqlite")
         row = fixture_candle(symbol, "M1", opened, 4000)
         first = cache.ingest_completed([row])
         before = cache.raw_hash(symbol)

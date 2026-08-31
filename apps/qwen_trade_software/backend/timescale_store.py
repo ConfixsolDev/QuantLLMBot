@@ -215,7 +215,7 @@ class TimescaleIntelligenceStore:
             cur.execute(
                 "INSERT INTO graph_projection_outbox(event_id,event_time_utc,enqueued_at_utc) "
                 "SELECT event_id,event_time_utc,%s FROM intelligence_events "
-                "ON CONFLICT(event_id) DO NOTHING",
+                "ON CONFLICT(event_id,event_time_utc) DO NOTHING",
                 (now,),
             )
             return max(0, int(cur.rowcount))
