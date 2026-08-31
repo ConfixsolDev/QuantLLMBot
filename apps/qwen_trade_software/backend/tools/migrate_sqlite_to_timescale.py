@@ -12,6 +12,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from itertools import islice
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -35,9 +36,10 @@ def migrate(source: Path, dsn: str, *, dry_run: bool = False) -> dict[str, int]:
         target = TimescaleIntelligenceStore(dsn)
         target.schema()
         if "intelligence_events" in tables:
-            for row in connection.execute("SELECT * FROM intelligence_events ORDER BY event_time_utc,sequence"):
-                event = {"event_id": row["event_id"], "symbol": row["symbol"], "timeframe": row["timeframe"], "event_type": row["event_type"], "event_time_utc": row["event_time_utc"], "evidence_id": row["evidence_id"], "payload": json.loads(row["payload_json"])}
-                counts["events"] += int(target.append_event(event))
+            rows = connection.execute("SELECT * FROM intelligence_events ORDER BY event_time_utc,sequence")
+            while batch := list(islice(rows, 1000)):
+                events = [{"event_id": row["event_id"], "symbol": row["symbol"], "timeframe": row["timeframe"], "event_type": row["event_type"], "event_time_utc": row["event_time_utc"], "evidence_id": row["evidence_id"], "payload": json.loads(row["payload_json"])} for row in batch]
+                counts["events"] += target.append_events(events)
         if "structure_projections" in tables:
             for row in connection.execute("SELECT * FROM structure_projections"):
                 target.put_projection(row["symbol"], row["timeframe"], json.loads(row["state_json"]), row["last_event_id"])

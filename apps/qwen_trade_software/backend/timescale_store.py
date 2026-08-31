@@ -99,6 +99,29 @@ class TimescaleIntelligenceStore:
                     )
                 return inserted
 
+    def append_events(self, events: list[dict]) -> int:
+        """Append a migration batch in one transaction while preserving idempotency."""
+        inserted = 0
+        now = datetime.now(timezone.utc)
+        with self.pool.connection() as connection, connection.cursor() as cur:
+            for event in events:
+                payload = event.get("payload") or {}
+                event_time = _utc(event["event_time_utc"])
+                cur.execute(
+                    "INSERT INTO intelligence_events(event_time_utc,event_id,symbol,timeframe,event_type,evidence_id,payload_json,payload_hash,recorded_at_utc) "
+                    "VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s) ON CONFLICT DO NOTHING",
+                    (event_time, event["event_id"], event["symbol"], event["timeframe"],
+                     event["event_type"], event.get("evidence_id"), canonical(payload),
+                     digest(payload), now),
+                )
+                if cur.rowcount == 1:
+                    inserted += 1
+                    cur.execute(
+                        "INSERT INTO graph_projection_outbox(event_id,event_time_utc,enqueued_at_utc) VALUES(%s,%s,%s) ON CONFLICT DO NOTHING",
+                        (event["event_id"], event_time, now),
+                    )
+        return inserted
+
     def projection(self, symbol: str, timeframe: str) -> dict | None:
         with self.pool.connection() as connection, connection.cursor() as cur:
             cur.execute("SELECT state_json,structure_epoch,last_event_id,updated_at_utc FROM structure_projections WHERE symbol=%s AND timeframe=%s", (symbol, timeframe))
