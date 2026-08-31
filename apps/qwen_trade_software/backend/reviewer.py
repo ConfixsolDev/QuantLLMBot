@@ -84,6 +84,7 @@ from approach_tracker import ApproachTracker
 from idea_lifecycle import IdeaManager
 from zone_scorer import score_zones, compact_score_log, ScoringConfig
 from market_structure import compute_structure_context
+from pair_market_state import build_pair_market_state
 from market_runtime import MarketRuntime, MarketRuntimeRegistry
 from runtime_config import PRIMARY_MARKET_SYMBOL, model_for_role
 from candle_clock import candle_clock
@@ -1235,6 +1236,20 @@ def compact_entry_facts(
         ms = compute_structure_context(symbol, mid)
         if ms.get("status") == "ok":
             packet["market_structure"] = ms
+            # vNext is now on the live facts path. This immutable packet is
+            # input to Qwen/strategy evaluation only; candidate creation,
+            # risk, and execution remain owned by their existing boundaries.
+            state = build_pair_market_state(
+                instrument_for(symbol).key,
+                datetime.now(timezone.utc).isoformat(),
+                data_quality={"market_structure_status": ms.get("status"), "source": "live_context"},
+                timeframes=ms.get("trends") or {},
+                structure=tuple(ms.get("structure") or ()),
+                structural_events=tuple(ms.get("events") or ()),
+                active_levels=tuple(execution_levels or ()),
+                versions={"market_structure": str(ms.get("version") or "native")},
+            )
+            packet["pair_market_state"] = state.as_dict()
             try:
                 # Collection is owned by market_memory_worker.py. Qwen/reviewer
                 # only reads the durable projections and can never delay candle

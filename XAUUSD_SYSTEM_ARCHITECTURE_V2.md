@@ -15,14 +15,16 @@
 
 ### vNext challenger alignment (2026-08-31)
 
-The vNext design-freeze specification is adopted as a shadow/research
-implementation plan, not as a production cutover. The current QuantLLM remains
-the control. The first implemented boundary is the pure
+The vNext design-freeze specification is adopted on the live facts path, with
+research/provider experiments remaining explicitly shadow-only. The current
+Qwen decision, risk, and execution boundaries remain the control. The first
+implemented boundary is the pure
 `PAIR_MARKET_STATE_V1` contract in `apps/qwen_trade_software/backend/pair_market_state.py`:
 it composes immutable, versioned, provenance-carrying facts at one UTC time
 frontier and rejects future-dated evidence. It cannot choose direction, create
-a candidate, call a broker, or alter live execution. Promotion requires
-replay parity and multi-regime shadow evidence under the existing gates.
+a candidate, call a broker, or alter live execution. It is now attached to the
+live entry facts packet; promotion of any new provider or behavioral policy
+still requires replay parity and multi-regime evidence under the existing gates.
 
 ---
 

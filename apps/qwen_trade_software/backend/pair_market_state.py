@@ -1,6 +1,6 @@
 """Immutable vNext pair-market-state boundary.
 
-This is a shadow/replay contract only.  It composes deterministic facts for a
+This is the live/replay state contract. It composes deterministic facts for a
 strategy or narrator; it cannot create a trade candidate or call execution.
 """
 
