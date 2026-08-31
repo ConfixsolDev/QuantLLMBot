@@ -11,6 +11,9 @@ from .cross_market import completed_bars as dxy_bars, summarize
 from .projection import TIMEFRAMES, reduce_event, relationship_state
 from .retrieval import RetrievalBroker
 from .store import IntelligenceStore
+from redis_context import RedisContextCache, RedisContextUnavailable
+from storage_config import StorageConfig
+from storage_factory import create_intelligence_store
 
 log = logging.getLogger(__name__)
 GRAPH_CONTEXT_MAX_AGE_SECONDS = 120
@@ -18,10 +21,18 @@ GRAPH_CONTEXT_MAX_AGE_SECONDS = 120
 
 class MarketIntelligenceService:
     def __init__(self, db_path: Path | str, candle_reader) -> None:
-        self.store = IntelligenceStore(db_path)
+        self.store = create_intelligence_store(db_path)
         self.candle_reader = candle_reader
         self.retrieval = RetrievalBroker(self.store, candle_reader, dxy_bars)
         self.last_snapshot: dict = {}
+        config = StorageConfig.from_env()
+        self.redis_cache = None
+        if config.redis_url:
+            try:
+                self.redis_cache = RedisContextCache(config.redis_url, ttl_seconds=config.redis_ttl_seconds)
+            except RedisContextUnavailable:
+                if config.redis_required:
+                    raise
 
     def observe(self, symbol: str, native_structure: dict) -> dict:
         """Record new completed evidence and return bounded cross-market memory."""
@@ -72,7 +83,20 @@ class MarketIntelligenceService:
                               "relationship": relation,
                               "recent_transitions": self.store.events(symbol, limit=6),
                               "recent_retrievals": self.store.recent_retrievals(6)}
+        self._cache_snapshot(symbol)
         return self.compact_snapshot()
+
+    def _cache_snapshot(self, symbol: str) -> None:
+        if not self.redis_cache:
+            return
+        try:
+            self.redis_cache.set_snapshot(symbol, self.compact_snapshot(include_graph=True))
+            for tf, state in (self.last_snapshot.get("hierarchy") or {}).items():
+                if state:
+                    self.redis_cache.set_structure(symbol, tf, state)
+        except RedisContextUnavailable:
+            if StorageConfig.from_env().redis_required:
+                raise
 
     def compact_snapshot(self, include_graph: bool = False) -> dict:
         snap = self.last_snapshot or {}
@@ -98,6 +122,15 @@ class MarketIntelligenceService:
 
     def refresh_snapshot(self, symbol: str) -> dict:
         """Load worker-owned projections without collecting any market data."""
+        if self.redis_cache:
+            try:
+                cached = self.redis_cache.get_snapshot(symbol)
+                if cached:
+                    self.last_snapshot = cached
+                    return cached
+            except RedisContextUnavailable:
+                if StorageConfig.from_env().redis_required:
+                    raise
         hierarchy = self.store.projections(symbol)
         dxy_states = self.store.projections("DXY")
         relation = relationship_state(

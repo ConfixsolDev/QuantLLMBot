@@ -186,6 +186,24 @@ The runtime, rather than the model, enforces every safety invariant in phases
 3 and 4. Qwen supplies contextual judgment and named-level decisions; broker
 state and deterministic validation remain authoritative.
 
+#### Durable intelligence storage and fast context
+
+The live intelligence ledger and its materialized projections use PostgreSQL
+with TimescaleDB as durable authority when `QWEN_INTELLIGENCE_BACKEND=timescale`
+is explicitly configured. `timescale_store.py` uses pooled, parameterized
+transactions and idempotent event IDs; `migrate_sqlite_to_timescale.py` reads
+the existing SQLite intelligence ledger read-only and can be run repeatedly.
+SQLite is retained only as a migration source or offline compatibility backend
+until parity checks pass. A failed Timescale connection is a safe halt for new
+decisions, not permission to silently fall back to a stale or divergent store.
+
+Redis is an acceleration layer only. `redis_context.py` stores bounded current
+context and structure projections with a short TTL. Redis data is disposable,
+never replay authority, and never a source for risk, execution, or broker truth.
+Redis failure falls back to the durable store unless the operator explicitly
+sets `QWEN_REDIS_REQUIRED=1`, in which case startup fails closed. Cache writes
+occur only after durable projection reads/writes succeed.
+
 ### Persistent market-intelligence subsystem
 
 The live cognition layer uses selective event sourcing and materialized views.
