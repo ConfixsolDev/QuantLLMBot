@@ -41,7 +41,7 @@ services:
       - "${NEO4J_HTTP_PORT:-7474}:7474"
       - "${NEO4J_BOLT_PORT:-7687}:7687"
     volumes:
-      - quantllm-vnext-neo4j-data:/data
+      - quantllm-vnext-neo4j-data-v2:/data
       - quantllm-neo4j-logs:/logs
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
@@ -52,5 +52,5 @@ services:
 volumes:
   quantllm-timescale:
   quantllm-redis:
-  quantllm-vnext-neo4j-data:
+  quantllm-vnext-neo4j-data-v2:
   quantllm-neo4j-logs:
