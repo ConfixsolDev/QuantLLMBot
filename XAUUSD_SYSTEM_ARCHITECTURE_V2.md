@@ -1701,3 +1701,28 @@ there are no routine file logs or JSONL persistence paths.
 8. **Qwen is the sole discretionary brain, not the whole implementation.** The guard, executor, regime engine, level detection, TimescaleDB, Neo4j, Redis, and retrieval services are deterministic support components. They compute facts, provide context, enforce approved safety, and execute validated instructions; they do not compete with Qwen for normal trade judgment. Qwen receives their mechanically sound evidence and remains the main driver for entries and routine management.
 
 9. **Minimal model contracts.** Entry Qwen returns only directional judgment, confidence, cited evidence, ready/wait, one approved geometry-row identifier, a short reason, and bounded data requests. Runtime supplies cache epochs and expands that row into side, entry, stop, target, target mode, and volume. Trade-management Qwen runs only when exactly one Qwen-owned position is already open and may manage only that position; it never searches for, proposes, adds, averages, reverses, or opens trades.
+# V2 Implementation Freeze Amendment — 2026-08-31
+
+The clean-room implementation under `apps/qwen_trade_software/vnext/` is the
+active target for the V2 system. Production execution is currently paused by
+deployment state, but the runtime is not a shadow implementation and must not
+be run beside legacy decision workers when enabled. The one-way deployment
+boundary must first pass TimescaleDB, Neo4j, Redis, broker snapshot, ledger
+reconciliation, and single-instance lease checks.
+
+TimescaleDB is the sole durable numerical and event authority. Neo4j stores
+causal/provenance projections, and Redis stores disposable current context and
+service coordination. SQLite, JSONL, routine file logs, and file-backed
+runtime state are not part of the V2 runtime. Only bug diagnostics may use a
+file. The deployment acceptance script must not migrate or activate SQLite.
+
+Every strategy is an independent execution unit. Its immutable strategy ID,
+version, pair, trade class, unique magic number, bounded MT5 comment, alignment
+rules, candidate lifecycle, risk policy, and performance namespace travel with
+the candidate and order. The final order boundary injects missing identity and
+rejects conflicting identity. Shared market facts are read-only; strategies do
+not share decision or risk state.
+
+This amendment records the current implementation authority; earlier research
+sections describing observer/shadow experiments remain historical research
+context and do not authorize a parallel production path.
