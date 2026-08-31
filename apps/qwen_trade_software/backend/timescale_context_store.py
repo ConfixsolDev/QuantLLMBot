@@ -167,6 +167,22 @@ class TimescaleMarketContextCache:
             cur.execute("INSERT INTO ticks(symbol,time_utc,bid,ask,spread,flags) VALUES(%s,%s,%s,%s,%s,%s)", (quote.symbol, _dt(quote.time_utc), quote.bid, quote.ask, quote.spread, quote.flags))
             cur.execute("DELETE FROM ticks WHERE id IN (SELECT id FROM ticks WHERE symbol=%s ORDER BY id DESC OFFSET 10000)", (quote.symbol,))
 
+    def insert_tick(self, row: dict) -> None:
+        with self.pool.connection() as connection, connection.cursor() as cur:
+            cur.execute("INSERT INTO ticks(symbol,time_utc,bid,ask,spread,flags) VALUES(%s,%s,%s,%s,%s,%s)", (row["symbol"], _dt(row["time_utc"]), row["bid"], row["ask"], row["spread"], row["flags"]))
+
+    def copy_cache_object(self, row: dict) -> None:
+        with self.pool.connection() as connection, connection.cursor() as cur:
+            cur.execute("INSERT INTO cache_objects(cache_type,cache_epoch,symbol,schema_version,created_at_utc,valid_as_of_utc,source_start_utc,source_end_utc,source_hash,producer_version,model_digest,expires_at_utc,invalidated_at_utc,invalidation_reason,evidence_ids_json,payload_json,is_current) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s) ON CONFLICT(cache_epoch) DO NOTHING", (row["cache_type"], row["cache_epoch"], row["symbol"], row["schema_version"], _dt(row["created_at_utc"]), _dt(row["valid_as_of_utc"]), _dt(row["source_start_utc"]) if row.get("source_start_utc") else None, _dt(row["source_end_utc"]) if row.get("source_end_utc") else None, row["source_hash"], row["producer_version"], row.get("model_digest"), _dt(row["expires_at_utc"]) if row.get("expires_at_utc") else None, _dt(row["invalidated_at_utc"]) if row.get("invalidated_at_utc") else None, row.get("invalidation_reason"), row["evidence_ids_json"] if isinstance(row["evidence_ids_json"], str) else json.dumps(row["evidence_ids_json"]), row["payload_json"] if isinstance(row["payload_json"], str) else json.dumps(row["payload_json"]), bool(row["is_current"])))
+
+    def copy_qwen_validation(self, row: dict) -> None:
+        with self.pool.connection() as connection, connection.cursor() as cur:
+            cur.execute("INSERT INTO qwen_validations(symbol,validation_type,created_at_utc,input_hash,response_json,raw_response,passed,failures_json,metrics_json) VALUES(%s,%s,%s,%s,%s::jsonb,%s,%s,%s::jsonb,%s::jsonb)", (row["symbol"], row["validation_type"], _dt(row["created_at_utc"]), row["input_hash"], row.get("response_json") or "null", row.get("raw_response"), bool(row["passed"]), row["failures_json"], row["metrics_json"]))
+
+    def copy_latency(self, row: dict) -> None:
+        with self.pool.connection() as connection, connection.cursor() as cur:
+            cur.execute("INSERT INTO latency_events(symbol,cycle_id,created_at_utc,stage,duration_ms,details_json) VALUES(%s,%s,%s,%s,%s,%s::jsonb)", (row["symbol"], row["cycle_id"], _dt(row["created_at_utc"]), row["stage"], row["duration_ms"], row["details_json"]))
+
     def completed(self, symbol: str, timeframe: str) -> list[dict]:
         return self._rows("SELECT * FROM completed_candles WHERE symbol=%s AND timeframe=%s ORDER BY open_time_utc", (symbol, timeframe))
 

@@ -32,14 +32,21 @@ def migrate(source: Path, dsn: str, *, dry_run: bool = False) -> dict[str, int]:
             target.ingest_completed(rows)
         if "forming_candles" in tables:
             target.upsert_forming([dict(row) for row in db.execute("SELECT * FROM forming_candles")])
+        if "ticks" in tables:
+            for row in db.execute("SELECT symbol,time_utc,bid,ask,spread,flags FROM ticks ORDER BY id"):
+                target.insert_tick(dict(row))
         if "cache_objects" in tables:
             for row in db.execute("SELECT * FROM cache_objects"):
-                if not row["is_current"]:
-                    continue
-                target.put_object(row["cache_type"], row["symbol"], row["valid_as_of_utc"], json.loads(row["payload_json"]), source_hash=row["source_hash"], evidence_ids=json.loads(row["evidence_ids_json"]), model_digest=row["model_digest"], expires_at=row["expires_at_utc"])
+                target.copy_cache_object(dict(row))
         if "readiness_manifests" in tables:
             for row in db.execute("SELECT symbol,payload_json FROM readiness_manifests"):
                 target.write_manifest(row["symbol"], json.loads(row["payload_json"]))
+        if "qwen_validations" in tables:
+            for row in db.execute("SELECT * FROM qwen_validations"):
+                target.copy_qwen_validation(dict(row))
+        if "latency_events" in tables:
+            for row in db.execute("SELECT * FROM latency_events"):
+                target.copy_latency(dict(row))
         return counts
     finally:
         db.close()
