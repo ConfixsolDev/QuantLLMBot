@@ -231,6 +231,10 @@ class TimescaleIntelligenceStore:
 
     def graph_outbox_batch(self, limit: int = 200, max_attempts: int = 8) -> list[dict]:
         with self.pool.connection() as connection, connection.cursor() as cur:
+            # Docker's default PostgreSQL shared-memory segment is small. The
+            # historical outbox join can otherwise select a parallel plan and
+            # exhaust it; a bounded serial query is safer for the live worker.
+            cur.execute("SET LOCAL max_parallel_workers_per_gather = 0")
             cur.execute("SELECT o.event_id,o.event_time_utc,o.attempts,e.sequence,e.symbol,e.timeframe,e.event_type,e.evidence_id,e.payload_json,e.payload_hash,e.recorded_at_utc FROM graph_projection_outbox o JOIN intelligence_events e ON e.event_id=o.event_id AND e.event_time_utc=o.event_time_utc WHERE o.status='pending' AND o.attempts < %s ORDER BY e.event_time_utc,e.sequence LIMIT %s", (max(1, int(max_attempts)), max(1, min(int(limit), 10000))))
             rows = cur.fetchall()
         return [{"event_id": r[0], "event_time_utc": r[1].isoformat(), "attempts": r[2], "sequence": r[3], "symbol": r[4], "timeframe": r[5], "event_type": r[6], "evidence_id": r[7], "payload": r[8] if isinstance(r[8], dict) else json.loads(r[8]), "payload_hash": r[9], "recorded_at_utc": r[10].isoformat(), "previous_event_id": None} for r in rows]
