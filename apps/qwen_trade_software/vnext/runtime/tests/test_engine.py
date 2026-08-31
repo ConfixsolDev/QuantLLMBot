@@ -57,7 +57,9 @@ def test_approved_candidate_passes_risk_then_broker_adapter():
     assert result.arbitration.decision == "APPROVE"
     assert result.risk.approved
     assert engine.submit(result, order={"candidate_id": "c1", "volume": 1})["state"] == "SUBMITTED"
-    assert broker.orders == [{"candidate_id": "c1", "volume": 1}]
+    assert broker.orders == [{"candidate_id": "c1", "volume": 1,
+                             "strategy_id": "SCALP_V1", "strategy_version": "1",
+                             "magic_number": 1001, "comment": "QVN:SCALP_V1:1"}]
 
 
 def test_engine_without_qwen_response_fails_closed_to_wait():

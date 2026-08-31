@@ -153,9 +153,24 @@ class VNextEngine:
             raise RuntimeError("order requires an approved candidate")
         if evaluation.risk is None or not evaluation.risk.approved:
             raise RuntimeError("order requires approved risk")
-        result = self.broker.submit(dict(order))
-        self._record("ORDER_SUBMITTED", {"candidate_id": evaluation.candidate.candidate_id,
-                     "order": dict(order), "broker_result": dict(result)})
+        candidate = evaluation.candidate
+        owned_order = dict(order)
+        supplied_magic = owned_order.get("magic_number", owned_order.get("magic"))
+        if supplied_magic is not None and int(supplied_magic) != candidate.strategy.magic_number:
+            raise RuntimeError("order magic number does not belong to strategy")
+        supplied_strategy = owned_order.get("strategy_id")
+        if supplied_strategy is not None and str(supplied_strategy) != candidate.strategy.strategy_id:
+            raise RuntimeError("order strategy identity does not match candidate")
+        owned_order.update({"strategy_id": candidate.strategy.strategy_id,
+                            "strategy_version": candidate.strategy.version,
+                            "magic_number": candidate.strategy.magic_number,
+                            "comment": candidate.strategy.execution_comment})
+        result = self.broker.submit(owned_order)
+        self._record("ORDER_SUBMITTED", {"candidate_id": candidate.candidate_id,
+                     "strategy_id": candidate.strategy.strategy_id,
+                     "magic_number": candidate.strategy.magic_number,
+                     "comment": candidate.strategy.execution_comment,
+                     "order": owned_order, "broker_result": dict(result)})
         return result
 
     def _record(self, event_type: str, payload: dict[str, Any]) -> None:

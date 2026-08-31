@@ -14,6 +14,7 @@ class StrategyDefinition:
     version: str
     magic_number: int
     trade_class: str
+    comment_prefix: str = ""
     context_requirements: tuple[str, ...] = ()
     eligible_zone_types: tuple[str, ...] = ()
     evaluation_cadence_seconds: int = 60
@@ -27,6 +28,12 @@ class StrategyDefinition:
             raise ValueError("strategy numeric fields must be positive")
         if self.trade_class not in {"HTF", "SCALP", "MICRO"}:
             raise ValueError("trade_class must be HTF, SCALP, or MICRO")
+        if len(self.execution_comment) > 31:
+            raise ValueError("strategy execution comment must be at most 31 characters")
+
+    @property
+    def execution_comment(self) -> str:
+        return (self.comment_prefix or f"QVN:{self.strategy_id}:{self.version}")[:31]
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +67,8 @@ class TradeCandidate:
     def as_dict(self) -> dict[str, Any]:
         return {"candidate_id": self.candidate_id, "pair": self.pair,
                 "strategy_id": self.strategy.strategy_id, "strategy_version": self.strategy.version,
-                "magic_number": self.strategy.magic_number, "trade_class": self.strategy.trade_class,
+                "magic_number": self.strategy.magic_number, "execution_comment": self.strategy.execution_comment,
+                "trade_class": self.strategy.trade_class,
                 "direction": self.direction, "entry_trigger": self.entry_trigger,
                 "zone_id": self.zone_id, "invalidation": self.invalidation,
                 "target_zone_ids": list(self.target_zone_ids), "created_at_utc": self.created_at_utc,
