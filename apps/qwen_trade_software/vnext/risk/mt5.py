@@ -24,13 +24,18 @@ def live_risk_inputs(mt5: Any, state: Mapping[str, Any], candidate_inputs: Mappi
     target_zone = metadata.get("target_zone") if isinstance(metadata, Mapping) else None
     point = float(_field(symbol, "point", 0.0) or 0.0)
     spread = max(0.0, float(tick.ask) - float(tick.bid))
+    minimum_stop_distance = float(policy["stop_distance_price"])
     if geometry is not None and point > 0:
         invalidation = float(geometry)
         buffer = max(point * 2.0, spread * 2.0)
-        stop = invalidation - buffer if direction == "buy" else invalidation + buffer
+        structural_stop = invalidation - buffer if direction == "buy" else invalidation + buffer
+        # The declared risk bracket is also a minimum noise buffer. Without
+        # this floor, a tight swing extreme creates oversized volume and turns
+        # ordinary XAU spread/volatility into an accidental stop trigger.
+        floor_stop = entry - minimum_stop_distance if direction == "buy" else entry + minimum_stop_distance
+        stop = min(structural_stop, floor_stop) if direction == "buy" else max(structural_stop, floor_stop)
     else:
-        stop_distance = float(policy["stop_distance_price"])
-        stop = entry - stop_distance if direction == "buy" else entry + stop_distance
+        stop = entry - minimum_stop_distance if direction == "buy" else entry + minimum_stop_distance
     if isinstance(target_zone, Mapping) and {"lower", "upper"}.issubset(target_zone):
         target = float(target_zone["lower"] if direction == "buy" else target_zone["upper"])
     else:
