@@ -25,6 +25,7 @@ from vnext.runtime.mt5_position_monitor import MT5PositionMonitor
 from vnext.runtime.position_management import ManagementProfile, PositionManagementService
 from vnext.runtime.qwen_management import QwenManagementReviewer
 from vnext.runtime.service import VNextService
+from vnext.runtime.lease import LeaseHeartbeat, VNextLease
 from vnext.storage.persistence import from_environment
 from vnext.strategy.xau_m15_m1_structure_scalper import DEFINITION, MANAGEMENT, SPEC, candidate_inputs
 from vnext.strategy.timeframe_audit import TimeframeExpectationAuditor
@@ -43,6 +44,8 @@ def main() -> int:
         raise ValueError("invalid demo worker parameters")
     import MetaTrader5 as mt5
     persistence = None
+    lease = None
+    heartbeat = None
     try:
         persistence = from_environment(dsn=os.environ.get("QWEN_TIMESCALE_DSN", ""),
                                        redis_url=os.environ.get("QWEN_REDIS_URL", ""),
@@ -51,6 +54,12 @@ def main() -> int:
                                        neo4j_password=os.environ.get("QWEN_NEO4J_PASSWORD", ""))
         if not persistence.ensure_ready().ready:
             raise RuntimeError("V2 durable stores are not ready")
+        lease = VNextLease(persistence.working_memory.client,
+                           name="qwen:vnext:demo-service:lease", ttl_seconds=180)
+        if not lease.acquire():
+            raise RuntimeError("another vNext demo service owns the lease")
+        heartbeat = LeaseHeartbeat(lease)
+        heartbeat.start()
         if not mt5.initialize():
             raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
         account = mt5.account_info()
@@ -89,6 +98,7 @@ def main() -> int:
         reconciler = MagicPositionReconciler(magic_number=DEFINITION.magic_number, store=persistence)
         count = 0
         while args.max_cycles == 0 or count < args.max_cycles:
+            heartbeat.ensure_owned()
             count += 1
             recovery = reconciler.run(transport, data_healthy=True, timescale_healthy=True, redis_rebuilt=True)
             monitor.run_once()
@@ -98,6 +108,10 @@ def main() -> int:
                 time.sleep(args.interval_seconds)
         return 0
     finally:
+        if heartbeat is not None:
+            heartbeat.stop()
+        if lease is not None:
+            lease.release()
         mt5.shutdown()
         if persistence is not None:
             persistence.close()
