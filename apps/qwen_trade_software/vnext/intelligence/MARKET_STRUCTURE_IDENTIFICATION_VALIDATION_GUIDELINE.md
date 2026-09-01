@@ -402,6 +402,101 @@ structure detection for M15, M30, H1, H2, H4, and D1. The current baseline's
 M1-only swing detector and last-bar timeframe direction are not sufficient for
 that capability.
 
+## 13. One-minute structure R&D matrix
+
+These patterns are research candidates for M1 execution around an independently
+validated higher-timeframe level. None is a standalone signal and none is
+approved for live trading without the replay gates above.
+
+### Double top / double bottom
+
+**Definition:** two confirmed same-side pivots within a declared volatility
+tolerance, separated by a minimum/maximum bar distance, followed by a close
+through the intervening neckline. The second pivot alone is not a signal.
+
+**Required evidence:** both pivot confirmations, price-distance tolerance,
+neckline ID, neckline-break close, and the M15 parent zone or level.
+
+**Preliminary diagnostic:** a simple 30-day XAUUSDr M1 probe produced 1,320
+double-top candidates and 1,390 double-bottom candidates. Under a deliberately
+simple one-range target/stop rule and before spread/slippage, target-before-stop
+was approximately 62% for tops and 58% for bottoms among resolved signals. This
+is not a profitability result: signals overlap, the detector is not yet
+lifecycle-aware, and costs/regime/session conditioning were not included.
+
+### Initial level touch / first response
+
+**Definition:** the first post-creation touch of a fresh M15 zone, followed by a
+completed M1 rejection or reclaim in the zone's direction. Do not enter merely
+because price is near a level.
+
+**Required evidence:** zone birth, first-touch timestamp, penetration,
+close-away response, response bar ID, and invalidation beyond the zone.
+
+**Current limitation:** `ZoneEngine` defines interaction classification, but
+`VNextEngine.compose_state()` currently discovers zones without publishing a
+causal interaction history. This pattern cannot be evaluated honestly until
+those interactions are persisted and replayable.
+
+### Breakout-retest / failed-break reclaim
+
+**Definition:** a closed-bar acceptance beyond an M15 level, followed by a
+bounded retest that holds (continuation) or fails back through the level
+(reclaim/reversal).
+
+**Required evidence:** pre-break level, acceptance close, retest event, hold or
+failure close, and parent-timeframe context. A wick-only excursion is excluded.
+
+### Sweep-and-reclaim
+
+**Definition:** price trades beyond a prior equal high/low or range boundary,
+then a completed M1 close returns inside the level with a rejection extreme.
+
+**Required evidence:** prior liquidity cluster, sweep range, reclaim close,
+spread/volatility context, and M15 location. This is especially sensitive to
+spread and news conditions.
+
+### Compression-to-expansion
+
+**Definition:** a measurable contraction in M1 ranges/dispersion near an M15
+level followed by a closed-bar expansion and acceptance in one direction.
+
+**Required evidence:** compression window, volatility baseline, expansion
+threshold, acceptance close, and higher-timeframe alignment. Do not classify a
+single large candle as a complete pattern.
+
+### Continuation pullback
+
+**Definition:** an already confirmed parent-direction BOS/impulse, followed by a
+pullback into the broken level or M15 zone and a fresh M1 continuation response.
+
+**Required evidence:** parent BOS, level/retest identity, pullback containment,
+continuation close, and invalidation below/above the retest structure.
+
+## 13.1 Pattern comparison protocol
+
+For each candidate pattern, compare the same entry, stop, target, and cost model
+across identical M1 bars. Report resolved target-before-stop, expectancy after
+costs, MFE/MAE, time-to-resolution, false-confirmation rate, and results by
+parent level type, session, direction, and volatility regime. Use disjoint
+episodes so one price movement cannot count as many independent successes.
+
+The first implementation priority is not the pattern with the highest
+preliminary hit rate. It is the pattern with the clearest causal definition,
+lowest ambiguity, and complete evidence path. Based on the current audit, the
+order is: first-touch response after interaction persistence, breakout-retest,
+double-top/bottom neckline break, sweep-reclaim, continuation pullback, then
+compression-expansion. This ordering is a research priority, not a trading
+recommendation.
+
+## 13.2 Probability promotion rule for patterns
+
+After enough labelled, non-overlapping episodes, estimate each pattern's
+conditional probability separately for each parent-level and regime slice. Use
+time-ordered calibration/test periods and publish the base rate, sample size,
+uncertainty, and calibration error. A high double-top rate in one 30-day sample
+must not be generalized to XAUUSD, another session, or another strategy.
+
 ## 13. R&D intake from the non-authoritative design-freeze document
 
 The design-freeze Word document was reviewed on 2026-09-01 as a guideline only.
