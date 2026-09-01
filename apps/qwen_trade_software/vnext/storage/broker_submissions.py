@@ -38,15 +38,17 @@ class TimescaleSubmissionStore:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO vnext_broker_submissions(order_id,fingerprint,result_json,status,created_at_utc) "
-                "VALUES (%s,%s,'{}'::jsonb,'RESERVED',%s) ON CONFLICT (order_id) DO NOTHING",
+                "VALUES (%s,%s,'{}'::jsonb,'RESERVED',%s) ON CONFLICT (order_id) DO NOTHING "
+                "RETURNING order_id",
                 (order_id, fingerprint, datetime.now(timezone.utc)),
             )
+            claimed = cursor.fetchone() is not None
             cursor.execute("SELECT fingerprint,result_json,status FROM vnext_broker_submissions WHERE order_id=%s", (order_id,))
             row = cursor.fetchone()
         if row is None:
             return None
         result = row[1] if isinstance(row[1], dict) else json.loads(row[1])
-        return {"fingerprint": str(row[0]), "result": result, "status": str(row[2])}
+        return {"fingerprint": str(row[0]), "result": result, "status": str(row[2]), "claimed": claimed}
 
     def complete(self, order_id: str, fingerprint: str, result: dict[str, Any]) -> None:
         with self._connect() as connection, connection.cursor() as cursor:

@@ -19,13 +19,16 @@ from vnext.intelligence.structure.engine import StructureEngine
 from vnext.intelligence.zones.engine import ZoneEngine
 from vnext.llm.arbitrator import Arbitration, arbitrate
 from vnext.llm.client import QwenClient, request_arbitration
+from vnext.llm.gateway import StrategyQwenGateway
 from vnext.market.state import PairMarketState
 from vnext.narrator.story import NarratorRequest, StoryNarrator
 from vnext.platform.events import EventEnvelope
 from vnext.platform.time_frontier import TimeFrontier
 from vnext.recovery.reconcile import RecoveryPlan, reconcile
 from vnext.risk.engine import RiskDecision, evaluate_risk
+from vnext.execution.boundary import validate_order_intent
 from vnext.strategy.definition import StrategySpec, create_candidate
+from vnext.strategy.xau_m15_m1_structure_scalper import entry_session_at
 
 
 class EventLedger(Protocol):
@@ -50,13 +53,15 @@ class VNextEngine:
                  broker: BrokerAdapter | None = None,
                  ledger: EventLedger | None = None,
                  event_sink: Callable[[list[EventEnvelope]], int] | None = None,
-                 qwen_client: QwenClient | None = None) -> None:
+                 qwen_client: QwenClient | None = None,
+                 qwen_gateway: StrategyQwenGateway | None = None) -> None:
         self.pair = pair
         self.frontier = frontier
         self.broker = broker
         self.ledger = ledger
         self.event_sink = event_sink
         self.qwen_client = qwen_client
+        self.qwen_gateway = qwen_gateway
         self.zone_engine = ZoneEngine()
         self.structure_engine = StructureEngine()
         self.narrator = StoryNarrator()
@@ -67,7 +72,11 @@ class VNextEngine:
         for timeframe in ("M5", "M15", "M30", "H1", "H2", "H4", "D1"):
             timeframes[timeframe] = [bar.as_dict() for bar in builder.build(m1_bars, timeframe)]
         confirmed = [bar for bar in m1_bars if bar.pair == self.pair and self.frontier.permits(bar.end_utc)]
-        zones = self.zone_engine.discover(confirmed, pair=self.pair, timeframe="M1")
+        # Common engines publish neutral observations only.  Each strategy owns
+        # any selection of a zone, direction, invalidation, or target.
+        m15_bars = builder.build(m1_bars, "M15")
+        zones = (self.zone_engine.discover(confirmed, pair=self.pair, timeframe="M1")
+                 + self.zone_engine.discover(m15_bars, pair=self.pair, timeframe="M15"))
         structure_events = self.structure_engine.detect_swings(confirmed)
         latest = confirmed[-1] if confirmed else None
         indicators = indicator_evidence(confirmed)
@@ -93,12 +102,15 @@ class VNextEngine:
             for parent, child in zip(("D1", "H4", "H2", "H1", "M30", "M15", "M5"),
                                      ("H4", "H2", "H1", "M30", "M15", "M5", "M1"))
         )
+
         state = PairMarketState(
             self.pair, self.frontier.as_of_utc, {"status": "ready" if confirmed else "unavailable",
             "completed_bars": len(confirmed)}, timeframes,
             zones=tuple(zone.as_dict() for zone in zones), structure=structure,
             structural_events=tuple(event.as_dict() for event in structure_events),
-            mtf_relationships=relationships, temporal_state={}, statistics=statistics or {},
+            mtf_relationships=relationships,
+            temporal_state={"entry_session": entry_session_at(self.frontier.as_of_utc)},
+            statistics=statistics or {},
             indicators=indicators,
         )
         self._record("PAIR_MARKET_STATE_COMPOSED", {"state_hash": state.state_hash,
@@ -113,16 +125,29 @@ class VNextEngine:
             context_timeframes=tuple(spec.narrator_request.get("context_timeframes", ("M15", "H1"))),
             setup_timeframes=tuple(spec.narrator_request.get("setup_timeframes", ("M5",))),
             execution_timeframes=tuple(spec.narrator_request.get("execution_timeframes", ("M1",))),
-            purpose="ENTRY", depth="STANDARD", include_statistics=True,
+            purpose="ENTRY", depth="STANDARD",
+            include_statistics=bool(spec.narrator_request.get("include_statistics", False)),
+            include_indicators=tuple(spec.narrator_request.get("include_indicators", ())),
+            include_child_path=bool(spec.narrator_request.get("include_child_path", False)),
+            focus_tags=tuple(spec.narrator_request.get("focus_tags", ())),
+            excluded_timeframes=tuple(spec.narrator_request.get("explicitly_exclude", ())),
+            max_bars_per_timeframe=int(spec.narrator_request.get("max_bars_per_timeframe", 32)),
+            max_structure_events=int(spec.narrator_request.get("max_structure_events", 16)),
+            max_zones=int(spec.narrator_request.get("max_zones", 12)),
         )
         story = self.narrator.narrate(state, request)
         candidate = None
         if candidate_inputs:
             candidate = create_candidate(spec, state_hash=state.state_hash, **dict(candidate_inputs))
+            self._record("STRATEGY_LIFECYCLE", {"state": "CANDIDATE_CREATED",
+                         "candidate_id": candidate.candidate_id, "strategy_id": spec.definition.strategy_id,
+                         "state_hash": candidate.state_hash})
         arbitration_result = None
         if candidate:
             if response is not None:
                 arbitration_result = arbitrate(response, candidate)
+            elif self.qwen_gateway is not None:
+                arbitration_result = self.qwen_gateway.arbitrate(state, candidate, story)
             elif self.qwen_client is not None:
                 arbitration_result = request_arbitration(self.qwen_client, state, candidate, story)
             else:
@@ -134,9 +159,21 @@ class VNextEngine:
                 "violations": list(arbitration_result.violations),
                 "reason": arbitration_result.reason[:512],
             })
+            self._record("STRATEGY_LIFECYCLE", {
+                "state": "LLM_APPROVED" if arbitration_result.decision == "APPROVE" else "REJECTED",
+                "candidate_id": candidate.candidate_id, "strategy_id": spec.definition.strategy_id,
+                "state_hash": candidate.state_hash, "reason": arbitration_result.reason[:512],
+            })
         risk_result = None
         if candidate and arbitration_result and arbitration_result.decision == "APPROVE" and risk_inputs:
             risk_result = evaluate_risk(**dict(risk_inputs))
+            self._record("RISK_DECISION", {"candidate_id": candidate.candidate_id,
+                         "strategy_id": spec.definition.strategy_id, **risk_result.as_dict()})
+            self._record("STRATEGY_LIFECYCLE", {
+                "state": "RISK_APPROVED" if risk_result.approved else "REJECTED",
+                "candidate_id": candidate.candidate_id, "strategy_id": spec.definition.strategy_id,
+                "state_hash": candidate.state_hash, "reasons": list(risk_result.reasons),
+            })
         evaluation = Evaluation(state, story, candidate, arbitration_result, risk_result)
         self._record("STRATEGY_EVALUATION", {
             "state_hash": state.state_hash,
@@ -154,17 +191,13 @@ class VNextEngine:
         if evaluation.risk is None or not evaluation.risk.approved:
             raise RuntimeError("order requires approved risk")
         candidate = evaluation.candidate
-        owned_order = dict(order)
-        supplied_magic = owned_order.get("magic_number", owned_order.get("magic"))
-        if supplied_magic is not None and int(supplied_magic) != candidate.strategy.magic_number:
-            raise RuntimeError("order magic number does not belong to strategy")
-        supplied_strategy = owned_order.get("strategy_id")
-        if supplied_strategy is not None and str(supplied_strategy) != candidate.strategy.strategy_id:
-            raise RuntimeError("order strategy identity does not match candidate")
-        owned_order.update({"strategy_id": candidate.strategy.strategy_id,
-                            "strategy_version": candidate.strategy.version,
-                            "magic_number": candidate.strategy.magic_number,
-                            "comment": candidate.strategy.execution_comment})
+        try:
+            owned_order = validate_order_intent(order, candidate, evaluation.risk)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        self._record("STRATEGY_LIFECYCLE", {"state": "ORDER_PENDING",
+                     "candidate_id": candidate.candidate_id, "strategy_id": candidate.strategy.strategy_id,
+                     "state_hash": candidate.state_hash, "order_id": owned_order["order_id"]})
         result = self.broker.submit(owned_order)
         self._record("ORDER_SUBMITTED", {"candidate_id": candidate.candidate_id,
                      "strategy_id": candidate.strategy.strategy_id,

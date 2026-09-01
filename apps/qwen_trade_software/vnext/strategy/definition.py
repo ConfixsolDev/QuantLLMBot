@@ -22,6 +22,7 @@ class StrategySpec:
     management_policy: str = ""
     statistical_qualification: Mapping[str, Any] = field(default_factory=dict)
     narrator_request: Mapping[str, Any] = field(default_factory=dict)
+    model_contract: Mapping[str, Any] = field(default_factory=dict)
     management_parameters: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -35,6 +36,7 @@ class StrategySpec:
                 "management_policy": self.management_policy,
                 "statistical_qualification": dict(self.statistical_qualification),
                 "narrator_request": dict(self.narrator_request),
+                "model_contract": dict(self.model_contract),
                 "management_parameters": dict(self.management_parameters)}
 
 

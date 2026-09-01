@@ -7,7 +7,7 @@ from vnext.recovery.preflight import run_preflight
 class FakeMT5:
     def account_info(self): return SimpleNamespace(login=7, trade_allowed=True)
     def terminal_info(self): return SimpleNamespace(connected=True)
-    def positions_get(self): return [SimpleNamespace(ticket=12, symbol="XAUUSDr", type=0, volume=0.1)]
+    def positions_get(self): return [SimpleNamespace(ticket=12, symbol="XAUUSDr", type=0, volume=0.1, magic=7)]
 
 
 class Persistence:

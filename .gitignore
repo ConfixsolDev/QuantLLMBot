@@ -33,33 +33,12 @@ output/
 RandDData/
 tmp/
 
-# Qwen backend runtime cache and singleton lock files (regenerated every run)
-apps/qwen_trade_software/backend/cache/
-apps/qwen_trade_software/backend/*.lock
-apps/qwen_trade_software/backend/entry-dashboard-state.json
-apps/qwen_trade_software/backend/management-dashboard-state.json
-apps/qwen_trade_software/backend/qualified-levels.json
-apps/qwen_trade_software/backend/planner-state.json
-apps/qwen_trade_software/backend/model-residency.json
-apps/qwen_trade_software/backend/_tmp_*.py
-
-# Plan View (Next.js) — source in repo; deps and build output local only
-apps/qwen_trade_software/planview/node_modules/
-apps/qwen_trade_software/planview/.next/
-apps/qwen_trade_software/planview/out/
-apps/qwen_trade_software/planview/tsconfig.tsbuildinfo
-apps/qwen_trade_software/desk/tsconfig.tsbuildinfo
+# Recoverable local quarantine; retired files are removed from active source.
+/remove/
 
 # Other packaged dumps (regenerated; not source). QuantLLMBot_training.zip is
 # tracked so Colab/v004 weekly trains can pull the frozen curriculum bundle.
 *.training.zip
-
-# Legacy research paths (removed from tree; keep ignored if restored locally)
-ResearchLab/store/
-ResearchLab/model_training/
-ResearchLab/TempFiles/
-ResearchLab/config.json
-ResearchLab/output/
 
 # Store runtime ledgers (local only — not loaded by live Qwen app)
 store/episodes.jsonl

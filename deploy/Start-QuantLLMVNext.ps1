@@ -11,9 +11,9 @@ if (-not (Test-Path -LiteralPath $storage)) { throw "V2 storage bootstrap not fo
 & $storage -ProjectRoot $ProjectRoot
 if ($LASTEXITCODE -ne 0) { throw 'V2 storage acceptance failed.' }
 
-$python = Join-Path $ProjectRoot 'apps/qwen_trade_software/backend/.venv/Scripts/python.exe'
-if (-not (Test-Path -LiteralPath $python)) { throw "Backend Python not found: $python" }
-$env:PYTHONPATH = "$(Join-Path $ProjectRoot 'apps/qwen_trade_software');$(Join-Path $ProjectRoot 'apps/qwen_trade_software/backend')"
+$python = Join-Path $ProjectRoot 'apps/qwen_trade_software/.venv/Scripts/python.exe'
+if (-not (Test-Path -LiteralPath $python)) { throw "vNext Python not found: $python" }
+$env:PYTHONPATH = "$(Join-Path $ProjectRoot 'apps/qwen_trade_software')"
 & $python (Join-Path $ProjectRoot 'apps/qwen_trade_software/vnext/tools/cutover_preflight.py')
 if ($LASTEXITCODE -ne 0) { throw 'V2 cutover preflight failed; no V2 worker was started.' }
 Write-Host 'V2 infrastructure and broker reconciliation preflight passed.'

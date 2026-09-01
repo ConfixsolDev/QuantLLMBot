@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>GoldFlow · V2 Market View</title>
+    <meta name="description" content="Read-only market, operations, history, and trade-ledger view for QuantLLM V2/vNext." />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-main">
+        <a class="brand" href="/" aria-label="GoldFlow home"><span class="brand-mark">GF</span><span><b>GoldFlow</b><small>V2 market view</small></span></a>
+        <nav aria-label="Primary navigation">
+          <a data-route="market" href="/">Today’s market</a>
+          <a data-route="operations" href="/operations">Live operations</a>
+          <a data-route="history" href="/history">Past history</a>
+          <a data-route="trades" href="/trades">Trade ledger</a>
+        </nav>
+        <div class="header-actions">
+          <time id="clock">—</time>
+          <button id="open-system" class="system-button" type="button"><span id="system-dot" class="dot unknown"></span><span><b>System status</b><small id="system-summary">Checking V2 services…</small></span></button>
+        </div>
+      </div>
+      <div class="health-ribbon" aria-label="Core system health">
+        <button type="button" data-open-system><span class="dot" id="model-dot"></span>Model host <b id="model-short">—</b></button>
+        <button type="button" data-open-system><span class="dot" id="mt5-dot"></span>MT5 <b id="mt5-short">—</b></button>
+        <button type="button" data-open-system><span class="dot" id="data-dot"></span>V2 ledger <b id="data-short">—</b></button>
+        <span class="ribbon-spacer"></span><span id="freshness">Connecting…</span>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="view" data-view="market">
+        <div class="page-heading">
+          <div><p class="kicker">Market overall · today</p><h1>What gold is doing now</h1><p>Today’s market state, where the strategy is focused, and what must happen before action.</p></div>
+          <div class="market-id"><span id="market-pair">XAUUSD</span><strong id="frontier">—</strong><small>Latest completed evidence frontier</small></div>
+        </div>
+        <section class="market-brief" aria-label="Today's market brief">
+          <article><span>Market posture</span><strong id="market-posture">OBSERVING</strong><small id="market-posture-note">Waiting for V2 evidence</small></article>
+          <article><span>Opportunity status</span><strong id="opportunity-status">—</strong><small id="opportunity-note">No current lifecycle</small></article>
+          <article><span>Entry conditions</span><strong id="entry-status">—</strong><small id="entry-note">No gate result yet</small></article>
+          <article><span>Broker exposure</span><strong id="positions">—</strong><small id="recovery">Waiting for broker truth</small></article>
+        </section>
+        <section class="panel chart-workspace" aria-label="Completed candle chart and timeframe ladder">
+          <div class="chart-heading">
+            <div><p class="kicker">TradingView · candle map</p><h2><span id="chart-pair">XAUUSD</span> · <span id="chart-timeframe">M15</span></h2><p id="chart-caption">Loading canonical V2 candles…</p></div>
+            <div id="chart-controls" class="chart-controls" role="group" aria-label="Chart timeframe">
+              <button type="button" data-timeframe="D1">D1</button><button type="button" data-timeframe="H4">H4</button><button type="button" data-timeframe="H1">H1</button><button type="button" data-timeframe="M30">M30</button><button class="active" type="button" data-timeframe="M15">M15</button>
+            </div>
+          </div>
+          <div class="chart-layout">
+            <div class="chart-stage">
+              <div id="market-chart" role="img" aria-label="Interactive TradingView XAUUSD completed candlestick chart"></div>
+              <div class="chart-legend"><span><i class="up"></i>Up candle</span><span><i class="down"></i>Down candle</span><span><i class="forming"></i>Forming candle</span><span><i class="plan"></i>Plan geometry</span><span><i class="zone"></i>Observed zone</span></div>
+            </div>
+            <aside class="chart-context">
+              <div><span>Last close</span><strong id="chart-close">—</strong></div><div><span>Candle move</span><strong id="chart-change">—</strong></div><div><span>Visible range</span><strong id="chart-range">—</strong></div><div><span>Data status</span><strong id="chart-status">—</strong></div>
+            </aside>
+          </div>
+          <div class="ladder-heading"><div><p class="kicker">Candle ladder · causal audit</p><h2>D1 → H4 → H1 → M30 → M15</h2></div><p>Expected trend is frozen before the next M15 close, then compared with what happened. It is an audit baseline—not trade authority.</p></div>
+          <div id="candle-ladder" class="candle-ladder"><p class="empty">Loading completed timeframe candles…</p></div>
+        </section>
+        <div class="market-grid">
+          <article class="panel plan-card">
+            <div class="panel-title"><div><p class="kicker">Active planning picture</p><h2>What the app is preparing to do</h2></div><span id="plan-state" class="tag">NO ACTIVE PLAN</span></div>
+            <div class="plan-direction"><span id="plan-direction">WAIT</span><div><b id="plan-headline">No broker-bound plan yet</b><small id="plan-reason">The app remains fail-closed until the strategy supplies complete geometry.</small></div></div>
+            <div class="geometry"><div><span>Entry</span><strong id="plan-entry">—</strong></div><div><span>Stop</span><strong id="plan-stop">—</strong></div><div><span>Target</span><strong id="plan-target">—</strong></div><div><span>Volume</span><strong id="plan-volume">—</strong></div></div>
+            <div class="condition-row"><span>Right now</span><strong id="right-now">Collecting completed market evidence</strong></div>
+          </article>
+          <article class="panel evidence-card">
+            <div class="panel-title"><div><p class="kicker">Today’s evidence</p><h2>Market understanding</h2></div><span id="bars" class="tag">— bars</span></div>
+            <div class="evidence-meters"><div><span>Active zones</span><strong id="zones">—</strong><i><b id="zone-meter"></b></i></div><div><span>Structure events</span><strong id="structures">—</strong><i><b id="structure-meter"></b></i></div></div>
+            <dl class="fact-list"><div><dt>Setup timeframe</dt><dd>M15</dd></div><div><dt>Execution timeframe</dt><dd>M1</dd></div><div><dt>Context reviewed</dt><dd id="timeframes">—</dd></div><div><dt>Calendar gate</dt><dd id="calendar-gate">—</dd></div></dl>
+          </article>
+        </div>
+        <article class="panel today-flow"><div class="panel-title"><div><p class="kicker">Today’s decision trail</p><h2>From observation to broker</h2></div><a href="/operations">Open live operations →</a></div><div id="today-timeline" class="timeline"><p class="empty">Loading today’s V2 trail…</p></div></article>
+      </section>
+
+      <section class="view" data-view="operations" hidden>
+        <div class="page-heading"><div><p class="kicker">Live operations</p><h1>What the system is doing</h1><p>Worker activity and the current decision path. Operational facts do not imply trade authorization.</p></div><span id="mode" class="tag">V2 LEDGER</span></div>
+        <section class="ops-summary"><article><span>Lifecycle</span><strong id="lifecycle">—</strong><small id="strategy">Waiting for event</small></article><article><span>Strategy decision</span><strong id="decision">—</strong><small id="decision-reason">No recent decision</small></article><article><span>Risk gate</span><strong id="risk-status">—</strong><small id="risk-note">No current risk record</small></article><article><span>Latest order</span><strong id="order-status">—</strong><small id="order-note">No current order record</small></article></section>
+        <div class="operations-grid">
+          <article class="panel decision-panel"><div class="panel-title"><div><p class="kicker">Current cycle</p><h2>Decision path</h2></div><button id="refresh" type="button">Refresh</button></div><div class="flow"><div><span>01</span><b>Market state</b><small id="flow-state">Awaiting event</small></div><i></i><div><span>02</span><b>Candidate</b><small id="flow-candidate">Awaiting event</small></div><i></i><div><span>03</span><b>Strategy review</b><small id="flow-qwen">Awaiting event</small></div><i></i><div><span>04</span><b>Risk / broker</b><small id="flow-order">Awaiting event</small></div></div><div class="detail-strip"><div><span>Zones</span><strong id="ops-zones">—</strong></div><div><span>Structure events</span><strong id="ops-structures">—</strong></div><div><span>Entry gate</span><strong id="entry-gate">—</strong></div><div><span>24h ledger events</span><strong id="event-total">—</strong></div></div></article>
+          <article class="panel activity-panel"><div class="panel-title"><div><p class="kicker">Immutable ledger</p><h2>Recent activity</h2></div></div><ol id="events" class="event-list"><li class="empty">Loading V2 events…</li></ol></article>
+        </div>
+      </section>
+
+      <section class="view" data-view="history" hidden>
+        <div class="page-heading"><div><p class="kicker">Past history</p><h1>How the system behaved</h1><p>Daily and hourly V2 activity reconstructed from immutable events—not from screenshots or temporary logs.</p></div></div>
+        <section id="history-cards" class="history-cards"><p class="empty">Loading history…</p></section>
+        <article class="panel"><div class="panel-title"><div><p class="kicker">Activity by hour</p><h2>Decision and execution history</h2></div></div><div id="history-chart" class="history-chart"><p class="empty">No history loaded.</p></div></article>
+      </section>
+
+      <section class="view" data-view="trades" hidden>
+        <div class="page-heading"><div><p class="kicker">Trade ledger</p><h1>Every V2 broker attempt</h1><p>Detailed strategy, geometry, risk, and broker-result records for every order attempt currently preserved by V2.</p></div><span id="trade-count" class="tag">0 records</span></div>
+        <div id="trade-scope-note" class="notice">Loading trade-ledger scope…</div><section id="trade-list" class="trade-list"><p class="empty">Loading trade records…</p></section>
+      </section>
+    </main>
+
+    <footer><span>GoldFlow V2 · read-only operations surface</span><span id="generated">Status not loaded</span></footer>
+    <dialog id="system-modal"><div class="modal-head"><div><p class="kicker">V2 control plane</p><h2>System connectivity</h2><p>Direct health checks and broker-truth freshness. This screen cannot place or modify trades.</p></div><button id="close-system" aria-label="Close system status">×</button></div><div id="system-grid" class="system-grid"><p class="empty">Checking services…</p></div><div class="modal-foot"><span>Architecture</span><b>V2 / vNext · localhost · read only</b></div></dialog>
+    <script src="/lightweight-charts.js" defer></script>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

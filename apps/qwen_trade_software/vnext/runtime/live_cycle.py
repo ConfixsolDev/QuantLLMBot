@@ -36,6 +36,37 @@ class MT5ClosedBarSource:
             "spread": _row_value(row, "spread", 0),
         } for row in rates]
 
+    def forming_timeframes(self, pair: str) -> list[dict[str, Any]]:
+        """Read display-only current bars; never feed them into market state."""
+        sampled = datetime.now(timezone.utc)
+        definitions = (
+            ("D1", self.mt5.TIMEFRAME_D1, 86400),
+            ("H4", self.mt5.TIMEFRAME_H4, 14400),
+            ("H1", self.mt5.TIMEFRAME_H1, 3600),
+            ("M30", self.mt5.TIMEFRAME_M30, 1800),
+            ("M15", self.mt5.TIMEFRAME_M15, 900),
+        )
+        result: list[dict[str, Any]] = []
+        for label, timeframe, duration in definitions:
+            rates = self.mt5.copy_rates_from_pos(pair, timeframe, 0, 1)
+            if rates is None or len(rates) == 0:
+                continue
+            row = rates[-1]
+            start = _utc_datetime(_row_value(row, "time"))
+            end = start + timedelta(seconds=duration)
+            if not start <= sampled < end:
+                continue
+            result.append({
+                "timeframe": label, "start_utc": start.isoformat(), "end_utc": end.isoformat(),
+                "open": float(_row_value(row, "open")), "high": float(_row_value(row, "high")),
+                "low": float(_row_value(row, "low")), "close": float(_row_value(row, "close")),
+                "tick_volume": float(_row_value(row, "tick_volume", 0)),
+                "spread": float(_row_value(row, "spread", 0)),
+                "sampled_at_utc": sampled.isoformat(), "is_forming": True,
+                "source": "mt5_display_only",
+            })
+        return result
+
 
 class TimescaleClosedBarSource:
     """Read canonical completed M1 bars from the durable V2 numerical store."""
@@ -89,6 +120,8 @@ def _utc_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
         result = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
         return result.astimezone(timezone.utc)
+    if hasattr(value, "item") and callable(value.item):
+        value = value.item()
     if isinstance(value, (int, float)):
         return datetime.fromtimestamp(value, tz=timezone.utc)
     return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
@@ -115,4 +148,17 @@ class LiveVNextCycle:
         context = state.as_dict()
         context["state_hash"] = state.state_hash
         self.persistence.publish_context(self.pair, context)
+        forming_reader = getattr(self.source, "forming_timeframes", None)
+        if callable(forming_reader):
+            try:
+                self.persistence.publish_context(f"forming:{self.pair}", {
+                    "schema_version": "FORMING_CANDLE_DISPLAY_V1",
+                    "pair": self.pair,
+                    "display_only": True,
+                    "strategy_eligible": False,
+                    "bars": list(forming_reader(self.pair)),
+                })
+            except Exception:
+                # Display-only forming bars must never affect the closed-bar cycle.
+                pass
         return state

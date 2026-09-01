@@ -25,13 +25,14 @@ class PairMarketState:
     indicators: Mapping[str, Any] = None  # type: ignore[assignment]
     active_levels: tuple[Mapping[str, Any], ...] = ()
     graph_references: tuple[str, ...] = ()
+    strategy_evidence: Mapping[str, Any] = None  # type: ignore[assignment]
     schema_version: str = "PAIR_MARKET_STATE_V1"
 
     def __post_init__(self) -> None:
         if not self.pair or self.schema_version != "PAIR_MARKET_STATE_V1":
             raise ValueError("invalid pair market state identity")
         object.__setattr__(self, "time_frontier_utc", utc(self.time_frontier_utc))
-        for name in ("data_quality", "timeframes", "structure", "temporal_state", "statistics", "indicators"):
+        for name in ("data_quality", "timeframes", "structure", "temporal_state", "statistics", "indicators", "strategy_evidence"):
             if getattr(self, name) is None:
                 object.__setattr__(self, name, {})
 
@@ -46,6 +47,7 @@ class PairMarketState:
             "temporal_state": dict(self.temporal_state), "statistics": dict(self.statistics),
             "indicators": dict(self.indicators), "active_levels": [dict(row) for row in self.active_levels],
             "graph_references": list(self.graph_references),
+            "strategy_evidence": dict(self.strategy_evidence),
         }
 
     @property

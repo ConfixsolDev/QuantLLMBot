@@ -37,13 +37,14 @@ class IdempotentBrokerAdapter:
         claimed = False
         if self.submission_store and hasattr(self.submission_store, "claim"):
             previous = self.submission_store.claim(order_id, fingerprint)
-            claimed = previous is not None and previous.get("status") == "RESERVED" and not previous.get("result")
+            claimed = previous is not None and bool(previous.get("claimed"))
         if previous is not None:
             if previous["fingerprint"] != fingerprint:
                 raise BrokerSubmissionError("order ID reused with different request")
-            if claimed:
-                raise BrokerSubmissionError("order submission is reserved; broker reconciliation required")
-            return dict(previous["result"])
+            if not claimed:
+                if previous.get("status") == "RESERVED" and not previous.get("result"):
+                    raise BrokerSubmissionError("order submission is reserved; broker reconciliation required")
+                return dict(previous["result"])
         result = self.client.order_send(dict(order))
         if result is None:
             raise BrokerSubmissionError("broker returned no response")

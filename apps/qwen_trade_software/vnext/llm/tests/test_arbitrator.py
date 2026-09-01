@@ -17,3 +17,10 @@ def test_approve_must_cite_supplied_candidate():
 def test_valid_wait_is_preserved():
     result = arbitrate({"decision": "WAIT", "reason": "not triggered", "state_hash": "hash"}, candidate())
     assert result.decision == "WAIT"
+
+
+def test_invalid_decision_reports_only_bounded_schema_diagnostics():
+    result = arbitrate({"action": "wait", "reason": "ignored"}, candidate())
+    assert result.decision == "NO_TRADE"
+    assert "received_decision=<missing>" in result.reason
+    assert "response_keys=action,reason" in result.reason

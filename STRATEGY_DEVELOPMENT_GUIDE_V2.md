@@ -18,8 +18,8 @@ Every strategy must define:
 - A bounded `comment_prefix`; if omitted, V2 derives `QVN:<strategy_id>:<version>`.
 - Evaluation cadence and candidate expiry.
 
-The final V2 order boundary overwrites missing identity fields from the
-candidate and rejects conflicting strategy IDs or magic numbers. MT5 comments
+The final V2 order boundary rejects missing or conflicting identity and
+geometry fields rather than repairing them. MT5 comments
 are limited to 31 characters. Performance attribution must use at least
 `strategy_id`, `version`, `magic_number`, pair, direction, and order ID.
 

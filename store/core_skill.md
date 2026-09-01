@@ -104,10 +104,11 @@ acceptance, participation, and session.
 
 ## [session-rules] Sessions (UTC research convention)
 
-Asia 00:00–07:00, pre-London 07:00–08:00, London 08:00–13:00, overlap
-13:00–16:00, New York 16:00–21:00, then off-session. New entries only during
-Asia, London, and the overlap. Pre-London, New York, and off-session are
-no-new-entry periods: skip with off_session even if a setup looks attractive.
+Entry windows are fixed UTC: Asia 00:00–07:00, London 08:00–13:00, overlap
+13:00–16:00, and New York 16:00–21:00. The 07:00–08:00 pre-London interval,
+21:00–24:00, and all other excluded intervals are no-new-entry periods: skip
+with off_session even if a setup looks attractive. These strategy entry windows
+are a preserved contract and must not be DST-adjusted or otherwise changed.
 Session highs/lows are structure. A session break requires a completed M5
 close outside the range — a wick is not a breakout. During London and the
 overlap, read the completed Asia high, low and bias as prior structure: inside

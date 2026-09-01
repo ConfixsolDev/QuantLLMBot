@@ -59,6 +59,22 @@ class VNextPersistence:
             raise ValueError("working-memory context requires a key and mapping")
         self.working_memory.put(key, context)
 
+    def latest_magic_positions(self, magic_number: int) -> list[dict[str, Any]]:
+        return self.ledger.latest_magic_positions(magic_number)
+
+    def latest_news_calendar(self, day_utc: str) -> dict[str, Any] | None:
+        return self.ledger.latest_news_calendar(day_utc)
+
+    def latest_timeframe_expectation(self, *, pair: str, strategy_id: str,
+                                     target_close_utc: str) -> dict[str, Any] | None:
+        return self.ledger.latest_timeframe_expectation(
+            pair=pair, strategy_id=strategy_id, target_close_utc=target_close_utc)
+
+    def latest_completed_candles(self, *, pair: str, timeframes: tuple[str, ...],
+                                 as_of_utc: Any) -> dict[str, dict[str, Any]]:
+        return self.ledger.latest_completed_candles(
+            pair=pair, timeframes=timeframes, as_of_utc=as_of_utc)
+
     def close(self) -> None:
         if self._session is not None:
             self._session.close()

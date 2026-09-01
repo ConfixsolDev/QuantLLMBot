@@ -4,6 +4,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
+from pathlib import Path
+
+# Allow this operational script to be executed directly from any working
+# directory, as documented, while keeping the package imports canonical.
+APP_ROOT = Path(__file__).resolve().parents[2]
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
 
 from vnext.storage.persistence import from_environment
 

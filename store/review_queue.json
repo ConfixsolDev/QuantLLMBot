@@ -1,1 +1,1 @@
-{"schema_version":"1.0","items":[{"id":"initial_migration_required","type":"migration_plan","status":"pending_human_review","note":"Legacy knowledge and output files remain outside store until read, classified, migrated, and verified individually. No source has been deleted."}]}
+{"schema_version":"1.0","items":[]}

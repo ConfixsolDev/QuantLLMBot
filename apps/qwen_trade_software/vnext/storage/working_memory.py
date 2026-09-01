@@ -18,8 +18,11 @@ class WorkingMemory:
             raise ValueError("working-memory TTL must be positive")
         self.client, self.ttl_seconds, self.prefix = client, ttl_seconds, prefix
 
-    def put(self, key: str, value: dict[str, Any]) -> None:
-        self.client.setex(self.prefix + key, self.ttl_seconds, json.dumps(value, sort_keys=True, default=str))
+    def put(self, key: str, value: dict[str, Any], *, ttl_seconds: int | None = None) -> None:
+        ttl = self.ttl_seconds if ttl_seconds is None else int(ttl_seconds)
+        if ttl <= 0:
+            raise ValueError("working-memory TTL must be positive")
+        self.client.setex(self.prefix + key, ttl, json.dumps(value, sort_keys=True, default=str))
 
     def get(self, key: str) -> dict[str, Any] | None:
         raw = self.client.get(self.prefix + key)

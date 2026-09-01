@@ -1,8 +1,7 @@
-"""Modular V2 implementation layer.
+"""Clean vNext implementation of the protected V2 architecture.
 
-This package is intentionally inactive by default.  It provides stable
-boundaries around the tested backend components so the live runtime can be
-switched one boundary at a time after parity evidence is recorded.
+Production execution remains fail-closed until the activation gates in
+``XAUUSD_SYSTEM_ARCHITECTURE_V2.md`` are satisfied.
 """
 
 __all__ = ["integration", "market", "storage", "strategy", "execution"]
