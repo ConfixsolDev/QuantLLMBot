@@ -25,19 +25,19 @@ def test_quick_scalp_cuts_fast_adverse_move():
 
 
 def test_quick_scalp_uses_next_m1_fifteen_second_check_then_waits():
-    now = BASE.replace(second=0) + timedelta(minutes=1, seconds=10)
+    now = BASE + timedelta(seconds=20)
     result = manage_scalp(side="buy", entry=100, current=100, peak=100,
                           opened_at=BASE, now=now, atr=1, broker_stop=99,
                           spread=.1, point=.01, parameters=PARAMETERS)
     assert result.action == "WAIT" and result.phase == "NEXT_M1_CHECK"
-    later = BASE.replace(second=0) + timedelta(minutes=1, seconds=30)
+    later = BASE + timedelta(seconds=40)
     assert manage_scalp(side="buy", entry=100, current=100, peak=100,
                         opened_at=BASE, now=later, atr=1, broker_stop=99,
                         spread=.1, point=.01, parameters=PARAMETERS).phase == "FAILED_CHECK_WAIT"
 
 
 def test_quick_scalp_expires_after_failed_confirmation_window():
-    now = BASE.replace(second=0) + timedelta(minutes=2, seconds=1)
+    now = BASE + timedelta(seconds=86)
     result = manage_scalp(side="sell", entry=100, current=100, peak=100,
                           opened_at=BASE, now=now, atr=1, broker_stop=101,
                           spread=.1, point=.01, parameters=PARAMETERS)

@@ -140,17 +140,29 @@ def build_strategy_evidence(state: Mapping[str, Any]) -> dict[str, Any] | None:
     if not zones or not events:
         return None
     latest = max(events, key=lambda row: (str(row.get("observed_at_utc", "")), str(row.get("event_id", ""))))
-    direction = "buy" if latest["event_type"] == "SWING_LOW_CONFIRMED" else "sell"
-    opposing = "SWING_HIGH_CONFIRMED" if direction == "buy" else "SWING_LOW_CONFIRMED"
-    invalidations = [row for row in events if row.get("event_type") == opposing]
-    if not invalidations:
+    # A swing without a causal price cannot prove a response at an M15 zone.
+    # Never select a nearby zone after the fact when the trigger location is
+    # unknown.
+    try:
+        trigger_price = float(latest["price"])
+    except (KeyError, TypeError, ValueError):
         return None
-    invalidation = max(invalidations, key=lambda row: (str(row.get("observed_at_utc", "")), str(row.get("event_id", ""))))
+    direction = "buy" if latest["event_type"] == "SWING_LOW_CONFIRMED" else "sell"
+    # The M15 location must actually contain the confirmed M1 response price.
+    # This is the missing link in the previous nearest-zone selector.
+    located = [row for row in zones if float(row["lower"]) <= trigger_price <= float(row["upper"])]
+    if not located:
+        return None
+    entry = min(located, key=lambda row: (abs(((float(row["lower"]) + float(row["upper"])) / 2) - trigger_price),
+                                          str(row.get("zone_id", ""))))
+    # The confirmed rejection extreme is the invalidation for this setup:
+    # below a support swing for buys and above a resistance swing for sells.
+    # The prior implementation selected the opposite swing, which put a buy
+    # stop above entry (and vice versa) once structural prices were enforced.
+    invalidation = latest
     price = _latest_close(state)
     if price is None:
         return None
-    entry = min(zones, key=lambda row: (abs(((float(row["lower"]) + float(row["upper"])) / 2) - price),
-                                        str(row.get("zone_id", ""))))
     targets = [row for row in zones if row.get("zone_id") != entry.get("zone_id")
                and ((direction == "buy" and float(row["lower"]) > float(entry["upper"]))
                     or (direction == "sell" and float(row["upper"]) < float(entry["lower"])))]
@@ -168,12 +180,17 @@ def build_strategy_evidence(state: Mapping[str, Any]) -> dict[str, Any] | None:
         "strategy_id": STRATEGY_ID, "level_id": str(entry["zone_id"]),
         "episode_id": f"{entry['zone_id']}:{latest['event_id']}", "direction": direction,
         "structure_family": "SUPPORT" if direction == "buy" else "RESISTANCE",
-        "structure_sequence": (str(latest["event_id"]), str(invalidation["event_id"])),
+        "structure_sequence": (str(latest["event_id"]),),
         "entry_mode": "market_after_M1_confirmation", "invalidation_structure_id": str(invalidation["event_id"]),
         "target_zone_id": target_id, "target_space_points": target_space,
         "state_hash": state_hash, "structure_version": "causal_structure_v1",
         "zone_version": str(entry.get("algorithm_version", "ZONE_V1")),
         "statistics_snapshot_id": f"snapshot_{state_hash}", "timeframes_used": "M15,M1",
+        "trigger_price": trigger_price,
+        "entry_zone": {"lower": float(entry["lower"]), "upper": float(entry["upper"])},
+        "invalidation_price": float(invalidation.get("price", trigger_price)),
+        "target_zone": ({"lower": float(target["lower"]), "upper": float(target["upper"])}
+                         if target else None),
     }
 
 
@@ -240,6 +257,10 @@ def candidate_inputs(state: Mapping[str, Any]) -> dict[str, Any] | None:
         "metadata": {
             **{key: evidence[key] for key in REQUIRED_EVIDENCE_FIELDS if key != "state_hash"},
             "evidence_state_hash": str(evidence["state_hash"]),
+            "trigger_price": evidence.get("trigger_price"),
+            "entry_zone": evidence.get("entry_zone"),
+            "invalidation_price": evidence.get("invalidation_price"),
+            "target_zone": evidence.get("target_zone"),
             "qwen_feedback": dict(SPEC.model_contract),
             "risk_policy": dict(RISK_POLICY),
         },

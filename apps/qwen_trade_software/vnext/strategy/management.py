@@ -163,11 +163,12 @@ def manage_scalp(*, side: str, entry: float, current: float, peak: float,
     if age < parameters.initial_check_seconds:
         phase = "INITIAL_CHECK"
     else:
-        next_open = opened.replace(second=0, microsecond=0) + timedelta(minutes=1)
-        next_age = (observed - next_open).total_seconds()
+        # Confirmation is measured from entry. Anchoring this to the next
+        # wall-clock minute made a trade opened at 10:31:38 expire at 10:32:00.
+        next_age = age - parameters.initial_check_seconds
         if 0 <= next_age <= parameters.next_m1_check_seconds:
             phase = "NEXT_M1_CHECK"
-        elif observed < next_open + timedelta(minutes=parameters.failed_check_wait_minutes):
+        elif age < parameters.initial_check_seconds + parameters.next_m1_check_seconds + parameters.failed_check_wait_minutes * 60:
             phase = "FAILED_CHECK_WAIT"
         else:
             phase = "EXPIRED"

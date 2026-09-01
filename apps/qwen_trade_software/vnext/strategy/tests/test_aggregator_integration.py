@@ -13,17 +13,19 @@ def _state() -> dict:
         "state_hash": "state-1", "timeframes": {"M1": [{"close": 100.0}]},
         "zones": [
             {"timeframe": "M15", "zone_id": "support", "lower": 99.0, "upper": 100.0,
-             "lifecycle_state": "FRESH", "algorithm_version": "ZONE_V1"},
+            "lifecycle_state": "FRESH", "algorithm_version": "ZONE_V1",
+             "created_at_utc": "2026-01-01T09:00:00+00:00"},
             {"timeframe": "M15", "zone_id": "resistance", "lower": 105.0, "upper": 106.0,
-             "lifecycle_state": "FRESH", "algorithm_version": "ZONE_V1"},
+            "lifecycle_state": "FRESH", "algorithm_version": "ZONE_V1",
+             "created_at_utc": "2026-01-01T09:00:00+00:00"},
             {"timeframe": "M1", "zone_id": "ignored-m1", "lower": 99.5, "upper": 100.5,
              "lifecycle_state": "FRESH"},
         ],
         "structural_events": [
             {"timeframe": "M1", "event_id": "high", "event_type": "SWING_HIGH_CONFIRMED",
-             "observed_at_utc": "2026-01-01T10:01:00+00:00"},
+             "observed_at_utc": "2026-01-01T10:01:00+00:00", "price": 105.5},
             {"timeframe": "M1", "event_id": "low", "event_type": "SWING_LOW_CONFIRMED",
-             "observed_at_utc": "2026-01-01T10:02:00+00:00"},
+             "observed_at_utc": "2026-01-01T10:02:00+00:00", "price": 99.5},
             {"timeframe": "M5", "event_id": "ignored-m5", "event_type": "SWING_HIGH_CONFIRMED",
              "observed_at_utc": "2026-01-01T10:03:00+00:00"},
         ],
@@ -44,7 +46,7 @@ def test_strategy_evidence_creates_its_own_candidate_packet():
     candidate = candidate_inputs(_state())
     assert candidate is not None
     assert candidate["zone_id"] == "support"
-    assert candidate["invalidation"] == "high"
+    assert candidate["invalidation"] == "low"
     assert candidate["metadata"]["evidence_state_hash"] == "state-1"
 
 

@@ -20,9 +20,24 @@ def live_risk_inputs(mt5: Any, state: Mapping[str, Any], candidate_inputs: Mappi
     if not pair or direction not in {"buy", "sell"} or not all((account, terminal, symbol, tick)):
         return None
     entry = float(tick.ask if direction == "buy" else tick.bid)
-    stop_distance, target_distance = float(policy["stop_distance_price"]), float(policy["target_distance_price"])
-    stop = entry - stop_distance if direction == "buy" else entry + stop_distance
-    target = entry + target_distance if direction == "buy" else entry - target_distance
+    geometry = metadata.get("invalidation_price") if isinstance(metadata, Mapping) else None
+    target_zone = metadata.get("target_zone") if isinstance(metadata, Mapping) else None
+    point = float(_field(symbol, "point", 0.0) or 0.0)
+    spread = max(0.0, float(tick.ask) - float(tick.bid))
+    if geometry is not None and point > 0:
+        invalidation = float(geometry)
+        buffer = max(point * 2.0, spread * 2.0)
+        stop = invalidation - buffer if direction == "buy" else invalidation + buffer
+    else:
+        stop_distance = float(policy["stop_distance_price"])
+        stop = entry - stop_distance if direction == "buy" else entry + stop_distance
+    if isinstance(target_zone, Mapping) and {"lower", "upper"}.issubset(target_zone):
+        target = float(target_zone["lower"] if direction == "buy" else target_zone["upper"])
+    else:
+        target_distance = float(policy["target_distance_price"])
+        target = entry + target_distance if direction == "buy" else entry - target_distance
+    if (direction == "buy" and not (stop < entry < target)) or (direction == "sell" and not (target < entry < stop)):
+        return None
     now = datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     deals = mt5.history_deals_get(day_start, now) or ()
