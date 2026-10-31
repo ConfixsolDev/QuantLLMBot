@@ -92,6 +92,18 @@ SCHEMA: dict[str, Any] = {
         "touch_tolerance_atr": POS_NUM, "min_touches": POS_INT, "break_buffer_atr": NUM,
         "max_bars": POS_INT,
     },
+    "htf_levels": {
+        "swing_timeframes": TF_LIST, "session_levels": BOOL, "atr_timeframe": TF,
+        "merge_tolerance_atr": POS_NUM, "touch_tolerance_atr": POS_NUM, "reset_atr": POS_NUM,
+        "hold_atr": POS_NUM, "break_timeframe": TF, "break_buffer_atr": NUM, "max_age_hours": POS_INT,
+        "approach_bars": POS_INT,
+        "push": {"min_move_atr": POS_NUM, "min_efficiency": POS_NUM},
+        "squeeze": {"min_pressing_bars": POS_INT, "max_range_ratio": POS_NUM, "min_drift_atr": NUM},
+        "stretch_lookback_hours": POS_INT,
+        "rejection_within_bars": POS_INT, "rejection_min_pierce_atr": NUM,
+        "followthrough_bars": POS_INT, "followthrough_atr": POS_NUM,
+        "pattern_link_atr": POS_NUM, "pattern_link_hours": POS_INT,
+    },
     "vwap": {
         "anchors": ("list", STR),
         "day_anchor": {"timezone": STR, "hour": INT},
@@ -276,6 +288,11 @@ def build_config(raw: dict) -> StructureConfig:
         raise ConfigError("vwap.day_anchor: known timezone and hour 0-23")
     if vw["reject_band"] not in vw["bands"]:
         raise ConfigError("vwap.reject_band must be one of vwap.bands")
+    hl = raw["htf_levels"]
+    if not hl["touch_tolerance_atr"] < hl["reset_atr"]:
+        raise ConfigError("htf_levels: touch_tolerance_atr must be smaller than reset_atr")
+    if hl["followthrough_atr"] > hl["hold_atr"]:
+        raise ConfigError("htf_levels: followthrough_atr must not exceed hold_atr")
     cs = raw["close_spikes"]
     if any(h <= 0 for h in cs["horizons_minutes"]):
         raise ConfigError("close_spikes.horizons_minutes must be positive")

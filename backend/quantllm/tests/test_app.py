@@ -106,7 +106,7 @@ def test_service_replays_stores_events_and_serves_api(db, dsn, monkeypatch):
     assert db.event_count("XAUUSDr") == h["events"]                 # every event stored once
     for tf in ("M1", "M5", "M15", "H1", "H4"):
         c = get(f"/api/chart?tf={tf}&bars=200")
-        assert c["candles"] and set(c["overlays"]) == {"lines", "boxes", "markers", "levels", "swings", "curves"}
+        assert c["candles"] and set(c["overlays"]) == {"lines", "boxes", "markers", "levels", "swings", "curves", "hlevels"}
         times = {k["time"] for k in c["candles"]}
         for ln in c["overlays"]["lines"]:
             assert ln["t2"] in times                              # snapped onto real candles

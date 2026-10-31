@@ -17,10 +17,15 @@ export type Marker = {
 };
 export type Level = { name: string; side: "high" | "low"; price: number; t1: number; confirmed: boolean };
 export type Swing = { time: number; price: number; kind: "high" | "low"; label: string };
+export type HLevel = {
+  id: string; price: number; side: "high" | "low"; sources: string[]; tests: number;
+  t1: number; t2: number; alive: boolean; label: string;
+};
 export type VwapPoint = { time: number; vwap: number | null; bands?: Record<string, [number, number]>; start?: number };
 export type Overlays = {
   lines: Line[]; boxes: Box[]; markers: Marker[]; levels: Level[]; swings: Swing[];
   curves?: Record<string, VwapPoint[]>;          // VWAP per anchor: day / week / session
+  hlevels?: HLevel[];                            // higher-timeframe levels and their tests
 };
 
 export type Chart = {
@@ -50,6 +55,9 @@ export type Snapshot = {
   forming?: { session: { name: string; high: number; low: number } | null; day: { high: number; low: number } | null };
   pending_patterns?: { kind: string; neckline: number }[];
   event_counts?: Record<string, number>;
+  htf_levels?: { id: string; price: number; side: string; sources: string[]; tests: number; held: number; testing: number | null }[];
+  recent_level_events?: { kind: string; time: number; level: number; side: string; sources: string[];
+    test_no: number | null; result: string | null; approach: string | null; pattern: string | null }[];
   vwap?: Record<string, { vwap: number; sd: number; name: string; bands: Record<string, [number, number]> } | null>;
 };
 

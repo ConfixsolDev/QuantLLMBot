@@ -24,10 +24,11 @@ const TFS = ["M1", "M5", "M15", "M30", "H1", "H4"];
 const TF_SEC: Record<string, number> = { M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400 };
 const LAYER_NAMES: [keyof Layers, string][] = [
   ["trend", "BOS/CHoCH"], ["liquidity", "Liquidity"], ["zones", "Zones"], ["ob", "OB"], ["fvg", "FVG"],
-  ["ranges", "Ranges"], ["levels", "Levels"], ["swings", "Swings"], ["other", "Spikes & patterns"], ["vwap", "VWAP"],
+  ["ranges", "Ranges"], ["levels", "Levels"], ["swings", "Swings"], ["other", "Spikes & patterns"], ["vwap", "VWAP"], ["htf", "HTF levels"],
 ];
 // detection groups for the check-sheet filter
 const GROUPS: Record<string, string[]> = {
+  "HTF levels": ["level_test", "level_rejection", "level_followthrough", "level_held", "level_broken", "level_pattern"],
   "BOS / CHoCH": ["bos", "choch"],
   Liquidity: ["liquidity_sweep", "sweep_failed", "false_break", "liquidity_taken", "equal_highs", "equal_lows"],
   "FVG / OB / zones": ["fvg_created", "order_block_created", "zone_created", "range_formed"],
@@ -35,7 +36,7 @@ const GROUPS: Record<string, string[]> = {
   Levels: ["session_level", "prior_day_level", "prior_week_level"],
   VWAP: ["vwap_cross", "vwap_band_reject"],
 };
-const MISSABLE = ["bos", "choch", "liquidity_sweep", "false_break", "equal_highs", "equal_lows", "fvg_created",
+const MISSABLE = ["level_rejection", "level_pattern", "level_test", "bos", "choch", "liquidity_sweep", "false_break", "equal_highs", "equal_lows", "fvg_created",
   "order_block_created", "zone_created", "pattern_confirmed", "vwap_band_reject", "other"];
 const hhmm = (t: number) => new Date(t * 1000).toISOString().slice(11, 16);
 const ok = (b: boolean | undefined) => (b === undefined ? "…" : b ? "✓" : "✗");
@@ -46,7 +47,7 @@ export default function ReplayPage() {
   const [tf, setTf] = useState("M5");
   const [layers, setLayers] = useState<Layers>({
     trend: true, liquidity: true, zones: false, ob: true, fvg: true, ranges: false, levels: true, swings: true,
-    other: true, vwap: true,
+    other: true, vwap: true, htf: true,
   });
   const [day, setDay] = useState<ReplayDay | null>(null);
   const [cursor, setCursor] = useState(0);

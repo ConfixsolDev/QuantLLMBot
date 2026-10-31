@@ -55,6 +55,7 @@ def determinism(bars: list[Bar], cfg: StructureConfig) -> bool:
 def invariants(events: list[Event], cfg: StructureConfig) -> list[str]:
     bad = []
     tfmin = cfg.tf_minutes
+    level_tests: dict[str, int] = {}          # level id -> last test number seen
     for e in events:
         d = e.data
         if e.available_at < e.time:
@@ -98,6 +99,32 @@ def invariants(events: list[Event], cfg: StructureConfig) -> list[str]:
                     bad.append(f"{e.id}: high sweep geometry")
                 if d["side"] == "low" and not (d["extreme"] < lv["price"] and d["candle"]["close"] > lv["price"]):
                     bad.append(f"{e.id}: low sweep geometry")
+        if e.kind.startswith("level_") and e.kind != "level_created":
+            lv, hl = d["level"], cfg["htf_levels"]
+            sg = 1 if lv["side"] == "high" else -1
+            c = d.get("candle")
+            if e.kind == "level_test":
+                ext = c["high"] if sg > 0 else c["low"]
+                if sg * (lv["price"] - ext) > hl["touch_tolerance_atr"] * d["atr"] + 1e-9:
+                    bad.append(f"{e.id}: level_test candle did not reach the touch zone")
+                if d["test_no"] != lv["tests"]:
+                    bad.append(f"{e.id}: test number differs from the level's count")
+                prev = level_tests.get(lv["id"])       # (a window may start mid-life)
+                if prev is not None and d["test_no"] != prev + 1:
+                    bad.append(f"{e.id}: test {d['test_no']} follows test {prev}")
+                level_tests[lv["id"]] = d["test_no"]
+            if e.kind == "level_rejection":
+                ext = c["high"] if sg > 0 else c["low"]
+                if not (sg * (ext - lv["price"]) > 0 and sg * (lv["price"] - c["close"]) > 0):
+                    bad.append(f"{e.id}: rejection did not poke beyond and close back inside")
+            if e.kind == "level_broken" and not sg * (c["close"] - lv["price"]) > 0:
+                bad.append(f"{e.id}: break candle did not close beyond the level")
+            if e.kind == "level_broken":
+                level_tests.pop(lv["id"], None)
+            if e.kind == "level_pattern":
+                top = d["pattern"].endswith("top")
+                if top != (sg > 0):
+                    bad.append(f"{e.id}: pattern direction does not match the level side")
         if e.kind == "vwap_cross":
             c = d["candle"]["close"]
             if (d["direction"] == "up" and c < d["vwap"]) or (d["direction"] == "down" and c > d["vwap"]):

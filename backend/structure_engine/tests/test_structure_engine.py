@@ -468,3 +468,73 @@ def test_vwap_cross_and_band_reject_events():
     assert ("vwap_cross", "session") in kinds
     assert any(x.kind == "vwap_band_reject" and x.data["side"] == "upper" for x in ev)
     assert invariants(ev, CFG) == []
+
+
+# ------------------------------------------------------------------ HTF levels (Part A4)
+def _lv_book():
+    from structure_engine.levels import LevelBook
+    return LevelBook(CFG, lambda *k: "V" + "|".join(map(str, k)))
+
+
+def test_htf_level_life_test_rejection_followthrough_held_then_break():
+    """Resistance at 110 (ATR 2): approach, test 1 with a poke-and-reclaim that
+    moves away (held), test 2, then an M5 close beyond breaks it."""
+    book, atr, t = _lv_book(), 2.0, _utc("2026-07-14T08:00:00")
+    book.add("H1 swing high", "high", 110.0, t - 7200, t, atr, 100.0)
+    ev, i = [], 0
+
+    def bar(o, h, low, c):
+        nonlocal i
+        b = Bar(t + 60 * i, o, h, low, c, 10)
+        i += 1
+        ev.extend((k, d) for k, _, d in book.on_m1(b, b.close_time, atr, 4.0, {"H1": "up"}))
+        return b
+    for k in range(40):                                  # climb 100 -> 109.6
+        p = 100 + k * 0.24
+        bar(p, p + 0.2, p - 0.2, p + 0.24)
+    bar(109.7, 110.4, 109.6, 109.7)                      # touch + poke beyond, close back inside
+    for p in (109.0, 108.6, 108.2, 107.8):               # moves away > 1 ATR -> held
+        bar(p + 0.4, p + 0.5, p - 0.1, p)
+    kinds = [k for k, _ in ev]
+    assert kinds[:2] == ["level_test", "level_rejection"]
+    test = ev[0][1]
+    assert test["test_no"] == 1 and test["approach"] == "push" and test["trend"] == {"H1": "up"}
+    assert ("level_followthrough", "moved") in [(k, d.get("result")) for k, d in ev]
+    assert "level_held" in kinds
+    for k in range(10):                                  # back up: test 2, no rejection
+        p = 108 + k * 0.2
+        bar(p, p + 0.15, p - 0.1, p + 0.15)
+    assert [d["test_no"] for k, d in ev if k == "level_test"] == [1, 2]
+    br = book.on_break_bar(Bar(t + 60 * i, 109.9, 111.2, 109.8, 111.0, 50), atr)
+    assert [k for k, _, _ in br] == ["level_broken"] and br[0][2]["tests"] == 2 and br[0][2]["during_test"] == 2
+    assert book.active == []
+
+
+def test_htf_level_stalled_rejection_and_registration_rules():
+    book, atr, t = _lv_book(), 2.0, _utc("2026-07-14T08:00:00")
+    book.add("H1 swing high", "high", 99.0, t, t, atr, 100.0)       # already above it: not resistance
+    assert book.active == []
+    book.add("H1 swing high", "high", 110.0, t, t, atr, 100.0)
+    book.add("LONDON high", "high", 110.2, t, t, atr, 100.0)        # within 0.15 ATR: same level
+    assert len(book.active) == 1 and book.active[0].sources == ["H1 swing high", "LONDON high"]
+    ev = []
+    seq = [(100 + k * 0.24,) * 4 for k in range(40)] + [(109.7, 110.4, 109.6, 109.7)] + [(109.6, 109.9, 109.4, 109.6)] * 4
+    for n, (o, h, low, c) in enumerate(seq):
+        if len(set((o, h, low, c))) == 1:
+            o, h, low, c = o, o + 0.2, o - 0.2, o + 0.24
+        b = Bar(t + 60 * n, o, h, low, c, 10)
+        ev.extend((k, d) for k, _, d in book.on_m1(b, b.close_time, atr, 4.0, {}))
+    ft = [d for k, d in ev if k == "level_followthrough"]
+    assert len(ft) == 1 and ft[0]["result"] == "stalled"
+
+
+def test_htf_levels_in_engine_are_causal_and_audited():
+    from structure_engine.verification.audit import audit_events
+    bars = random_walk_m1(11, 4 * 1440)
+    ev = run(bars, CFG)
+    kinds = {e.kind for e in ev}
+    assert {"level_test", "level_held", "level_broken"} <= kinds
+    assert invariants(ev, CFG) == []
+    rep = audit_events(bars, [e.as_dict() for e in ev])
+    assert rep["checks"].get("level_test", 0) > 0 and not any(k.startswith("level") for k in rep["failures"])
+    assert no_repaint(bars[: 2 * 1440], CFG, cuts=3) == []

@@ -44,6 +44,7 @@ REVIEW_KINDS = {
     "equal_highs", "equal_lows", "fvg_created", "order_block_created", "zone_created",
     "range_formed", "pattern_confirmed", "close_spike", "session_level", "prior_day_level",
     "prior_week_level", "vwap_cross", "vwap_band_reject",
+    "level_test", "level_rejection", "level_followthrough", "level_held", "level_broken", "level_pattern",
 }
 
 
@@ -82,6 +83,21 @@ def describe(e: dict) -> str:
         return f"VWAP {d['anchor']} cross {d['direction']} at {p(d['vwap'])}"
     if k == "vwap_band_reject":
         return f"VWAP {d['anchor']} {d['band']}σ {d['side']} band reject at {p(d['level'])}"
+    if k.startswith("level_"):
+        lv = d["level"]
+        name = f"{' + '.join(lv['sources'])} {p(lv['price'])}"
+        if k == "level_test":
+            return f"test {d['test_no']} of {name} — {d['approach']} in, stretch {d['stretch_h1_atr']} H1 ATR"
+        if k == "level_rejection":
+            return f"M1 rejection at {name} (test {d['test_no']}, poked {d['pierce_atr']} ATR)"
+        if k == "level_followthrough":
+            return f"after rejection at {name}: {d['result']} ({d['move_atr']} ATR in 3 bars)"
+        if k == "level_held":
+            return f"{name} held on test {d['test_no']}"
+        if k == "level_broken":
+            return f"{name} broken (M5 close) after {d['tests']} test(s)"
+        if k == "level_pattern":
+            return f"M1 {d['pattern'].replace('_', ' ')} formed at {name} (test {d['test_no']})"
     return k
 
 
@@ -132,7 +148,8 @@ class ReplayDay:
             return {"tf": tf, "candles": [], "future": [], "overlays": None, "as_of": t}
         t_from = past[0].time
         k = bisect.bisect_right(self.avail, t)
-        evs = [e for e in self.events[:k] if e["available_at"] >= t_from or e["kind"] in overlays.BOX_START]
+        evs = [e for e in self.events[:k]
+               if e["available_at"] >= t_from or e["kind"] in overlays.BOX_START or e["kind"].startswith("level_")]
         levels = [e["data"] for e in self.events[:k] if e["kind"] in ("session_level", "prior_day_level", "prior_week_level")]
         snap = {"levels": levels[-40:], "forming": {}}
         ov = overlays.build(evs, tf, t_from, t, self.snaps[tf], snap)

@@ -62,6 +62,7 @@ log = logging.getLogger("quantllm")
 # this same server at http://127.0.0.1:8765/ — no separate web server needed.
 WEB_DIR = Path(__file__).resolve().parents[2] / "web" / "out"
 TFS = ("M1", "M5", "M15", "M30", "H1", "H4")
+LEVEL_FEED = {"level_test", "level_rejection", "level_followthrough", "level_held", "level_broken", "level_pattern"}
 
 
 class StructureService:
@@ -217,7 +218,8 @@ class StructureService:
                      + [{"kind": "ob", "id": o.id, "tf": o.tf, "side": o.direction, "low": o.low, "high": o.high,
                          "time": o.time, "status": o.status, "tests": o.tests} for o in self.engine.obs.active]
                      + [{"kind": "fvg", "id": g.id, "tf": g.tf, "side": g.direction, "low": g.low, "high": g.high,
-                         "time": g.time, "status": g.status} for g in self.engine.gaps.active])
+                         "time": g.time, "status": g.status} for g in self.engine.gaps.active]
+                     + [{"kind": "hlevel", **lv.as_dict()} for lv in self.engine.levels.active])
             ov = overlays.build(evs, tf, t_from, self.engine.now, self.snap(tf), snap_dict, alive)
             ov["curves"] = replay_mod.vwap_curves(list(self.vwap[tf]), t_from, self.engine.now)
             return {"tf": tf, "candles": [c.as_dict() for c in candles], "forming": forming,
@@ -241,7 +243,13 @@ class StructureService:
                 "fair_value_gaps": s["fair_value_gaps"][:8], "ranges": s["ranges"],
                 "levels": s["levels"], "forming": {k: v for k, v in s["forming"].items() if k != "bars"},
                 "pending_patterns": s["pending_patterns"], "open_spikes": s["open_spikes"],
-                "event_counts": s["event_counts"], "vwap": s["vwap"],
+                "event_counts": s["event_counts"], "vwap": s["vwap"], "htf_levels": s["htf_levels"],
+                "recent_level_events": [
+                    {"kind": e["kind"], "time": e["time"], "level": e["data"]["level"]["price"],
+                     "side": e["data"]["level"]["side"], "sources": e["data"]["level"]["sources"],
+                     "test_no": e["data"].get("test_no"), "result": e["data"].get("result"),
+                     "approach": e["data"].get("approach"), "pattern": e["data"].get("pattern")}
+                    for e in [x for x in self.events if x["kind"] in LEVEL_FEED][-12:][::-1]],
             }
 
     # ---------------------------------------------------------------- replay

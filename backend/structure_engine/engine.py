@@ -24,12 +24,19 @@ What happens inside one push(bar)
     3. M1 structure     M1 swings -> double/triple tops & bottoms
                         (patterns use patterns.atr_timeframe's ATR as of the
                         last closed bar of that timeframe)
+                        a CONFIRMED pattern at a recently tested HTF level
+                        -> level_pattern
+    3b. HTF levels      H1/H4 swing + session/day/week levels see the M1 bar:
+                        tests (with approach, stretch, trend), M1 rejections,
+                        follow-through, held (levels.py)
     4. higher TFs       aggregate M1 -> M5..H1, and closed H1 -> H4 on the
                         New York grid; for each bar that CLOSED now:
                         ATR, swings, then the structure layer (_structure):
                         displacement, FVG, BOS/CHoCH + order blocks, liquidity
                         pools with sweeps / false / accepted breaks (on M5),
-                        VWAP crosses / band rejections (on M5), ranges; then close-spike detection on H1/H4, and on
+                        VWAP crosses / band rejections (on M5), HTF level
+                        breaks (on M5), ranges; new H1/H4 swings become HTF
+                        levels; then close-spike detection on H1/H4, and on
                         zone timeframes: age + new zones
     return the events produced by this bar
 
@@ -58,6 +65,7 @@ from .order_blocks import OrderBlockBook
 from .ranges import RangeTracker
 from .trend import TrendTracker
 from .vwap import VwapTracker
+from .levels import LevelBook
 from .patterns import PatternDetector
 from .scoring import score_zones
 from .sessions import SessionTracker
@@ -102,6 +110,7 @@ class StructureEngine:
         self.ranges = {tf: RangeTracker(tf, cfg, lambda *k: "R" + self._id("range", *k))
                        for tf in cfg["ranges"]["timeframes"]}
         self.vwap = VwapTracker(cfg)
+        self.levels = LevelBook(cfg, lambda *k: "V" + self._id("level", *k))
         # recent closed candles (+ displacement info) per timeframe, for order blocks / FVGs
         self.hist: dict[str, list[tuple[Bar, dict | None]]] = {tf: [] for tf in self.tfs}
         self.last_time: int | None = None      # open time of the last M1 bar
@@ -160,6 +169,11 @@ class StructureEngine:
             for side in ("high", "low"):
                 self.liquidity.add(f"{level['name'].lower()}_{side}", side, level[side], src,
                                    level["start"], self.now)
+                if self.cfg["htf_levels"]["session_levels"]:
+                    lv = self.levels.add(f"{level['name']} {side}", side, level[side], level["start"],
+                                         self.now, self._lv_atr(), bar.close)
+                    if lv is not None:
+                        events.append(self._ev("level_created", "M1", lv.time, lv.as_dict(), key=lv.id))
 
         # 3. M1 swings, then patterns built from them. Patterns measure in the
         #    ATR of patterns.atr_timeframe (a slower ruler than M1's own ATR,
@@ -171,6 +185,18 @@ class StructureEngine:
             events.append(self._ev("swing", "M1", s.time, s.as_dict(), key=s.kind))
         for kind, pat in self.patterns.on_bar(bar, self.m1_index, m1_atr_before, m1_swings, self.now):
             events.append(self._ev(kind, "M1", pat.peaks[0].time, pat.as_dict(), key=f"{pat.id}:{pat.status}"))
+            if kind == "pattern_confirmed":
+                link = self.levels.on_pattern(pat.as_dict(), self.now, self._lv_atr())
+                if link is not None:
+                    lv, data = link
+                    events.append(self._ev("level_pattern", "M1", bar.time, {"level": lv.as_dict(), **data},
+                                           key=f"{lv.id}:{pat.id}"))
+
+        # 3b. higher-timeframe levels meet this M1 bar (tests, rejections, holds)
+        trends = {tf: self.trend[tf].state for tf in ("M15", "H1", "H4") if tf in self.trend}
+        for kind, lv, data in self.levels.on_m1(bar, self.now, self._lv_atr(), self.atr["H1"].value, trends):
+            events.append(self._ev(kind, "M1", bar.time, {"level": lv.as_dict(), **data},
+                                   key=f"{lv.id}:{data.get('test_no')}:{kind}"))
         self.atr["M1"].update(bar)
         self.vwap.on_m1(bar)                      # VWAPs include this closed minute
 
@@ -187,6 +213,11 @@ class StructureEngine:
                 new_swings = self.swings[tf].update(closed)
                 for s in new_swings:
                     events.append(self._ev("swing", tf, s.time, s.as_dict(), key=s.kind))
+                    if tf in self.cfg["htf_levels"]["swing_timeframes"]:
+                        lv = self.levels.add(f"{tf} swing {s.kind}", s.kind, s.price, s.time, self.now,
+                                             self._lv_atr(), bar.close)
+                        if lv is not None:
+                            events.append(self._ev("level_created", tf, lv.time, lv.as_dict(), key=lv.id))
                 events.extend(self._structure(tf, closed, atr_prev, new_swings))
                 if tf in self.spikes.tfs:
                     sp = self.spikes.on_htf_close(
@@ -242,6 +273,9 @@ class StructureEngine:
         if tf == cfg["liquidity"]["detect_timeframe"]:
             for kind, side, data in self.liquidity.on_detect_bar(bar, atr, self.now):
                 ev.append(self._ev(kind, tf, bar.time, data, key=side))
+        if tf == cfg["htf_levels"]["break_timeframe"]:
+            for kind, lv, data in self.levels.on_break_bar(bar, self._lv_atr()):
+                ev.append(self._ev(kind, tf, bar.time, {"level": lv.as_dict(), **data}, key=lv.id))
         if tf == cfg["vwap"]["detect_timeframe"]:
             for kind, data in self.vwap.on_detect_bar(bar):
                 ev.append(self._ev(kind, tf, bar.time, data, key=f"{data['anchor']}:{kind}"))
@@ -252,6 +286,10 @@ class StructureEngine:
                     self.liquidity.add("range_high", "high", data["top"], tf, data["start"], self.now)
                     self.liquidity.add("range_low", "low", data["bottom"], tf, data["start"], self.now)
         return ev
+
+    def _lv_atr(self) -> float | None:
+        """Ruler of the HTF-level layer: ATR of htf_levels.atr_timeframe (last closed candle)."""
+        return self.atr[self.cfg["htf_levels"]["atr_timeframe"]].value
 
     def _htf_trend(self) -> str:
         """H4 swing structure: up = last high HH and last low HL; down = LH + LL."""
@@ -289,6 +327,9 @@ class StructureEngine:
             "levels": list(self.sessions.levels)[-levels:],
             "trend": {tf: t.state_dict() for tf, t in self.trend.items()},
             "vwap": self.vwap.values(),
+            "htf_levels": sorted(
+                ({**lv.as_dict(), "testing": lv.test.no if lv.test else None} for lv in self.levels.active),
+                key=lambda d: abs(d["price"] - (self._last_close or 0)))[:12],
             "liquidity_pools": self.liquidity.nearest(self._last_close, 10) if self._last_close else [],
             "recent_liquidity_events": self.liquidity.history[-10:],
             "fair_value_gaps": [g.as_dict() for g in sorted(

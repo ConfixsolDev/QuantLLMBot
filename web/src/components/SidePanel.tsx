@@ -9,6 +9,10 @@ import { fmtTime, type Snapshot } from "@/lib/api";
 const arrow = (s: string) => (s === "up" ? "▲ up" : s === "down" ? "▼ down" : "– none");
 const tone = (s: string) => (s === "up" || s === "demand" ? "text-emerald-400" : s === "down" || s === "supply" ? "text-rose-400" : "text-slate-400");
 const p = (x: number | null | undefined) => (x === null || x === undefined ? "–" : x.toFixed(2));
+const LEVEL_TXT: Record<string, string> = {
+  level_test: "Test", level_rejection: "M1 rejection", level_followthrough: "Follow-through", level_held: "Held",
+  level_broken: "Broken", level_pattern: "M1 pattern at level",
+};
 const LIQ: Record<string, string> = { liquidity_sweep: "Sweep", sweep_failed: "Sweep failed", false_break: "False break", liquidity_taken: "Taken" };
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
@@ -40,6 +44,25 @@ export default function SidePanel({ snap }: { snap: Snapshot | null }) {
             ))}
           </tbody>
         </table>
+      </Card>
+
+      <Card title="HTF levels (H1/H4 swings, sessions, day, week)">
+        {(snap.htf_levels ?? []).slice(0, 8).map((lv) => (
+          <div key={lv.id} className="flex justify-between py-0.5">
+            <span className={lv.side === "high" ? "text-rose-300" : "text-emerald-300"}>
+              {lv.sources.join(" + ")}
+              <span className="text-xs text-slate-500"> · {lv.tests ? `tested ${lv.tests}×` : "untested"}{lv.testing ? " · testing now" : ""}</span>
+            </span>
+            <span>{p(lv.price)} <span className="text-xs text-slate-500">({lv.price > price ? "+" : ""}{(lv.price - price).toFixed(1)})</span></span>
+          </div>
+        ))}
+        {!snap.htf_levels?.length && <div className="text-slate-500">no active level</div>}
+        {(snap.recent_level_events ?? []).slice(0, 6).map((e, i) => (
+          <div key={i} className="flex justify-between border-t border-slate-800/60 py-0.5 text-xs text-slate-300">
+            <span>{LEVEL_TXT[e.kind] ?? e.kind}{e.test_no ? ` (test ${e.test_no})` : ""}{e.result ? `: ${e.result}` : ""}{e.approach ? `, ${e.approach}` : ""}{e.pattern ? `: ${e.pattern.replace("_", " ")}` : ""}</span>
+            <span className="text-slate-500">{p(e.level)} · {fmtTime(e.time).slice(11, 16)}</span>
+          </div>
+        ))}
       </Card>
 
       <Card title="Liquidity — what just happened">

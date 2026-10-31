@@ -18,6 +18,10 @@ Output (all prices raw, all times UTC epoch seconds)::
     levels   confirmed Asia / London / New York / day / week highs and lows
              (last 48 h) and the forming session / day range
     swings   confirmed swing highs/lows of this timeframe with HH/HL/LH/LL labels
+    hlevels  higher-timeframe levels (levels.py): price, sources, number of tests,
+             from when known until broken (or now); markers R1, R2 ... = M1
+             rejection on test n, then R1+ (moved away in 3 bars) / R1- (stalled);
+             LDT / LDB ... = M1 double/triple top/bottom formed at the level
 """
 
 from __future__ import annotations
@@ -44,8 +48,19 @@ def build(events: list[dict], tf: str, t_from: int, now: int, snap, snapshot: di
     in-memory event window are still drawn."""
     lines, markers, swings = [], [], []
     boxes: dict[str, dict] = {}
+    hl: dict[str, dict] = {}
+    rej: dict[tuple, dict] = {}
     for e in events:
         k, d, etf = e["kind"], e["data"], e["tf"]
+        if k.startswith("level_") and k not in ("level_rejection", "level_pattern", "level_followthrough"):
+            lv = d if k == "level_created" else d["level"]
+            h = hl.setdefault(lv["id"], {"id": lv["id"], "price": lv["price"], "side": lv["side"],
+                                         "sources": lv["sources"], "t1": lv["created_at"], "t2": None, "tests": 0})
+            if k == "level_test":
+                h["tests"] = d["test_no"]
+            elif k == "level_broken":
+                h["t2"] = e["available_at"]
+            continue
         if e["available_at"] < t_from and k not in BOX_START and k not in BOX_END and k not in BOX_UPDATE:
             continue
         if k in ("bos", "choch") and etf == tf:
@@ -92,10 +107,34 @@ def build(events: list[dict], tf: str, t_from: int, now: int, snap, snapshot: di
                             "position": "above" if d["side"] == "upper" else "below",
                             "text": f"V{d['anchor'][0].upper()}", "detail":
                             f"VWAP {d['anchor']} {d['band']}σ {d['side']} band reject at {d['level']:.2f}"})
+        elif k == "level_rejection":
+            c, lv = d["candle"], d["level"]
+            m = {"kind": "level_rejection", "time": snap(c["time"]),
+                 "price": c["high"] if lv["side"] == "high" else c["low"],
+                 "position": "above" if lv["side"] == "high" else "below", "text": f"R{d['test_no']}",
+                 "detail": f"M1 rejection of {' + '.join(lv['sources'])} {lv['price']:.2f} (test {d['test_no']})"}
+            markers.append(m)
+            rej[(lv["id"], d["test_no"])] = m
+        elif k == "level_followthrough" and (d["level"]["id"], d["test_no"]) in rej:
+            m = rej[(d["level"]["id"], d["test_no"])]
+            m["text"] += "+" if d["result"] == "moved" else "-"
+            m["detail"] += f", {d['result']} ({d['move_atr']} ATR in 3 bars)"
+        elif k == "level_pattern":
+            lv = d["level"]
+            pk = d["peaks"][-1]
+            markers.append({"kind": "level_pattern", "time": snap(pk["time"]), "price": pk["price"],
+                            "position": "above" if lv["side"] == "high" else "below",
+                            "text": "L" + PATTERN_SHORT.get(d["pattern"], d["pattern"]),
+                            "detail": f"{d['pattern'].replace('_', ' ')} at {' + '.join(lv['sources'])} {lv['price']:.2f}"})
         elif k == "swing" and etf == tf:
             swings.append({"time": snap(d["time"]), "price": d["price"], "kind": d["kind"],
                            "label": d["label"] or ""})
     for a in alive:
+        if a["kind"] == "hlevel":
+            if a["id"] not in hl:
+                hl[a["id"]] = {k2: a[k2] for k2 in ("id", "price", "side", "sources", "tests")}
+                hl[a["id"]].update(t1=a["created_at"], t2=None)
+            continue
         if a["id"] not in boxes and (a["tf"] == tf or a["kind"] == "zone"):
             boxes[a["id"]] = {"kind": a["kind"], "tf": a["tf"], "side": a["side"], "low": a["low"],
                               "high": a["high"], "t1": a["time"], "t2": None, "status": a["status"],
@@ -119,6 +158,14 @@ def build(events: list[dict], tf: str, t_from: int, now: int, snap, snapshot: di
             for side in ("high", "low"):
                 levels.append({"name": fm["name"], "side": side, "price": fm[side],
                                "t1": snap(max(fm["start"], t_from)), "confirmed": False})
-    return {"lines": [ln for ln in lines if ln["t2"] >= snap(t_from)], "boxes": out_boxes,
+    hlevels = []
+    for h in hl.values():
+        end = h["t2"] if h["t2"] is not None else now
+        if end < t_from or h["t1"] > now:
+            continue
+        src = " + ".join(x.replace(" swing ", " sw ") for x in h["sources"])
+        hlevels.append({**h, "t1": snap(max(h["t1"], t_from)), "t2": snap(min(end, now)), "alive": h["t2"] is None,
+                        "label": src + (f" ×{h['tests']}" if h["tests"] else "")})
+    return {"lines": [ln for ln in lines if ln["t2"] >= snap(t_from)], "boxes": out_boxes, "hlevels": hlevels,
             "markers": [m for m in markers if m["time"] >= snap(t_from)], "levels": levels,
             "swings": [s for s in swings if s["time"] >= snap(t_from)]}

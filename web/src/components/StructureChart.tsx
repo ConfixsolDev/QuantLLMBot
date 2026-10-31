@@ -11,7 +11,7 @@ import {
 } from "lightweight-charts";
 import type { Chart, Overlays } from "@/lib/api";
 
-export type Layers = Record<"zones" | "ob" | "fvg" | "ranges" | "trend" | "liquidity" | "levels" | "swings" | "other" | "vwap", boolean>;
+export type Layers = Record<"zones" | "ob" | "fvg" | "ranges" | "trend" | "liquidity" | "levels" | "swings" | "other" | "vwap" | "htf", boolean>;
 
 // VWAP colours per anchor; bands are drawn dashed and fainter
 const VWAP_COL: Record<string, string> = { day: "250,204,21", week: "232,121,249", session: "56,189,248" };
@@ -19,7 +19,7 @@ const VWAP_COL: Record<string, string> = { day: "250,204,21", week: "232,121,249
 const C = {
   demand: "34,197,94", supply: "239,68,68", fvgUp: "45,212,191", fvgDown: "251,146,60",
   range: "148,163,184", bos: "#e2e8f0", choch: "#fb923c", level: "#60a5fa", liq: "#22d3ee",
-  spike: "#c084fc", pattern: "#facc15", swing: "#94a3b8", vwap: "#fde047",
+  spike: "#c084fc", pattern: "#facc15", swing: "#94a3b8", vwap: "#fde047", htf: "#f472b6",
 };
 
 // `cursor` (replay): the moment the engine is at; candles after it are the
@@ -117,6 +117,19 @@ export default function StructureChart({ chart, layers, fitKey, cursor, focus }:
       const tag = b.kind === "zone" ? `${b.tf} ${b.side}${b.tests ? ` t${b.tests}` : ""}` : b.kind === "ob" ? `${b.tf} OB` : b.kind === "fvg" ? "FVG" : "range";
       g.fillText(tag, x1 + 2, y1 - 2);
     }
+    if (L.htf && ov.hlevels) {                         // higher-timeframe levels and test counts
+      for (const lv of ov.hlevels) {
+        const x1 = X(lv.t1), x2 = X(lv.t2), y = Y(lv.price);
+        if (x1 === null || y === null) continue;
+        const xe = lv.alive ? right : (x2 ?? right);
+        g.strokeStyle = lv.alive ? "rgba(244,114,182,0.85)" : "rgba(244,114,182,0.35)";
+        g.lineWidth = lv.sources.length > 1 ? 1.8 : 1;
+        g.beginPath(); g.moveTo(x1, y); g.lineTo(xe, y); g.stroke();
+        g.lineWidth = 1;
+        g.fillStyle = g.strokeStyle;
+        g.fillText(lv.label, Math.max(x1, 2) + 2, lv.side === "high" ? y - 3 : y + 11);
+      }
+    }
     if (L.levels) {
       for (const lv of ov.levels) {
         const x1 = X(lv.t1), y = Y(lv.price);
@@ -199,9 +212,11 @@ export default function StructureChart({ chart, layers, fitKey, cursor, focus }:
       for (const m of ov.markers) {
         const isLiq = m.level !== undefined;
         const isVwap = m.kind.startsWith("vwap");
-        if ((isLiq && !layers.liquidity) || (isVwap && !layers.vwap) || (!isLiq && !isVwap && !layers.other)) continue;
+        const isHtf = m.kind.startsWith("level_");
+        if ((isLiq && !layers.liquidity) || (isVwap && !layers.vwap) || (isHtf && !layers.htf)
+          || (!isLiq && !isVwap && !isHtf && !layers.other)) continue;
         markers.push({ time: m.time as UTCTimestamp, position: m.position === "above" ? "aboveBar" : "belowBar",
-          color: isVwap ? C.vwap : isLiq ? C.liq : m.kind === "close_spike" ? C.spike : C.pattern,
+          color: isHtf ? C.htf : isVwap ? C.vwap : isLiq ? C.liq : m.kind === "close_spike" ? C.spike : C.pattern,
           shape: isVwap ? "square" : "circle", text: m.text, size: isVwap ? 0.4 : 0.7 });
       }
     }

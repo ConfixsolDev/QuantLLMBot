@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 from ..config import load_config
 from ..feeds import RecordedFeed
 
-TF_MIN = {"M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240}
+TF_MIN = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240}
 
 
 def _ny_h4_start(t: int) -> int | None:
@@ -153,6 +153,18 @@ def audit_events(m1_bars, events: list[dict], show: int = 10) -> dict:
             lo, hi = (c1["high"], c3["low"]) if d["direction"] == "up" else (c3["high"], c1["low"])
             if abs(lo - d["low"]) > 1e-9 or abs(hi - d["high"]) > 1e-9 or not lo < hi:
                 fail(k, f"{e['id']}: gap bounds differ")
+        elif k in ("level_test", "level_rejection", "level_broken"):
+            checks[k] += 1
+            c = cs.get(d["candle"]["time"])
+            if not same(c, d["candle"]):
+                fail(k, f"{e['id']}: candle differs from raw data")
+                continue
+            p, hi = d["level"]["price"], d["level"]["side"] == "high"
+            if k == "level_rejection" and not ((c["high"] > p and c["close"] < p) if hi
+                                               else (c["low"] < p and c["close"] > p)):
+                fail(k, f"{e['id']}: not a poke-and-reclaim of {p}")
+            if k == "level_broken" and not ((c["close"] > p) if hi else (c["close"] < p)):
+                fail(k, f"{e['id']}: close not beyond {p}")
         elif k == "order_block_created":
             checks[k] += 1
             c = cs.get(d["time"])

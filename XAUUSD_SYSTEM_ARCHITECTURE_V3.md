@@ -65,6 +65,54 @@ no-repaint, determinism and audit checks on real data. Comment code for the
 next reader: a header per file (what it does, what feeds it, what it outputs)
 and a "why" next to every threshold and tricky branch.
 
+### A4. The owner's strategy: higher-timeframe level, M1 rejection
+
+The setup the system is being built around (owner, 8 months of practice).
+**Module 1 only DESCRIBES it**: it records every fact the rules need, with
+no trade logic. Turning facts into BUY / SELL / NONE is Module 2's job.
+
+Sources: Grimes, *The Art & Science of Technical Analysis*, ch. 7 "Multiple
+Time Frame Analysis" (pp. 213–227, the main reference); Elder's Triple Screen;
+Brooks on double tops. Institutional evidence on levels: Osler (2000), FRBNY
+*Economic Policy Review* — published support/resistance levels beat random
+levels (bounce 60.8 % vs 56.2 %), tested against 10,000 sets of arbitrary
+levels with a bootstrap; Osler (2003), *Journal of Finance* — take-profit
+orders cluster AT round numbers (reversals there) and stop-losses just BEYOND
+them (acceleration once crossed). The same random-level control is used in B3c.
+
+The rule numbers below were assigned here from the owner's summary of the
+strategy (the original MTF-01…14 write-up is not in this repository; replace
+the wording with it when available, keep the evidence columns).
+"Gold 2026" = study B3c on 100,000 real XAUUSD M1 bars (2026-04-28 → 08-07):
+a first look, one trending regime, to be re-run on the full history.
+
+| # | Rule (sell side; buys are the mirror) | Recorded by Module 1 | Gold 2026 says |
+|---|---|---|---|
+| MTF-01 | Work only at a higher-timeframe level (H1/H4 swing, session, day, week) | `level_created`, `htf_levels` in the snapshot | A level alone holds no better than a random nearby level (−2.5 pts) — location is necessary, not sufficient |
+| MTF-02 | A touch is "get ready", never an entry | `level_test` | **Supported**: a touch without M1 rejection holds 40.5 % vs 47.5 % for random levels |
+| MTF-03 | Enter only on a finished M1 rejection: poke beyond and close back inside, or an M1 double top | `level_rejection`, `level_pattern` | **Supported**: with rejection 54 % hold, without 40.5 % (engine: 50 % vs 34 %). Also true at random levels: it is a price-action fact, the level gives the place |
+| MTF-04 | Best: poke past the level, close back, then the M1 double top | `level_pattern` (+ the earlier `level_rejection`; pattern tag `sweep`) | Promising, too few cases: 75 % vs 50 % random, n = 28 |
+| MTF-05 | Do not fade a squeeze (tight range / rising lows into resistance) | `level_test.approach = squeeze` (+ detail) | **Inconclusive**: n = 59 (study) / 21 (engine), the two disagree in direction |
+| MTF-06 | Fade a push: price driven into the level | `approach = push` | Not different from random (−2.3 pts) |
+| MTF-07 | Each test weakens the level: 1st/2nd best, 3rd+ breaks more | `level_test.test_no`, `level_held`, `level_broken.tests` | **Partly contradicted**: the FIRST test is the weakest vs random (−9.4 pts; stops resting beyond fresh levels, cf. Osler 2003), the 2nd the strongest (+14 pts). The engine's merged levels show no difference. Re-test on full history |
+| MTF-08 | Strongest with H1/H4 trending your way or ranging with price at the edge | `level_test.trend` (M15 / H1 / H4) | **Not supported** in this sample (with-trend −8 pts vs random); re-test |
+| MTF-09 | H1/H4 trending against you: smaller target or skip | `trend` (as above) | Trade management — Module 2/3 |
+| MTF-10 | Beware a stretched higher-timeframe move | `level_test.stretch_h1_atr` | No monotonic effect |
+| MTF-11 | The trade must work at once: not moving within 1–3 bars or stalling at the level = out | `level_followthrough` (moved / stalled after 3 M1 bars) | **Strongly supported**: moved 79 % hold vs stalled 35 % (engine 74 % vs 35 %) |
+| MTF-12 | One re-entry allowed straight after a stop-out | next `level_test` / `level_rejection` on the same level | Trade management — Module 2/3 |
+| MTF-13 | M1 and H1 are 60× apart: read M5/M15 in between | M5/M15 swings, BOS/CHoCH, FVG (B2); `trend.M15` in `level_test` | Context, not tested here |
+| MTF-14 | Stop at M1/M5 structure, target the next higher-timeframe level | M1/M5 swings; `htf_levels` sorted by distance in the snapshot | Trade management — Module 2/3 |
+
+Sell checklist as Module 1 events (buys mirrored):
+1. a resistance `level_created` (H1/H4 swing high, session/day/week high) above price;
+2. `level_test` — note `test_no`, `approach`, `trend`, `stretch_h1_atr`;
+3. `level_rejection` within 10 M1 bars of the touch (or a `level_pattern`);
+4. `level_followthrough = moved` within 3 M1 bars — `stalled` means it is failing;
+5. the outcome is recorded either way: `level_held` or `level_broken`.
+
+These are hypotheses to test, not proven results: Brooks warns most double
+tops fail, and B3c covers one 3-month regime only.
+
 ---
 
 ## Part B — Module 1: the Market Structure Engine
@@ -138,6 +186,8 @@ file's header comment.
 | Close spikes | H1, H4 closes | the larger M1 move in the last 10 minutes before the close is ≥ 0.75 × H1 ATR (optional dollar floor); context: held vs rejected close, previous-candle sweep, session/prior-day levels swept (last 24 h), zone hit, H4 swing trend, volume ratio, session; outcome after 15/60/240 min: reversal (back beyond the spike start), continuation (beyond the extreme) or partial | `spikes.py` |
 
 | VWAP + bands | from M1; events judged on M5 | volume-weighted typical price (h+l+c)/3 with MT5 tick volume, ±1σ / ±2σ bands; anchors: **day** (resets 17:00 New York), **week** (Sunday 17:00 NY), **session** (Asia / London / New York windows); `vwap_cross` = M5 close on the other side of VWAP than the previous close; `vwap_band_reject` = M5 candle trades beyond the 2σ band and closes back inside; events only after 30 M1 bars of the period | `vwap.py` |
+
+| HTF levels (strategy A4) | levels: H1/H4 swings + session/day/week; tests on M1; breaks on M5 | a level is registered only while price is on the right side of it; levels within 0.3 ATR(M15) merge (sources = confluence; the outermost price until the first test). **Test** = M1 extreme within 0.10 ATR after price was ≥ 1.0 ATR away, numbered 1, 2, 3…, with approach (push / squeeze / drift over 20 M1 bars), stretch (H1 ATR over 24 h) and M15/H1/H4 trend; **rejection** = within 10 M1 bars, poke ≥ 0.05 ATR beyond and close back inside; **follow-through** = 3 M1 bars later moved ≥ 0.5 ATR away or stalled; **held** = 1.0 ATR away; **broken** = M5 close 0.3 ATR beyond (level retired); **level_pattern** = confirmed M1 double/triple top/bottom with peaks within 0.5 ATR of a level tested in the last hour | `levels.py` |
 
 Every threshold above is a key in `config/xauusd_structure_v1.json`; the
 numbers here are the shipped values, not code constants.
@@ -256,6 +306,44 @@ trading PC (events, summaries, review chart packs, audit). The review-chart
 and study tools that produced them were removed in the clean-up; the live
 website (Part C) now shows the same markings.
 
+### B3c. Level-reaction study: does the A4 strategy hold on gold? (2026-11-01)
+
+`python -m studies.level_reaction --m1 <M1 folder>` (or `--db --from 2016-01-01`).
+Written separately from `levels.py` (own touch / hold / break code), so it is
+also an independent cross-check of the engine; section 8 of its report asks
+the same questions of the engine's own events.
+
+Method (an event study, as used for support/resistance by Osler 2000):
+every H1/H4 swing, session, prior-day level and $50 round number is followed
+on M1. A test is a touch within 0.10 ATR(M15) after price had been ≥ 1 ATR
+away; it HELD if price then got 1 ATR away before an M5 close 0.3 ATR beyond
+the level, else it BROKE. Features are measured at the touch (causal);
+outcomes use the future. **Control:** random levels 0.5–3 ATR from each real
+level, at least 1 ATR from any real level, tracked with identical rules.
+Robustness: re-run with M1 vs M5 break closes, 0.6/0.6 ATR hold/break,
+controls with 0 / 0.5 / 1 ATR clearance — the conclusions below held in all.
+
+Result on 100,000 M1 bars (2026-04-28 → 08-07; 1,758 real tests, 2,530
+control tests; Wilson 95 % intervals in the report):
+
+* **A level by itself is not an edge**: 48.3 % hold vs 50.8 % random.
+  Only prior-day levels lean positive (+2.7 pts, inside the noise).
+* **What separates outcomes is M1 behaviour at the level**: with a
+  poke-and-reclaim 54 %, without 40.5 %; and after the rejection, **moved
+  within 3 bars 79 % vs stalled 35 %** — the biggest and most stable split.
+* Test number: 1st test weakest vs random (−9.4), 2nd strongest (+14).
+* Squeeze, trend alignment, stretch: no reliable effect at this sample size.
+* Round $50 numbers: no edge here (Osler's round-number effect is for FX
+  order flow; not added as levels).
+
+What this means for Module 1: it must record the M1 facts at the level
+(test, rejection, follow-through, outcome) precisely — that is what
+`levels.py` does — and keep the weak/unproven ones (approach, stretch, trend)
+as descriptive fields, never as filters. Caveats: one strongly trending
+3-month regime, overlapping samples (intervals are optimistic), many splits
+compared (some "effects" will be chance). **Re-run on the full history before
+any of it is used for trading decisions.**
+
 ### B4. How accuracy is verified
 
 1. **Synthetic ground truth** (`verification/synthetic.py`): seeded series
@@ -315,6 +403,7 @@ backend/structure_engine/
   patterns.py      M1 double/triple tops & bottoms
   spikes.py        close spikes into H1/H4 closes + outcome labels
   vwap.py          day / week / session VWAP with bands; crosses and band rejects
+  levels.py        HTF levels for strategy A4: tests, M1 rejections, follow-through, held / broken
   engine.py        the single streaming engine (live == test)
   feeds.py         RecordedFeed (files / folders of M1 bars)
   runner.py        back-test CLI
@@ -330,6 +419,7 @@ python -m pytest structure_engine/tests -q                                   # e
 python -m structure_engine.verification.synthetic_accuracy --seeds 5          # planted-structure accuracy
 python -m structure_engine.runner --m1 <M1 folder or files> --out runs/bt      # back-test to files
 python -m structure_engine.verification.audit --m1 <M1 folder> --events runs/bt/events.jsonl   # independent re-check
+python -m studies.level_reaction --m1 <M1 folder>                              # level study B3c (or --db)
 ```
 
 About 22,000 M1 bars per second with the full structure layer: ten years
@@ -344,8 +434,9 @@ About 22,000 M1 bars per second with the full structure layer: ten years
    through new config versions (`xauusd_structure_v2.json`), never in code.
 3. Done 2026-10-31: BOS/CHoCH, equal highs/lows, liquidity sweeps, false and
    accepted breaks, FVG, order blocks, displacement, ranges, previous-week
-   levels, VWAP (day / week / session). Still open: head and shoulders,
-   candle patterns, channels.
+   levels, VWAP (day / week / session), HTF levels with tests / M1 rejection /
+   follow-through (A4). Still open: head and shoulders, candle patterns,
+   channels, role reversal (a broken resistance becoming support).
    External libraries (smartmoneyconcepts, TA-Lib, SciPy) only as reference
    checks, and only after passing the no-repaint test.
 4. Rebuild Qwen (Module 2) from scratch on top of the structure snapshot,
@@ -387,6 +478,7 @@ Start-QuantLLM.bat          one-click start (repository root)
 requirements.txt            backend Python packages (psycopg, MetaTrader5, pytest)
 backend/
   structure_engine/         Part B
+  studies/                  research scripts (not used by the app): level_reaction.py (B3c)
   quantllm/
     settings.py             database / API / history settings (config/app.json + environment)
     mt5_connection.py       the one MT5 module (Part D)
@@ -466,6 +558,12 @@ trend per timeframe with the protected level, what just happened at
 liquidity, nearest pools, ranked zones, order blocks and gaps near price,
 session ranges. It refreshes every 5 seconds. Everything drawn comes from
 `/api/chart`, so the page can never show something the engine did not say.
+Layer "HTF levels" draws every higher-timeframe level (pink; thicker = two or
+more sources) with its test count ("H1 sw high + LONDON high ×2") until it
+breaks; markers R1, R2… = M1 rejection on test n, R1+ / R1- once the 3-bar
+follow-through is known, LDT / LDB = an M1 double top/bottom formed at the
+level. The side panel lists the nearest levels and the latest level events.
+
 Layer "VWAP" draws the day (yellow), week (magenta) and session (blue) VWAP
 with dashed ±1σ / ±2σ bands; band rejects show as small squares (VD / VW / VS).
 
@@ -697,6 +795,11 @@ detection · P21 closed response missed by stale playbook.
   `pre-clean-2026-10-31`); added the `quantllm` application — database
   (schema `structure`), MT5 history + live feed, service with HTTP API, the
   website rebuilt as a live structure chart, and `Start-QuantLLM.bat`.
+- **Strategy A4 and HTF levels (2026-11-01):** the owner's
+  higher-timeframe-level / M1-rejection strategy written down with sources
+  (A4); level-reaction study with a random-level control on real gold (B3c);
+  `levels.py` records level tests, M1 rejections, follow-through, held/broken
+  and M1 patterns at levels; chart layer, side panel, Replay check sheet.
 - **VWAP and Replay (2026-10-31, night):** day / week / session VWAP with
   bands, crosses and band rejects (B2); Replay & verify page with check sheet,
   automatic day checks and monthly scorecard; `reviews` table (C2, C4b).
