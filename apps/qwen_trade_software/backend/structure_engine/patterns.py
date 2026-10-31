@@ -1,4 +1,4 @@
-"""M1 double / triple tops and bottoms, built from confirmed M1 swings.
+r"""M1 double / triple tops and bottoms, built from confirmed M1 swings.
 
 Double top, drawn (a double bottom is the same thing upside down)
 -----------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Bars: the only input the structure engine understands.
+r"""Bars: the only input the structure engine understands.
 
 Everything starts from CLOSED one-minute (M1) bars. Higher timeframes (M5 ...
 H4) are built here by aggregation, never fetched separately, so that live
