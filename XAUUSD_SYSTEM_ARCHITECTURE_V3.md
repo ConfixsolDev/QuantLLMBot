@@ -627,7 +627,7 @@ The application reaches MT5 through **one** module,
 | `fallback_attach_any` | if attaching at the path fails, attach to any running terminal (only when no `login` is pinned) | `true` |
 | `require_demo` | refuse non-demo accounts in `ensure_demo()` | `true` |
 | `broker_symbol` | the broker's exact gold symbol (XAUUSD, XAUUSDr, XAUUSD.m, GOLD…) | `XAUUSDr` |
-| `server_time` | broker clock for bar times: `"ny_close"` (UTC+2 winter / UTC+3 US summer), `"utc"`, or a fixed number of hours | `"ny_close"` |
+| `server_time` | broker clock for bar times: `"auto"` (read from the broker's daily 17:00 New York break; checked before every import), `"ny_close"` (UTC+2 winter / UTC+3 US summer), `"utc"`, or a fixed number of hours. A rule the data contradicts stops the import | `"auto"` |
 
 3. The password is **never** written in the file or git. To log in from
    Python, set it in the environment (`setx QWEN_MT5_PASSWORD "..."` on
@@ -806,6 +806,15 @@ detection · P21 closed response missed by stale playbook.
   (A4); level-reaction study with a random-level control on real gold (B3c);
   `levels.py` records level tests, M1 rejections, follow-through, held/broken
   and M1 patterns at levels; chart layer, side panel, Replay check sheet.
+- **Broker clock (2026-11-01):** the 10-day check on real October data found
+  every stored bar 3 hours early: the broker (XAUUSDr) reports UTC but
+  `server_time` defaulted to "ny_close". Sessions, the New York H4 grid and
+  the 17:00 NY trading day were all shifted. Now `server_time: "auto"` reads
+  the broker clock from gold's daily 17:00 New York break, `connect_mt5`
+  refuses to import when a configured rule contradicts the data, the service
+  warns at start when stored bars are not UTC, the Replay day checks include
+  "Clock", and `python -m quantllm reimport-mt5 --from <day> --yes` repairs the
+  stored history. Logs are also written to `logs/quantllm.log`.
 - **10-day check (2026-11-01):** day-by-day replay of the last 10 trading days
   (invariants, determinism, no-repaint, audit, point-in-time charts, level
   lifecycles — all pass). Fixed: expired HTF levels were drawn as still alive

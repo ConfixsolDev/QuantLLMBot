@@ -40,9 +40,18 @@ brokers run "New York close" time: UTC+2 in northern winter, UTC+3 while US
 daylight saving is active. ``server_time`` tells the structure engine (and
 anything else that converts bar times) which rule to use:
 
-* ``"ny_close"``   UTC+2 / UTC+3 following the US DST calendar (default)
+* ``"auto"``       (default) work it out from the broker's own M1 history:
+                   gold stops trading every day 17:00-18:00 New York, so the
+                   hour at which the broker's bars stop tells its clock
+* ``"ny_close"``   UTC+2 / UTC+3 following the US DST calendar
 * ``"utc"``        the broker already reports UTC
 * a number         a fixed offset in hours, e.g. ``3`` or ``-5``
+
+Whatever the setting, ``connect_mt5`` CHECKS it against the data before any
+bar is stored and refuses to import when they disagree. Found 2026-10-31:
+the broker (XAUUSDr) reports UTC, the default was "ny_close", and every stored
+bar sat 3 hours early — sessions, the New York H4 grid and the 17:00 NY day
+were all shifted. A wrong clock must stop the import, never pass silently.
 """
 
 from __future__ import annotations
@@ -93,7 +102,7 @@ class MT5Settings:
     # XAUUSD.m, GOLD ... Must match the Market Watch symbol exactly.
     broker_symbol: str = "XAUUSDr"
     # Broker clock rule for bar timestamps — see module docstring.
-    server_time: Any = "ny_close"
+    server_time: Any = "auto"
 
     def password(self) -> str | None:
         """Read the password from the environment at call time (never cached)."""
@@ -207,9 +216,9 @@ def ensure_demo(mt5: Any) -> None:
 # --------------------------------------------------------------------------
 
 def _validate_server_time(rule: Any) -> None:
-    if rule in ("ny_close", "utc") or (isinstance(rule, (int, float)) and not isinstance(rule, bool)):
+    if rule in ("auto", "ny_close", "utc") or (isinstance(rule, (int, float)) and not isinstance(rule, bool)):
         return
-    raise ValueError(f"server_time must be 'ny_close', 'utc' or a number of hours, got {rule!r}")
+    raise ValueError(f"server_time must be 'auto', 'ny_close', 'utc' or a number of hours, got {rule!r}")
 
 
 def _nth_sunday(year: int, month: int, n: int) -> datetime:
@@ -233,6 +242,9 @@ def server_offset_hours(server_epoch: int, rule: Any = None) -> float:
     """Offset (hours) to SUBTRACT from a broker timestamp to get UTC."""
     rule = settings().server_time if rule is None else rule
     _validate_server_time(rule)
+    if rule == "auto":
+        raise RuntimeError("server_time 'auto' is not resolved yet: connect through "
+                           "market_feed.connect_mt5(), which checks the broker clock first")
     if rule == "utc":
         return 0.0
     if rule == "ny_close":
@@ -246,6 +258,78 @@ def server_offset_hours(server_epoch: int, rule: Any = None) -> float:
 def server_to_utc_epoch(server_epoch: int, rule: Any = None) -> int:
     """Convert an MT5 bar/tick ``time`` (broker clock) to a real UTC epoch."""
     return int(server_epoch - server_offset_hours(server_epoch, rule) * 3600)
+
+
+# --------------------------------------------------------------------------
+# Broker clock check: read it from the data
+# --------------------------------------------------------------------------
+
+def daily_break_offsets(server_times: list[int]) -> list[tuple[int, int]]:
+    """Find gold's daily maintenance break in broker-clock M1 open times.
+
+    Gold stops at 17:00 New York every trading day and restarts about an hour
+    later. For each gap of 45 min - 3 h, the offset (hours) that puts the
+    first missing minute at 17:00 New York (+-5 min) is the broker's offset at
+    that moment. Returns [(gap start, broker clock), offset hours].
+    """
+    from structure_engine.clock import new_york_offset_hours
+    out = []
+    for a, b in zip(server_times, server_times[1:]):
+        if not 45 * 60 <= b - a <= 3 * 3600:
+            continue
+        start = a + 60                                     # first missing minute
+        for off in range(-12, 15):
+            utc = start - off * 3600
+            ny_minute = ((utc + new_york_offset_hours(utc) * 3600) % 86400) // 60
+            if abs(ny_minute - 17 * 60) <= 5:
+                out.append((start, off))
+                break
+    return out
+
+
+def detect_server_time(server_times: list[int]) -> dict:
+    """Which ``server_time`` rule explains the broker's daily breaks?
+
+    Returns {"rule": "utc" | "ny_close" | <hours> | None, "breaks": n, "reason": ...}.
+    A rule must explain at least 80 % of the breaks (holidays close early).
+    """
+    pairs = daily_break_offsets(server_times)
+    if len(pairs) < 3:
+        return {"rule": None, "breaks": len(pairs), "reason": "fewer than 3 daily breaks in the sample"}
+    need = 0.8 * len(pairs)
+    for cand in ("utc", "ny_close"):
+        if sum(server_offset_hours(t, cand) == off for t, off in pairs) >= need:
+            return {"rule": cand, "breaks": len(pairs), "reason": f"{cand} explains the daily breaks"}
+    counts: dict[int, int] = {}
+    for _, off in pairs:
+        counts[off] = counts.get(off, 0) + 1
+    off, n = max(counts.items(), key=lambda kv: kv[1])
+    if n >= need:
+        return {"rule": off, "breaks": len(pairs), "reason": f"fixed UTC{off:+d} explains the daily breaks"}
+    return {"rule": None, "breaks": len(pairs), "reason": f"inconsistent offsets {sorted(counts)}"}
+
+
+def resolve_server_time(mt5: Any, symbol: str, bars: int = 20000) -> dict:
+    """Check the configured broker clock against the broker's recent M1 bars.
+
+    "auto": adopt the detected rule for this process. An explicit rule that
+    the data contradicts raises (nothing may be stored with wrong times).
+    """
+    global _CACHED
+    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, bars)
+    times = [int(r["time"]) for r in (rates if rates is not None else [])]
+    det = detect_server_time(times)
+    cfg = settings()
+    if cfg.server_time == "auto":
+        if det["rule"] is None:
+            raise RuntimeError(f"broker clock could not be determined ({det['reason']}); "
+                               "set server_time in backend/config/mt5_connection.json")
+        _CACHED = replace(cfg, server_time=det["rule"])
+    elif det["rule"] is not None and det["rule"] != cfg.server_time:
+        raise RuntimeError(f"broker clock check FAILED: server_time is {cfg.server_time!r} but the "
+                           f"broker's daily breaks say {det['rule']!r} ({det['breaks']} breaks). "
+                           "Fix server_time (or use \"auto\") before importing bars.")
+    return {**det, "configured": cfg.server_time, "using": settings().server_time}
 
 
 if __name__ == "__main__":

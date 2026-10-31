@@ -189,3 +189,57 @@ def test_server_refuses_a_port_that_is_already_in_use():
             _Server(("127.0.0.1", first.server_address[1]), None)
     finally:
         first.server_close()
+
+
+def _gold_minutes_utc(day0: int, days: int) -> list[int]:
+    """UTC M1 open times of gold: daily break 17:00-18:00 New York, closed from
+    Friday 17:00 to Sunday 18:00 New York."""
+    import time as _t
+    from structure_engine.clock import new_york_offset_hours
+    out = []
+    for t in range(day0, day0 + days * 86400, 60):
+        ny = t + new_york_offset_hours(t) * 3600
+        wd, hour = _t.gmtime(ny).tm_wday, (ny % 86400) // 3600      # Monday = 0
+        if hour == 17 or wd == 5 or (wd == 4 and hour >= 17) or (wd == 6 and hour < 18):
+            continue
+        out.append(t)
+    return out
+
+
+@pytest.mark.parametrize("rule", ["utc", "ny_close", 2])
+def test_broker_clock_is_detected_from_the_daily_break(rule):
+    from quantllm import mt5_connection as m
+    utc = _gold_minutes_utc(1_793_000_000 - 1_793_000_000 % 86400, 12)      # spans the 1 Nov DST change
+    server = []
+    for t in utc:                                                           # utc -> broker clock
+        off = 0 if rule == "utc" else 2 if rule == 2 else (3 if m._us_dst_active(
+            __import__("datetime").datetime.fromtimestamp(t, tz=__import__("datetime").timezone.utc)) else 2)
+        server.append(t + off * 3600)
+    det = m.detect_server_time(server)
+    assert det["rule"] == rule and det["breaks"] >= 7
+    assert [m.server_to_utc_epoch(s, det["rule"]) for s in server] == utc
+
+
+def test_wrong_broker_clock_setting_refuses_to_import(monkeypatch):
+    from dataclasses import replace as dc_replace
+    from quantllm import mt5_connection as m
+    utc = _gold_minutes_utc(1_792_000_000 - 1_792_000_000 % 86400, 6)
+
+    class Fake:
+        TIMEFRAME_M1 = 1
+
+        def copy_rates_from_pos(self, symbol, tf, start, n):
+            return [{"time": t} for t in utc[-n:]]                      # broker reports UTC
+    monkeypatch.setattr(m, "_CACHED", dc_replace(m.MT5Settings(), server_time="ny_close"))
+    with pytest.raises(RuntimeError, match="broker clock check FAILED"):
+        m.resolve_server_time(Fake(), "XAU")
+    monkeypatch.setattr(m, "_CACHED", dc_replace(m.MT5Settings(), server_time="auto"))
+    assert m.resolve_server_time(Fake(), "XAU")["using"] == "utc" and m.settings().server_time == "utc"
+
+
+def test_replay_clock_check_flags_shifted_bars():
+    from quantllm.replay import clock_check
+    utc = _gold_minutes_utc(1_792_000_000 - 1_792_000_000 % 86400, 3)
+    assert clock_check(utc)["ok"] and len(clock_check(utc)["breaks"]) >= 2
+    shifted = [t - 3 * 3600 for t in utc]                                  # the bug seen on 2026-10-31
+    assert not clock_check(shifted)["ok"]

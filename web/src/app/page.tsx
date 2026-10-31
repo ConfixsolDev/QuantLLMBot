@@ -53,6 +53,7 @@ export default function Page() {
         <span className="text-xs text-slate-500">last bar {fmtTime(health?.last_bar)} · MT5 {health?.mt5} · {health?.database ?? ""}</span>
         {health?.message && <span className="text-xs text-slate-400">{health.message}</span>}
         {error && <span className="text-xs text-rose-400">backend not reachable: {error}</span>}
+        {health?.clock && health.clock !== "ok" && <span className="w-full rounded bg-rose-900/70 px-2 py-1 text-xs text-rose-100">{health.clock}</span>}
         <a href="/replay/" className="ml-auto rounded-md bg-panel px-3 py-1 text-sm text-gold hover:bg-slate-800">Replay &amp; verify a day →</a>
       </header>
 

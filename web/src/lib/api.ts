@@ -37,6 +37,7 @@ export type Chart = {
 export type Health = {
   state: string; message: string; progress: number; mt5: string; symbol: string; database?: string;
   config_id: string; config_hash: string; last_bar: number | null; bars_processed: number; events: number;
+  clock?: string;                                // "ok" or why stored bar times are wrong
 };
 
 export type Trend = { state: "up" | "down" | "none"; protected: number | null;
@@ -69,6 +70,7 @@ export type Check = { ok: boolean; [k: string]: unknown };
 export type DayChecks = {
   date: string; events: number; invariants: Check & { violations: string[] }; determinism: Check;
   no_repaint: Check & { cuts: number[]; failed_cuts: number[] };
+  clock?: Check & { breaks: { utc: number; ny: string; ok: boolean }[] };
   audit: Check & { checked: number; failed: number; examples: Record<string, string[]> };
 };
 export type ReplayDay = {

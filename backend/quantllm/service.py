@@ -142,6 +142,17 @@ class StructureService:
             self._set("waiting", "no M1 bars in the database yet: run import-csv or connect MT5")
             return
         start = last - self.s.replay_days * 86400
+        # stored bar times must be real UTC (gold's daily break at 17:00 New York)
+        recent = [b.time for b in self.db.candles_between(self.symbol, last - 5 * 86400, last + 60)]
+        clock = replay_mod.clock_check(recent)
+        if not clock["ok"]:
+            bad = ", ".join(sorted({x["ny"] for x in clock["breaks"] if not x["ok"]}))
+            self.status["clock"] = (f"STORED BAR TIMES ARE NOT UTC: daily break found at {bad} New York "
+                                    "instead of 17:00. Stop the app and run: python -m quantllm "
+                                    "reimport-mt5 --from <first day> --yes")
+            log.error(self.status["clock"])
+        else:
+            self.status["clock"] = "ok"
         self.db.clear_events(self.symbol)
         batch, span = [], max(1, last - start)
         for bar in self.db.iter_candles(self.symbol, start):

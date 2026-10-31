@@ -99,6 +99,11 @@ class Database:
     def candle_count(self, symbol: str) -> int:
         return self.conn.execute("SELECT count(*) FROM m1_candles WHERE symbol = %s", (symbol,)).fetchone()[0]
 
+    def delete_candles(self, symbol: str, start: int) -> int:
+        """Remove stored M1 bars from ``start`` on (used only by ``reimport-mt5 --yes``)."""
+        cur = self.conn.execute("DELETE FROM m1_candles WHERE symbol = %s AND time >= %s", (symbol, _ts(start)))
+        return cur.rowcount
+
     def iter_candles(self, symbol: str, start: int | None = None, batch: int = 20000) -> Iterator[Bar]:
         """Closed M1 bars in time order (streamed; safe for years of data)."""
         sql = "SELECT time, open, high, low, close, tick_volume FROM m1_candles WHERE symbol = %s"

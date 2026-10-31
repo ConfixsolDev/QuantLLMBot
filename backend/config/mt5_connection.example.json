@@ -10,9 +10,9 @@
   "fallback_attach_any": true,
   "require_demo": true,
   "broker_symbol": "XAUUSDr",
-  "server_time": "ny_close",
+  "server_time": "auto",
 
   "_login_example": "e.g. 52012345 (number, no quotes). null = whichever account the terminal is logged in to.",
   "_server_example": "exact server name from MT5's login dialog, e.g. \"ICMarketsSC-Demo\"",
-  "_server_time_options": "\"ny_close\" (UTC+2 winter / UTC+3 US-summer, most brokers), \"utc\", or a fixed number of hours such as 3"
+  "_server_time_options": "\"auto\" (recommended: read from the broker's daily 17:00 New York break), \"ny_close\" (UTC+2 winter / UTC+3 US-summer), \"utc\", or a fixed number of hours such as 3. A setting the data contradicts stops the import."
 }

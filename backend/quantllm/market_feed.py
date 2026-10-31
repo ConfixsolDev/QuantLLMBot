@@ -14,6 +14,7 @@ MT5 rules applied here (and nowhere else)
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
@@ -22,6 +23,8 @@ from structure_engine.bars import Bar
 from structure_engine.feeds import RecordedFeed
 
 from . import mt5_connection
+
+log = logging.getLogger("quantllm")
 
 
 def _rate_to_bar(r) -> Bar:
@@ -38,6 +41,10 @@ def connect_mt5():
     symbol = mt5_connection.settings().broker_symbol
     if not mt5.symbol_select(symbol, True):
         raise RuntimeError(f"symbol {symbol} not available in MT5 Market Watch")
+    # Broker clock: checked against the data BEFORE any bar is converted or stored
+    clock = mt5_connection.resolve_server_time(mt5, symbol)
+    log.info("broker clock: %s (configured %r, %d daily breaks checked)",
+             clock["using"], clock["configured"], clock["breaks"])
     return mt5
 
 

@@ -20,6 +20,9 @@ no_repaint    runs that stop at 3 cut points inside the day reproduce exactly
               the full run's events up to each cut
 audit         every event re-checked against candles rebuilt by independent
               code (verification/audit.py)
+clock         the stored bar times are real UTC: gold's daily break must start
+              at 17:00 New York (a broker-clock error shifts every session,
+              the H4 grid and the trading day — found 2026-10-31)
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 
+from structure_engine.clock import new_york_offset_hours
 from structure_engine.engine import StructureEngine
 from structure_engine.events import Event, fingerprint
 from structure_engine.verification.audit import audit_events
@@ -192,15 +196,29 @@ class ReplayDay:
                 if fingerprint(got) != fingerprint(want):
                     repaint_fail.append(cut_t)
         aud = audit_events(self.m1, day_events)
+        clock = clock_check([b.time for b in self.m1 if self.day_start - 3 * 3600 <= b.time < self.day_end + 3 * 3600])
         audit_fail = sum(aud["failures"].values())
         return {
             "date": self.date, "events": len(day_events),
             "invariants": {"ok": not inv, "violations": inv[:10]},
             "determinism": {"ok": deterministic},
             "no_repaint": {"ok": not repaint_fail, "cuts": cuts, "failed_cuts": repaint_fail},
+            "clock": clock,
             "audit": {"ok": audit_fail == 0, "checked": sum(aud["checks"].values()), "failed": audit_fail,
                       "examples": aud["examples"]},
         }
+
+
+def clock_check(times: list[int]) -> dict:
+    """Daily trading breaks in stored (UTC) M1 bars must start at 17:00 New York."""
+    breaks = []
+    for a, b in zip(times, times[1:]):
+        if 45 * 60 <= b - a <= 3 * 3600:
+            start = a + 60
+            ny = start + new_york_offset_hours(start) * 3600
+            breaks.append({"utc": start, "ny": time.strftime("%H:%M", time.gmtime(ny)),
+                           "ok": abs((ny % 86400) // 60 - 17 * 60) <= 5})
+    return {"ok": all(x["ok"] for x in breaks), "breaks": breaks}
 
 
 def vwap_curves(hist: list, t_from: int, t: int) -> dict:

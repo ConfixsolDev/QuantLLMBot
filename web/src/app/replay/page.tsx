@@ -304,7 +304,7 @@ function CheckSheet({ rows, reviews, missed, cursor, groups, setGroups, onlyPast
   );
 }
 
-const allOk = (c: DayChecks) => c.invariants.ok && c.determinism.ok && c.no_repaint.ok && c.audit.ok;
+const allOk = (c: DayChecks) => c.invariants.ok && c.determinism.ok && c.no_repaint.ok && c.audit.ok && (c.clock?.ok ?? true);
 
 function ChecksView({ checks, run, busy }: { checks: DayChecks | null; run: () => void; busy: boolean }) {
   if (!checks) return (
@@ -315,6 +315,7 @@ function ChecksView({ checks, run, busy }: { checks: DayChecks | null; run: () =
         <li><b>Determinism</b> — a second run gives byte-identical events</li>
         <li><b>No repaint</b> — runs stopped at 3 points in the day reproduce exactly what the full run had said by then</li>
         <li><b>Independent audit</b> — every event re-checked against candles rebuilt by separate code</li>
+        <li><b>Clock</b> — gold's daily break starts at 17:00 New York, so bar times are real UTC</li>
       </ul>
       <button className="btn self-start" disabled={busy} onClick={run}>Run checks for this day</button>
     </div>
@@ -330,6 +331,8 @@ function ChecksView({ checks, run, busy }: { checks: DayChecks | null; run: () =
       <Row name="Invariants" good={checks.invariants.ok} detail={`${checks.invariants.violations.length} violations`} />
       <Row name="Determinism" good={checks.determinism.ok} detail="2 runs identical" />
       <Row name="No repaint" good={checks.no_repaint.ok} detail={`cuts ${checks.no_repaint.cuts.map(hhmm).join(", ")}`} />
+      {checks.clock && <Row name="Clock (17:00 NY break)" good={checks.clock.ok}
+        detail={checks.clock.breaks.length ? checks.clock.breaks.map((b) => `break at ${b.ny} NY`).join(", ") : "no daily break this day"} />}
       <Row name="Independent audit" good={checks.audit.ok} detail={`${checks.audit.checked} checked, ${checks.audit.failed} failed`} />
       {checks.invariants.violations.map((v, i) => <div key={i} className="text-xs text-rose-300">{v}</div>)}
       {Object.entries(checks.audit.examples).map(([k, v]) => <div key={k} className="text-xs text-rose-300">{k}: {v.join(" · ")}</div>)}
@@ -370,7 +373,7 @@ function MonthView({ date, days, open }: { date: string; days: string[]; open: (
           <div className="mb-1 text-xs text-slate-400">{done.filter(allOk).length}/{done.length} days fully passing · {done.reduce((s, c) => s + c.events, 0)} events</div>
         )}
         <table className="w-full text-xs">
-          <thead><tr className="text-slate-500"><th className="text-left">day</th><th>inv</th><th>det</th><th>repaint</th><th>audit</th><th>events</th></tr></thead>
+          <thead><tr className="text-slate-500"><th className="text-left">day</th><th>inv</th><th>det</th><th>repaint</th><th>audit</th><th>clock</th><th>events</th></tr></thead>
           <tbody>
             {mdays.map((d) => {
               const c = res[d];
@@ -378,9 +381,9 @@ function MonthView({ date, days, open }: { date: string; days: string[]; open: (
               return (
                 <tr key={d} className="cursor-pointer border-b border-slate-800/60 hover:bg-slate-800/40" onClick={() => open(d)}>
                   <td className="py-0.5">{d}</td>
-                  {typeof c === "string" ? <td colSpan={5} className="text-rose-400">{c}</td> : <>
+                  {typeof c === "string" ? <td colSpan={6} className="text-rose-400">{c}</td> : <>
                     <td className="text-center">{ok(cc?.invariants.ok)}</td><td className="text-center">{ok(cc?.determinism.ok)}</td>
-                    <td className="text-center">{ok(cc?.no_repaint.ok)}</td><td className="text-center">{ok(cc?.audit.ok)}</td>
+                    <td className="text-center">{ok(cc?.no_repaint.ok)}</td><td className="text-center">{ok(cc?.audit.ok)}</td><td className="text-center">{ok(cc?.clock?.ok)}</td>
                     <td className="text-center text-slate-400">{cc?.events ?? ""}</td></>}
                 </tr>
               );
