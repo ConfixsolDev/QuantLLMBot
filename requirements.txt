@@ -1,0 +1,5 @@
+# QuantLLM application (backend). Install into the Python that has MetaTrader5:
+#   python -m pip install -r requirements.txt
+psycopg[binary]>=3.2,<4      # PostgreSQL / TimescaleDB
+MetaTrader5>=5.0.45          # MT5 terminal API (Windows only)
+pytest>=8                    # tests (optional)

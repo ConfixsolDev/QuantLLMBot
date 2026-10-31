@@ -1,179 +1,78 @@
 # XAUUSD Quantitative Trading System — Architecture V3
 
-> **THE ONE AND ONLY DOCUMENT.** This file is the single source of truth for
-> the architecture, the code layout, how to run things, and how changes are
-> allowed. It replaces V2 and every former README, guide, audit and report.
-> Those are kept in git history only (last present at commit `b7af6e2`).
-> Improve this file in place; do not add new Markdown documents beside it.
+> **THE ONE AND ONLY DOCUMENT.** Architecture, code layout, how to run
+> everything and how changes are allowed. Improve this file in place; do not
+> add other Markdown documents.
 >
-> Two documents are deliberately *not* part of this file, because the system
-> reads them as data: the live trading doctrine `store/core_skill.md` and
-> `store/sop.md` (the Qwen prompt), and the training process
-> `model_training/CURRICULUM_AND_DATA_PREP.md` (the curriculum).
+> **State on 2026-10-31: clean slate.** The codebase contains only the
+> deterministic market-structure engine and the application that feeds it
+> from MT5, stores everything in the database and shows it on the website.
+> The previous Qwen trading system, its prompts, training material and tools
+> were removed; they are recoverable from git tag `pre-clean-2026-10-31`.
+> Qwen will be rebuilt from scratch on top of this (Part E).
 
 | | |
 |---|---|
-| Version | **V3** — 2026-10-31 (V2: 2026-08-17, confirmed 2026-08-19) |
-| Instrument / broker | XAUUSD (gold) on a MetaTrader 5 **demo** account |
-| Model | the single `DEFAULT_QWEN_MODEL` constant in `apps/qwen_trade_software/backend/goldflow/core/runtime_config.py` (served by Ollama) |
-| MT5 connection | `apps/qwen_trade_software/backend/config/mt5_connection.json` (Part D) |
-| Structure engine config | `apps/qwen_trade_software/backend/structure_engine/config/xauusd_structure_v1.json` (Part B) |
+| Version | **V3** — 2026-10-31 (V2: 2026-08-17) |
+| Instrument / broker | XAUUSD (gold), MetaTrader 5 (demo); the application reads data only |
+| Start | `Start-QuantLLM.bat` (repository root) → website http://127.0.0.1:8765/ |
+| Database | existing PostgreSQL / TimescaleDB, schema `structure` (Part C2) |
+| MT5 connection | `backend/config/mt5_connection.json` (Part D) |
+| Structure config | `backend/structure_engine/config/xauusd_structure_v1.json` (Part B) |
 
-**Contents**
-Part A — Authority, the three-module architecture, rules, invariants, change control ·
-Part B — Module 1: the deterministic Market Structure Engine ·
-Part C — The live system today (decision + risk) ·
-Part D — MT5 connection ·
-Part E — Training ·
-Part F — Operations and commands ·
-Appendix — History
+**Contents** — Part A rules · Part B the structure engine · Part C the
+application (database, service, website, launcher) · Part D MT5 connection ·
+Part E rebuilding Qwen: lessons and recovery · Appendix history
 
 ---
 
-## Part A — Authority and architecture
+## Part A — Rules
 
-### A1. Who owns what
-
-The system has three owned parts. Nothing else may redefine them.
-
-1. **Evidence** — immutable observations (`model_training/tick_data/`, broker
-   deal history, the TimescaleDB candle store). Broker deals, never runner
-   summaries, establish realised P&L.
-2. **Trading doctrine** — `store/core_skill.md` and `store/sop.md`. They define
-   trading judgement for Qwen. They do not define component ownership or
-   runtime flow. They are extended, not rewritten, and only with human approval.
-3. **Code** — `apps/qwen_trade_software/`. Code owns validation, risk,
-   execution, reconciliation and every safety invariant.
-
-A proposed change becomes active only when **this document and the tested
-code are revised together** in the same change.
-
-### A2. The three-module architecture (target)
+### A1. The three modules (target)
 
 ```
-core/            bar data, config, clock, event log, MT5 connection   (shared by all)
-1. structure/    closed M1 bars -> zones, swings, liquidity, patterns     Part B
-2. decision/     structure template -> Qwen -> BUY / SELL / NONE          Part C
-3. risk/         sizing, limits, orders, position & trade management, broker   Part C
-runner           live  = MT5 bar feed + MT5 broker
-                 test  = recorded bars + simulated broker
+core          bar data, config, clock, event log, MT5 connection, database   (shared)
+1 structure   closed M1 bars -> swings, trend, liquidity, zones, FVG, OB...   BUILT (Part B)
+2 decision    structure snapshot -> Qwen -> BUY / SELL / NONE                 to be rebuilt
+3 risk        sizing, limits, orders, position management, broker            to be rebuilt
+runner        live = MT5 feed (+ MT5 broker later); test = recorded bars (+ simulated broker)
 ```
 
-Where the code is today and where it is going:
+### A2. The five rules
 
-| Module | Today (`backend/goldflow/...` live code) | Target |
-|---|---|---|
-| core | `core/` (runtime_config, instrument_config, paths, mt5_connection, logging, TimescaleDB, build manifest, tick archive, candle clock) | same |
-| 1 structure | `market/`, `structure/`, `regime/`, `intelligence/` (live, not causality-tested) **and** the new `backend/structure_engine/` (deterministic, tested, runs on recorded data) | `structure_engine` replaces the old detectors one at a time, each only after it passes Part B's tests and a back-test comparison on the same data |
-| 2 decision | `decision/` (Qwen reviewer, prompts, entry gates), `planning/` (session planner) | consumes Module 1 events/snapshot only |
-| 3 risk | `execution/` (paper runner + MT5 executor), `management/` (trade manager, profit protection) | unchanged behaviour; broker behind one interface |
-| runner | `runtime/software_runtime.py` (supervisor) + `structure_engine/runner.py` (backtest/live/export) | one runner, two feeds |
-
-### A3. The five rules
-
-1. **Modules talk through data only.** Module 1 never calls Qwen, a strategy or
-   the broker and never issues BUY or SELL. It emits events and a snapshot.
-2. **Testing and live use the same code.** Only the bar source and the broker
-   change. There is no "backtest version" of any detector.
-3. **No hard-coded thresholds.** Every number lives in a versioned JSON config.
-   Unknown or missing keys fail at load time. Every event carries the config hash.
+1. **Modules talk through data only.** Module 1 never calls Qwen, a strategy
+   or the broker and never issues BUY or SELL. It emits events and a snapshot.
+2. **Testing and live use the same code.** Only the bar source changes.
+3. **No hard-coded thresholds.** Every number lives in a versioned JSON
+   config; unknown or missing keys fail at load time; every event carries the
+   config hash.
 4. **Closed candles only; no look-ahead; no repainting.** Every event has an
-   `available_at` time, and the test suite proves it.
-5. **Forming and confirmed are separate.** A running session high, an
-   unfinished H1 candle or a pattern awaiting its neckline break is never
-   presented as a confirmed fact.
+   `available_at` time, and the tests prove it.
+5. **Forming and confirmed are separate.** A running session high or an
+   unfinished candle is never presented as a confirmed fact.
 
-Also inherited from V2 and still binding: **Python computes, Qwen judges** —
-deterministic code measures structure, regime and geometry; Qwen supplies
-contextual judgement on top of it; the model is one component, not the system.
+Plus: **Python computes, the model judges.** Deterministic code measures
+structure; a model (Qwen, later) adds judgement on top, never the other way.
 
-### A4. Non-negotiable invariants (live system)
+### A3. How changes are made
 
-- Historical research and MT5 **demo/paper only**. The executor refuses non-demo accounts.
-- One Qwen position at a time. No baskets, add-ons, averaging or reversal.
-- Entry and management have separate contracts.
-- MT5 facts and code-owned levels are authoritative over model text.
-- Completed and forming candles never share evidence semantics.
-- No cached decision is reused for another snapshot.
-- No fixed-dollar target, no time-only close, no exit because of small P&L.
-- The broker safety stop stays independent of model availability.
-- Every mutating management action requires deterministic validation.
-- Current live price is rechecked after model inference.
-- Recent wins/losses never decide the next direction (see PHC-003).
-- Learning and doctrine changes require evidence and human review.
-- Source, deployed hashes, model digest, prompt version, config hash and cache
-  epochs must be traceable for every decision.
-
-**Directional-bias invariant.** Each opportunity has one conclusion: `buy`,
-`sell` or `wait`. Qwen may weigh both sides but must not output a two-sided
-trade. Bias is hierarchical: the owning timeframe defines the thesis; a
-counter-move on M15/M5/M1 may be the pullback into its zone, and becomes a
-contradiction only after accepted failure of the named invalidation on its
-owning timeframe. `wait` is valid when location or closed-candle validation is absent.
-
-### A5. Proven-harmful changes — do not reintroduce
-
-Changes that looked safer but were shown by replay or demo evidence to do
-harm. Renaming one, moving it to another layer or expressing it in a prompt is
-still reintroduction. Reopening needs preregistered evidence and explicit
-human approval.
-
-| ID | Rejected behaviour | Why it is harmful | Safe replacement |
-|---|---|---|---|
-| PHC-001 | After Qwen returns, require M1/M5 epochs or named-level IDs/prices to be **exactly** unchanged | CPU inference takes minutes; low-timeframe levels always rotate, so exact equality becomes a near-universal no-trade rule (proposal `paper-20260805T055843-3f41f811`, removed in `05c3fb7`) | Recheck stable structural/playbook epochs, cache readiness, session, model digest, live tick, entry-zone eligibility and the 60-s lifetime. A real H1/H4 structural change during inference **must** still expire the proposal (`paper-20260805T060621-c8536c12`) |
-| PHC-002 | Every ready entry must cite **both** an M1 and an M5 candle | Citations list the facts actually used; a valid D1–M15 thesis closed +1403.70 without M1/M5 (`paper-20260805T021044-08c9dcd7`) | Citations must be non-empty and a subset of cache-owned evidence IDs |
-| PHC-003 | Recent profit/loss as a direction or entry gate | Recency bias; non-reproducible decisions; P&L overrides closed market facts | Outcomes only in the separate research loop |
-
-Companion controls that must remain whatever is relaxed: ready entries need
-confidence 51–100 (coherence, not a profit promise); missing confidence is 0;
-bias must be explicit and agree with plan side; citations non-empty and
-cache-owned; readiness, UTC session/date, structural context and model
-identity rechecked before entry; executor rechecks demo mode, current tick,
-live entry range, geometry, one-position ownership and the 60-second deadline.
-
-New register entries use: *pattern ID, status, rejected behaviour, evidence IDs
-and version boundary, mechanism, safe replacement, protected counter-case,
-regression invariant, reopening criteria, human approval.* One loss or one win
-is never enough to add an entry.
-
-### A6. How changes are made
-
-**Before editing code, answer:** which module/stage owns the problem? Is it
-fact, interpretation, decision, validation, execution or learning? What exact
-evidence reproduces it? Engineering or strategy? Which invariant could break?
-Which deterministic test fails before and passes after? Can it deploy with zero
-open positions? What result would falsify the claim? Does A5 reject it?
-If these cannot be answered, keep diagnosing; do not improvise a trading rule.
-
-**Engineering gate** (a repair): the reproduction now passes; all tests pass;
-no unrelated invariant changes; restart behaves like uninterrupted running;
-malformed/stale input fails closed; source and deployed hashes match. If entry
-or exit counts change, it is strategy work, not a repair.
-
-**Strategy gate** (a behaviour change), with a human checkpoint at each step:
-evidence approval → one falsifiable hypothesis with one independent variable →
-offline replay and untouched walk-forward → frozen demo-account test → promote,
-retain or reject. Duration gates: one session = plumbing only; one 40-event
-block = may generate a hypothesis; three non-overlapping 40-event blocks with
-the frozen version = confirmation; ≥20 trading days and ≥200 decisions = paper
-soak. Pass only with positive untouched broker-net expectancy not dependent on
-one trade or day, robustness to costs, and broker/ledger reconciliation. A
-failed primary metric rejects the hypothesis; it is not reworded afterwards.
-
-**Rules of engagement:** one piece at a time; foundation (log-only) before
-behaviour; closed candles only; log everything; measure against the frozen
-baseline and revert if worse.
+Before editing: which module owns the problem, what exact evidence
+reproduces it, which rule or test could break, which deterministic test fails
+before and passes after, what would falsify the claim. A detector change is
+made by a **new config version** where possible (`xauusd_structure_v2.json`)
+and must keep `python -m pytest` green (engine + application tests) plus the
+no-repaint, determinism and audit checks on real data. Comment code for the
+next reader: a header per file (what it does, what feeds it, what it outputs)
+and a "why" next to every threshold and tricky branch.
 
 ---
 
 ## Part B — Module 1: the Market Structure Engine
 
-Package: `apps/qwen_trade_software/backend/structure_engine/` — standard
-library only, Python 3.10+. Status: **built, verified on synthetic ground
-truth, and run end to end on real XAUUSD M1 history (B3b).** It is not yet
-wired into the Qwen decision path. The system trades only an MT5 demo
-account, so no shadow lane is needed: experiments run on recorded data, and
-`live` mode simply runs the same engine on MT5 bars and writes events.
+Package: `backend/structure_engine/` — standard library only, Python 3.10+. Status: **built, verified on synthetic ground
+truth, and run end to end on real XAUUSD M1 history (B3b).** The
+application (Part C) runs it live on MT5 bars and shows every marking on the
+website. There is no Qwen and no trading in the codebase now.
 
 ### B1. What it does
 
@@ -236,7 +135,7 @@ file's header comment.
 | Fair value gap | M5–H4 | 3-candle gap ≥ 0.25 ATR; OPEN → MITIGATED (touched) → FILLED / EXPIRED | `fvg.py` |
 | Order block | M15–H4 | on BOS/CHoCH: last opposite candle at or before the leg origin, leg must contain displacement; FRESH → TESTED → BROKEN / EXPIRED | `order_blocks.py` |
 | Range | M15, H1 | last 20 candles within 3 ATR, top and bottom each touched ≥ 3 times; edges become liquidity pools; ends with a close beyond an edge | `ranges.py` |
-| Close spikes | H1, H4 closes | the larger M1 move in the last 10 minutes before the close is ≥ 0.75 × H1 ATR (optional dollar floor); context: held vs rejected close, previous-candle sweep, session/prior-day levels swept (last 24 h), zone hit, H4 swing trend, volume ratio, session; outcome after 15/60/240 min: reversal (back beyond the spike start), continuation (beyond the extreme) or partial | `spikes.py`, `studies/close_spikes.py` |
+| Close spikes | H1, H4 closes | the larger M1 move in the last 10 minutes before the close is ≥ 0.75 × H1 ATR (optional dollar floor); context: held vs rejected close, previous-candle sweep, session/prior-day levels swept (last 24 h), zone hit, H4 swing trend, volume ratio, session; outcome after 15/60/240 min: reversal (back beyond the spike start), continuation (beyond the extreme) or partial | `spikes.py` |
 
 Every threshold above is a key in `config/xauusd_structure_v1.json`; the
 numbers here are the shipped values, not code constants.
@@ -337,7 +236,7 @@ chart" limit; raise it to Unlimited before exporting more history.
   60 min only 7 % of the time; spikes that left a **rejection** wick reversed
   36 % (n = 28, still an anecdote). Most groups are under 30 events — the
   10-year export is needed before any of these are rates.
-* First visual review (M5/M15 charts from `review.py`, judged by Claude, not
+* First visual review (M5/M15 review charts — tool since replaced by the website — judged by Claude, not
   yet spot-checked by the owner):
   - swings and HH/HL/LH/LL labels match the charts; on M5, strength 2 marks
     every minor wiggle (consider 3 in a v2 config);
@@ -350,10 +249,10 @@ chart" limit; raise it to Unlimited before exporting more history.
   but their candles start at 00/04/08 UTC — they are UTC-aligned, not the NY
   grid above. Do not use them as H4 truth.
 
-Artifacts of this run (not committed, git-ignored): `_archive/structure_runs/real_2026-04_08/`
-— `events.jsonl`, `summary.json`, `close_spike_study.txt/json`,
-`close_spikes.csv`, and `review_m15/` + `review_m5/` (open `index.html`, judge
-rows in `review_template.csv`).
+Artifacts of these runs (not committed): `_archive/structure_runs/` on the
+trading PC (events, summaries, review chart packs, audit). The review-chart
+and study tools that produced them were removed in the clean-up; the live
+website (Part C) now shows the same markings.
 
 ### B4. How accuracy is verified
 
@@ -378,137 +277,66 @@ rows in `review_template.csv`).
 Metrics: precision, recall, F1, time and price error, false-alert rate, early
 detection time, completion and invalidation rates, multi-timeframe consistency.
 
-### B5. Two experiments on identical data
+### B5. Kronos and XGBoost (evaluated, not in the codebase)
 
-| | A — Deterministic | B — Kronos-enhanced |
-|---|---|---|
-| Detectors | rule-based, closed candles | the same detectors, unchanged |
-| Extra | — | Kronos forecasts 2–3 candles (M1/M5/M15); detectors run on the forecast paths |
-| Output | confirmed and forming structure | plus *scenario frequency* (% of paths), emitted under its own `scenario_*` event kinds, never mixed with confirmed events |
-| Timeframes | M1–H4 | Kronos generates **M1, M30, H1 and H4** candles, each from its own history (the relationships between them are what we study) |
-| Status | **running on real data now** | designed, not built yet |
-
-Kronos enhances detection, never replaces the definitions. Scenario frequency
-is not a probability until calibrated on out-of-sample data.
-
-Design for B (agreed 2026-10-31):
-
-* Kronos (`NeoQuasar/Kronos-small` / `-base`, context 512, PyTorch, GPU) runs
-  in its own package and Python environment; Module 1 stays standard-library.
-  Distinct paths come from `predict_batch` on N copies of the context with
-  `sample_count=1` (the `sample_count` argument averages, it does not return paths).
-* Forecasts per timeframe: M1, M30, H1, H4, each 2–3 candles ahead from its
-  own closed-candle history. Independent forecasts will not add up
-  (three M1 hours ≠ the forecast H1); that disagreement is measured, not forced.
-* Scored against what actually happened: direction hit rate, interval
-  coverage, sample-based CRPS, level-touch Brier score, cross-timeframe
-  agreement, and — for close spikes — P(reversal) Brier score against the
-  running base rate from the spike study. Kronos earns a place only by beating
-  a no-skill bootstrap forecaster and those base rates.
-* Higher timeframe drives, lower timeframe signals or manipulates: measured
-  through close spikes (B2) and, next, lower-timeframe breaks that come before
-  the higher-timeframe confirmation (lead time in minutes).
-
-#### B5a. The comparison lab (`backend/research_lab/`, built 2026-10-31)
-
-Three stages, so the expensive Kronos part runs once on the trading PC and
-everything else runs anywhere:
-
-| Stage | Command (from `apps/qwen_trade_software/backend`) | Where |
-|---|---|---|
-| 0 dataset | `python -m research_lab.dataset --m1 <M1 folder> --out lab_runs/real` | anywhere, seconds |
-| 1 forecasts | `python -m research_lab.forecast --m1 <M1 folder> --decisions lab_runs/real/decisions.jsonl --forecaster kronos --device dml --kronos-repo C:\Kronos --out lab_runs/real/forecasts_kronos.jsonl` (resumable; `--limit 50` to test) | trading PC, `kronos-dml` env |
-| 1b yardstick | same with `--forecaster bootstrap --out .../forecasts_bootstrap.jsonl` | anywhere, seconds |
-| 2 compare | `python -m research_lab.compare --decisions lab_runs/real/decisions.jsonl --forecasts kronos=... --forecasts bootstrap=... --out lab_runs/real/report.json` | anywhere |
-
-* Decision points: every H1 close (1,530 in the 3.3 months of data).
-* Without Kronos = 63 deterministic structure features (trend/BOS/CHoCH per
-  timeframe, protected-level distance, liquidity above/below and what just
-  happened there, FVG/OB/zone distances, ranges, session, momentum, spike).
-* With Kronos = the same plus Kronos path summaries on M1, M30, H1, H4.
-* Labels: direction after 1 h and 4 h; ±1 ATR(H1) first-touch within 4 h;
-  spike reversal after 60 min. Walk-forward; training only on labels already
-  known; paired bootstrap of the Brier difference decides "better".
-* Contenders: base rate, each forecaster alone, XGBoost on structure,
-  XGBoost on structure + Kronos, XGBoost on structure + bootstrap (control).
-
-**First result (3.3 months, bootstrap only — Kronos not yet run):** nothing
-beat the base rate. XGBoost on structure features was *worse* than the base
-rate (Brier skill −6 % to −14 %): ~600 training rows and 63 features are too
-few, so it learns noise. This is the expected small-sample outcome, not a
-verdict on the features; the 10-year export (~60,000 H1 decisions) is needed
-before any model comparison means something.
-
-**Where XGBoost belongs (recommendation):** not in detection — structure
-definitions stay deterministic and reviewable. Its place is a calibrated,
-walk-forward *meta-model* that turns the structure snapshot (and, if it
-earns it, Kronos features) into probabilities for well-defined outcomes,
-plus an ablation tool: with vs without Kronos, with a bootstrap control.
-Keep it shallow (depth 3), few features, retrained on known labels only, and
-accept it only if it beats the base rate out of sample with a clear interval.
+On 2026-10-31 a comparison lab tested structure-only vs structure + Kronos vs
+XGBoost on top (walk-forward, Brier score, bootstrap control). On 3.3 months
+of data nothing beat the historical base rate and XGBoost overfitted. The
+owner chose to go **without Kronos**; Kronos would come back only if it
+clearly beats structure-only and a random-forecast control on the full
+multi-year history. The lab code is in git history (tag
+`pre-clean-2026-10-31`, `apps/qwen_trade_software/backend/research_lab/`).
+Recommended role for XGBoost if revived: a shallow, walk-forward meta-model
+turning the structure snapshot into calibrated probabilities — never part of
+detection.
 
 ### B6. Layout
 
 ```
-structure_engine/
+backend/structure_engine/
   config/xauusd_structure_v1.json   every threshold (strictly validated)
   config.py        strict loader, schema, config hash
   bars.py          Bar model, CSV/TSV/JSONL/MT5-export loader, M1 -> M5..H4 aggregation
+  clock.py         candle grids: UTC, the New York H4 grid, the trading week
   atr.py           streaming Wilder ATR
   events.py        Event record, deterministic ids, stream fingerprint
   swings.py        causal swings
-  zones.py         supply/demand zones + lifecycle
-  sessions.py      session / prior-day levels (forming vs confirmed)
-  patterns.py      M1 double/triple tops & bottoms
-  scoring.py       zone ranking (top N)
-  clock.py         candle grids: UTC, and the New York H4 grid (US DST built in)
-  spikes.py        close spikes into H1/H4 closes + outcome labels
-  displacement.py  strong-candle test (building block)
   trend.py         trend state, BOS, CHoCH
-  liquidity.py     liquidity pools; sweeps, false breaks, accepted breaks; equal highs/lows
+  displacement.py  strong-candle test
+  liquidity.py     liquidity pools; sweeps, failed sweeps, false and accepted breaks; equal highs/lows
   fvg.py           fair value gaps + lifecycle
   order_blocks.py  order blocks + lifecycle
   ranges.py        consolidation ranges
+  zones.py         supply/demand zones + lifecycle
+  scoring.py       zone ranking (top N)
+  sessions.py      session / day / week levels (forming vs confirmed)
+  patterns.py      M1 double/triple tops & bottoms
+  spikes.py        close spikes into H1/H4 closes + outcome labels
   engine.py        the single streaming engine (live == test)
-  feeds.py         RecordedFeed, MT5Feed, MT5 history export
-  runner.py        CLI: backtest | live | export (files or whole folders)
-  review.py        point-in-time review charts (HTML/SVG) + review template
-  studies/         close_spikes.py: base rates from a back-test's events
-  verification/    synthetic.py, reference.py, matching.py, causality.py, synthetic_accuracy.py,
-                   audit.py (independent re-check of every event against raw candles)
-  tests/           pytest suite (42 tests)
+  feeds.py         RecordedFeed (files / folders of M1 bars)
+  runner.py        back-test CLI
+  verification/    synthetic.py, reference.py, matching.py, causality.py,
+                   synthetic_accuracy.py, audit.py
+  tests/           pytest suite
 ```
 
-### B7. Run it
-
-From `apps/qwen_trade_software/backend`:
+### B7. Run it (from `backend/`)
 
 ```bash
-python -m structure_engine.verification.synthetic_accuracy --seeds 5      # accuracy report
-python -m pytest structure_engine/tests -q                                # test suite
-
-python -m structure_engine.runner export   --from 2016-01-01 --out data/XAUUSD_M1.csv   # needs MT5 (Part D)
-python -m structure_engine.runner backtest --m1 data/XAUUSD_M1.csv --out runs/bt
-python -m structure_engine.runner backtest --m1 data/XAUUSD_M1.csv --from 2024-01-01 --to 2024-02-01 --snapshot-every 60
-python -m structure_engine.runner live     --out runs/live                # same engine on MT5 bars; writes events, places no orders
-python -m structure_engine.runner backtest --m1 ../../../model_training/datasets/raw/candles/XAUUSDr/M1 --out runs/real
-python -m structure_engine.studies.close_spikes runs/real/events.jsonl --json runs/real/spikes.json --csv runs/real/spikes.csv
-python -m structure_engine.review --m1 ../../../model_training/datasets/raw/candles/XAUUSDr/M1 --out runs/review --samples 16 --tf M15
-python -m structure_engine.review --m1 <M1 folder> --out runs/review_trend --tf M15 --layers swings,trend,ob   # one structure family at a time
-#   layers: swings, levels, zones, patterns, spikes, trend, liquidity, eq, fvg, ob, ranges
-python -m structure_engine.verification.audit --m1 <M1 folder> --events runs/real/events.jsonl   # independent numeric re-check
+python -m pytest structure_engine/tests -q                                   # engine tests
+python -m structure_engine.verification.synthetic_accuracy --seeds 5          # planted-structure accuracy
+python -m structure_engine.runner --m1 <M1 folder or files> --out runs/bt      # back-test to files
+python -m structure_engine.verification.audit --m1 <M1 folder> --events runs/bt/events.jsonl   # independent re-check
 ```
 
-Back-test output folder: `events.jsonl`, `snapshots.jsonl`, `final_snapshot.json`,
-`summary.json` (bars, time range, gaps, event counts, config hash, speed).
-Speed is about 40,000 M1 bars/second, so ten years (~3.6 M bars) take roughly
-1.5 minutes. Files exported by MT5's own "Export Bars" are in broker time:
-add `--broker-time`.
+About 22,000 M1 bars per second with the full structure layer: ten years
+(~3.6 M bars) replay in under 3 minutes.
 
 ### B8. Next steps
 
-1. Raise MT5 "Max bars in chart" to Unlimited, export the full XAUUSD M1
-   history (`runner export`) and rerun the back-test, spike study and review.
+1. Load the full XAUUSD M1 history into the database
+   (`python -m quantllm import-mt5 --from 2016-01-01`), then review the
+   markings on the website.
 2. Point-in-time review on real data (B4 steps 4–5); tune thresholds only
    through new config versions (`xauusd_structure_v2.json`), never in code.
 3. Done 2026-10-31: BOS/CHoCH, equal highs/lows, liquidity sweeps, false and
@@ -516,84 +344,231 @@ add `--broker-time`.
    levels. Still open: head and shoulders, candle patterns, VWAP, channels.
    External libraries (smartmoneyconcepts, TA-Lib, SciPy) only as reference
    checks, and only after passing the no-repaint test.
-4. Experiment B: Kronos forecasts on M1, M30, H1 and H4 on the same
-   back-test data, compared against A (B5).
-5. Modules 2 and 3 consume Module 1 events; old `goldflow/structure`
-   detectors are retired one by one after a back-test comparison.
+4. Rebuild Qwen (Module 2) from scratch on top of the structure snapshot,
+   then risk/execution (Module 3).
 
 ### B9. Roadmap — Module 1 first
 
 Owner's rule (2026-10-31): **market structure must be right and trusted
-before anything else is built on it.** Kronos (B5), Qwen decisions (Module 2)
-and risk (Module 3) wait for the gate below.
+before anything else is built on it.**
 
-1. **Data:** export the full XAUUSD M1 history (MT5 max bars = unlimited).
-2. **Review on real gold:** per-layer review packs (trend, liquidity, FVG,
-   order blocks, ranges/equal levels, zones, patterns); Claude marks every
-   detection correct / wrong / missed; the owner re-checks 10–20 %.
-3. **Tune by config only:** a new `xauusd_structure_v2.json`; rerun the tests
-   and the review; repeat until the gate passes.
-4. **Gate:** the owner accepts the reviewed precision/recall per structure;
-   no-repaint, determinism and invariants pass on the full history.
-5. Then: Kronos experiment B → Module 2 (Qwen reads the structure snapshot)
-   → Module 3 (simulated broker for tests, MT5 demo live) → demo soak (A6).
+1. **Data:** load the full XAUUSD M1 history into the database
+   (`python -m quantllm import-mt5 --from 2016-01-01`).
+2. **Review on the website:** check every structure family on real charts
+   (timeframes M1–H4, one layer at a time); note what is wrong or missed.
+3. **Tune by config only:** a new `xauusd_structure_v2.json`; rerun the tests,
+   the audit and the review; repeat until the gate passes.
+4. **Gate:** the owner accepts the structure; no-repaint, determinism and the
+   independent audit pass on the full history.
+5. Then: Qwen rebuilt from scratch (Module 2, reads the structure snapshot) →
+   Module 3 (simulated broker for tests, MT5 demo live) → demo soak.
 
 ---
 
-## Part C — The live system today (decision + risk)
+---
 
-### C1. Code layout
+## Part C — The application
 
-All live logic is the `goldflow` package in `apps/qwen_trade_software/backend/`.
-Runtime state, logs, caches and data files stay in `backend/` itself
-(`goldflow.core.paths.APP_DIR`), so moving code never moves data.
+```
+MT5 terminal ──closed M1──► quantllm service ──► PostgreSQL/TimescaleDB (schema "structure")
+   (history + live)            │  StructureEngine (Part B), same code as tests
+                               └─ HTTP :8765 ──► website (web/, served by the service)
+```
 
-| Package | Responsibility |
+### C1. Code
+
+```
+Start-QuantLLM.bat          one-click start (repository root)
+requirements.txt            backend Python packages (psycopg, MetaTrader5, pytest)
+backend/
+  structure_engine/         Part B
+  quantllm/
+    settings.py             database / API / history settings (config/app.json + environment)
+    mt5_connection.py       the one MT5 module (Part D)
+    database.py             tables, idempotent candle import, event store
+    market_feed.py          MT5 history, MT5 live polling (closed bars only), CSV files
+    overlays.py             engine events -> chart drawings
+    service.py              the running service + HTTP API + website files
+    __main__.py             CLI: serve | check | import-csv | import-mt5
+    tests/                  database, fake-MT5 polling, service + API tests
+  config/                   mt5_connection.example.json, app.example.json
+web/                        Next.js website (static export, built once)
+  src/app/page.tsx          status bar, timeframe + layer switches, chart, side panel
+  src/components/StructureChart.tsx   candles + every marking
+  src/components/SidePanel.tsx        what the engine thinks right now
+  src/lib/api.ts            API client and types
+```
+
+### C2. Database (your existing PostgreSQL / TimescaleDB)
+
+Connection string in the environment variable `QUANTLLM_DB_DSN` (the
+existing `QWEN_TIMESCALE_DSN` also works). Schema `structure` (change with
+`QUANTLLM_DB_SCHEMA`); the old `fallback_positive` schema is not touched.
+
+| Table | Content |
 |---|---|
-| `goldflow/core/` | config (`runtime_config`, `instrument_config`), `paths`, `mt5_connection`, logging, TimescaleDB access, build manifest, tick archive, candle clock, configuration ledger |
-| `goldflow/market/` | candle/context cache (`market_context_cache`), market runtime, ATR, news blackout, memory worker, qualification gate |
-| `goldflow/intelligence/` | persistent market-intelligence event ledger, projections, retrieval broker, DXY |
-| `goldflow/structure/` | current live detectors: structure, FVG, order blocks, liquidity, OTE, zones, qualified/mapped levels, shadow providers |
-| `goldflow/regime/` | regime engine and regime policy |
-| `goldflow/planning/` | session planner, plan branches/ladder, idea lifecycle, approach tracker |
-| `goldflow/decision/` | entry Qwen reviewer + dashboard API, prompt composer, entry policy/safety/gates, trade geometry |
-| `goldflow/execution/` | paper runner and MT5 demo executor |
-| `goldflow/management/` | trade manager, trade management loop, management policy, profit protection |
-| `goldflow/runtime/` | `software_runtime` process supervisor |
+| `m1_candles` | every CLOSED M1 bar: symbol, time (UTC open), OHLC, tick volume; primary key (symbol, time); a hypertable when TimescaleDB is installed |
+| `events` | every structure event of the current engine run (id, kind, timeframe, time, available_at, config hash, data as JSONB); rebuilt at each start so it always matches the running engine |
+| `service_state` | small facts such as the last replay window and config hash |
 
-`backend/*.py` files (`reviewer.py`, `paper_runner.py`, `software_runtime.py`,
-`market_context_cache.py`, `market_memory_worker.py`, `session_planner.py`,
-`trade_management.py`, `profit_protection.py`, `paper_executor.py`,
-`cache_qualification_gate.py`) are **launch shims**: kept at their historical
-paths so the supervisor, `.ps1` scripts and scheduled tasks work unchanged.
-Each only runs `goldflow.<package>.<module>` as `__main__`. Never put logic in a
-shim. Inside the package import absolutely: `from goldflow.core import runtime_config`.
-`backend/tools/` holds operator scripts; `backend/tests/` the live-code tests;
-`planview/` the Next.js UI.
+Higher timeframes are never stored: the engine rebuilds them from M1 the
+same way every time (H4 on the New York grid).
 
-### C2. Processes
+### C3. The service — `python -m quantllm serve` (from `backend/`)
 
-`software_runtime.py` is the single startup and supervision entry point
-(launched at Windows login by `backend/start-reviewer.ps1`). It starts MT5 and
-Ollama if needed, verifies the website, and supervises these children:
+1. API and website up at once on http://127.0.0.1:8765/.
+2. **History:** copies every closed M1 bar the database is missing from MT5,
+   back to `history_days` (default 365).
+3. **Replay:** pushes the last `replay_days` (default 60) of stored bars
+   through a fresh engine and rebuilds the `events` table (progress shown on
+   the website).
+4. **Live:** every 2 s, new closed M1 bars from MT5 are stored and pushed
+   through the same engine. Without MT5 the service keeps running on stored
+   data and retries every 30 s. `--no-mt5` runs from the database only.
 
-| Process | Role |
-|---|---|
-| `market_context_cache.py` | TimescaleDB candle/context hierarchy, compact minute packet, deterministic/Qwen qualification gates, readiness manifest. Its ready packet is the mandatory provenance source for entry Qwen. Never places orders. |
-| `market_memory_worker.py` | feeds the market-intelligence event ledger |
-| `reviewer.py` | builds MT5 snapshots, requests entry decisions from Qwen, records proposals, serves the dashboard API on :48632 |
-| `session_planner.py` | day plan, session plans, hourly updates, session verdicts (`planner-state.json`) |
-| `paper_runner.py` | consumes only fresh validated proposals; process-wide singleton lock |
-| `trade_management.py`, `profit_protection.py` | manage the open position (split out of the reviewer) |
+Other commands: `python -m quantllm check` (database + MT5),
+`python -m quantllm import-csv <files or folders>` (load existing M1 CSVs,
+e.g. `model_training/datasets/raw/candles/XAUUSDr/M1`),
+`python -m quantllm import-mt5 --from 2016-01-01` (full history; set MT5
+Tools → Options → Charts → Max bars in chart to Unlimited first).
+Optional settings: copy `backend/config/app.example.json` to `app.json`.
 
-Dashboard API (`reviewer`, port 48632): `GET /snapshot`, `POST /deal-sheet`,
-`GET /plan`, `GET /candles?tf=M15&count=200`, `GET /plan/history?date=YYYY-MM-DD`.
-`QWEN_PLAN_GATING=1` gates entries against the validated session plan (off by default).
-UI: `planview/` (dev `npm run dev` :3000; deployed to IIS :8088 and :80 by
-`backend/install-planview-iis.ps1`). Deployed backend:
-`C:\Users\HP\AppData\Local\QwenTradeReviewer`; website `C:\inetpub\GoldFlowPlanView`.
+API (JSON): `GET /api/health` (state, progress, last bar, counts),
+`GET /api/chart?tf=M15&bars=300` (closed candles, forming candle, overlays:
+BOS/CHoCH lines, zone/OB/FVG/range boxes with life spans, liquidity / spike /
+pattern markers, session levels, swings), `GET /api/snapshot` (trend per
+timeframe, liquidity pools and recent liquidity events, zones, order blocks,
+gaps, sessions, pending patterns).
 
-### C3. The four-phase trading lifecycle
+### C4. The website
+
+One page at http://127.0.0.1:8765/: status (live / importing / replaying /
+offline, MT5 and database state), timeframe buttons M1–H4, layer switches
+(BOS/CHoCH, liquidity, zones, order blocks, FVG, ranges, session levels,
+swings, spikes & patterns), the chart with every marking, and a side panel:
+trend per timeframe with the protected level, what just happened at
+liquidity, nearest pools, ranked zones, order blocks and gaps near price,
+session ranges. It refreshes every 5 seconds. Everything drawn comes from
+`/api/chart`, so the page can never show something the engine did not say.
+Development: `cd web && npm run dev` with `NEXT_PUBLIC_API_BASE=http://127.0.0.1:8765`.
+
+### C5. Start and test
+
+* Start: double-click `Start-QuantLLM.bat`. It checks the database variable,
+  installs missing Python packages, builds the website once (needs Node.js),
+  opens the browser and runs the service.
+* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests -q`.
+  The database tests use `QUANTLLM_TEST_DSN` (schema `quantllm_test`) or the
+  `pgserver` package; they never touch the real schema.
+* Verified 2026-10-31 on 100,000 real XAUUSD M1 bars in PostgreSQL 16:
+  CSV import 1.3 s (re-import adds 0), replay 5 s, 47,662 events stored once
+  each, API and website files served, overlays snapped onto real candles.
+
+---
+
+## Part D — MT5 connection
+
+The application reaches MT5 through **one** module,
+`backend/quantllm/mt5_connection.py`, configured by **one** file.
+
+1. Copy `backend/config/mt5_connection.example.json` to
+   `backend/config/mt5_connection.json` (git-ignored, per machine).
+2. Edit the properties:
+
+| Key | Meaning | Default |
+|---|---|---|
+| `terminal_path` | full path to `terminal64.exe` of the MT5 install to use | `C:\Program Files\MetaTrader 5\terminal64.exe` |
+| `login` | account number to pin (`null` = whatever the terminal is logged into) | `null` |
+| `server` | broker server name exactly as in MT5's login dialog | `null` |
+| `password_env` | **name** of the environment variable holding the password | `QWEN_MT5_PASSWORD` |
+| `timeout_ms` | how long MT5 may take to start/attach | `60000` |
+| `portable` | MT5 portable mode | `false` |
+| `fallback_attach_any` | if attaching at the path fails, attach to any running terminal (only when no `login` is pinned) | `true` |
+| `require_demo` | refuse non-demo accounts in `ensure_demo()` | `true` |
+| `broker_symbol` | the broker's exact gold symbol (XAUUSD, XAUUSDr, XAUUSD.m, GOLD…) | `XAUUSDr` |
+| `server_time` | broker clock for bar times: `"ny_close"` (UTC+2 winter / UTC+3 US summer), `"utc"`, or a fixed number of hours | `"ny_close"` |
+
+3. The password is **never** written in the file or git. To log in from
+   Python, set it in the environment (`setx QWEN_MT5_PASSWORD "..."` on
+   Windows, then open a new terminal). Leave it unset to use the terminal's
+   saved login, which is how the system has always run.
+4. One-off overrides without editing the file: `QWEN_MT5_TERMINAL`,
+   `QWEN_MT5_LOGIN`, `QWEN_MT5_SERVER`, `QWEN_MT5_SYMBOL`.
+5. Check the connection: `python -m quantllm.mt5_connection` (or
+   `python -m quantllm check`) from `backend/` prints the effective settings
+   (no password), connects, and reports login, server, demo status and
+   whether the symbol exists.
+
+Unknown keys, or a `password` key, make loading fail, so a typo cannot
+silently connect to the wrong account. With a pinned `login`, a connection to
+any other account is refused. The application only reads market data; it
+places no orders.
+
+---
+
+---
+
+## Part E — Rebuilding Qwen: lessons and recovery
+
+Everything removed on 2026-10-31 is in git: tag **`pre-clean-2026-10-31`**
+(`git show pre-clean-2026-10-31:<path>`, or check it out on a separate
+branch). That includes the old live system (`apps/qwen_trade_software/`),
+training curriculum and utilities (`model_training/`), the Colab pipeline
+(`scripts/`), the trading doctrine (`store/core_skill.md`, `store/sop.md`),
+the comparison lab and all former documents.
+
+Lessons from the old system that a rebuild should keep:
+
+### E1. Invariants that protected the old live system
+
+- Historical research and MT5 **demo/paper only**. The executor refuses non-demo accounts.
+- One Qwen position at a time. No baskets, add-ons, averaging or reversal.
+- Entry and management have separate contracts.
+- MT5 facts and code-owned levels are authoritative over model text.
+- Completed and forming candles never share evidence semantics.
+- No cached decision is reused for another snapshot.
+- No fixed-dollar target, no time-only close, no exit because of small P&L.
+- The broker safety stop stays independent of model availability.
+- Every mutating management action requires deterministic validation.
+- Current live price is rechecked after model inference.
+- Recent wins/losses never decide the next direction (see PHC-003).
+- Learning and doctrine changes require evidence and human review.
+- Source, deployed hashes, model digest, prompt version, config hash and cache
+  epochs must be traceable for every decision.
+
+**Directional-bias invariant.** Each opportunity has one conclusion: `buy`,
+`sell` or `wait`. Qwen may weigh both sides but must not output a two-sided
+trade. Bias is hierarchical: the owning timeframe defines the thesis; a
+counter-move on M15/M5/M1 may be the pullback into its zone, and becomes a
+contradiction only after accepted failure of the named invalidation on its
+owning timeframe. `wait` is valid when location or closed-candle validation is absent.
+
+### E2. Proven-harmful changes — do not reintroduce
+
+Changes that looked safer but were shown by replay or demo evidence to do
+harm. Renaming one, moving it to another layer or expressing it in a prompt is
+still reintroduction. Reopening needs preregistered evidence and explicit
+human approval.
+
+| ID | Rejected behaviour | Why it is harmful | Safe replacement |
+|---|---|---|---|
+| PHC-001 | After Qwen returns, require M1/M5 epochs or named-level IDs/prices to be **exactly** unchanged | CPU inference takes minutes; low-timeframe levels always rotate, so exact equality becomes a near-universal no-trade rule (proposal `paper-20260805T055843-3f41f811`, removed in `05c3fb7`) | Recheck stable structural/playbook epochs, cache readiness, session, model digest, live tick, entry-zone eligibility and the 60-s lifetime. A real H1/H4 structural change during inference **must** still expire the proposal (`paper-20260805T060621-c8536c12`) |
+| PHC-002 | Every ready entry must cite **both** an M1 and an M5 candle | Citations list the facts actually used; a valid D1–M15 thesis closed +1403.70 without M1/M5 (`paper-20260805T021044-08c9dcd7`) | Citations must be non-empty and a subset of cache-owned evidence IDs |
+| PHC-003 | Recent profit/loss as a direction or entry gate | Recency bias; non-reproducible decisions; P&L overrides closed market facts | Outcomes only in the separate research loop |
+
+Companion controls that must remain whatever is relaxed: ready entries need
+confidence 51–100 (coherence, not a profit promise); missing confidence is 0;
+bias must be explicit and agree with plan side; citations non-empty and
+cache-owned; readiness, UTC session/date, structural context and model
+identity rechecked before entry; executor rechecks demo mode, current tick,
+live entry range, geometry, one-position ownership and the 60-second deadline.
+
+New register entries use: *pattern ID, status, rejected behaviour, evidence IDs
+and version boundary, mechanism, safe replacement, protected counter-case,
+regression invariant, reopening criteria, human approval.* One loss or one win
+is never enough to add an entry.
+
+### E3. The four-phase trading lifecycle (old design, for reference)
 
 Phases are sequential with distinct owners; a later phase may not silently
 redo an earlier one's job.
@@ -623,7 +598,7 @@ redo an earlier one's job.
 
 The runtime, not the model, enforces every safety invariant in phases 3 and 4.
 
-### C4. Entry, execution and management rules (as implemented)
+### E4. Entry, execution and management rules of the old system
 
 - A ready entry needs confidence ≥ 51 and an explicit buy/sell bias agreeing
   with the plan side. The runner rechecks cache readiness, UTC session,
@@ -642,127 +617,6 @@ The runtime, not the model, enforces every safety invariant in phases 3 and 4.
   named levels, peak/giveback state and reached levels. A pre-model
   confirmation guard enforces a reached-level rejection or invalidation when
   completed M1 and M5 agree. P&L and elapsed time alone never confirm a close.
-
-### C5. Market intelligence and context cache
-
-Every completed XAUUSD or DXY candle used by cognition is an immutable,
-provenance-tagged event. A deterministic reducer keeps one projection per
-(symbol, timeframe) across D1…M1 — active leg, direction, transition, named
-invalidation, unresolved condition, last evidence ID, structure epoch — and
-replaying the ledger must reproduce it. The entry prompt receives a bounded
-projection plus recent deltas. DXY may calibrate confidence and patience but
-has no execution authority over gold. Qwen may request at most two
-allowlisted, read-only retrievals per decision; it never gets SQL or write
-access. Model qualification proves contract capability and never suppresses
-projection refresh when a structure epoch changes.
-
-**Storage (since 2026-09-10).** All SQL persistence uses TimescaleDB only, in
-the `fallback_positive` schema: completed/forming candles, ticks, cache
-objects, readiness, Qwen validations, latency, intelligence events,
-projections, retrieval audits. There is no SQLite fallback; a missing
-`QWEN_TIMESCALE_DSN` fails closed before trading services become ready. Local
-JSON/JSONL logs and health files remain as inspectable evidence.
-
-### C6. External structure providers (shadow only)
-
-External libraries plug into `goldflow/structure/market_structure_providers.py`
-behind one schema and run as shadow evidence only: SciPy prominence swings,
-scikit-learn DBSCAN zones, TA-Lib candles, Smart Money Concepts (live-shadow);
-SMC Toolkit, Ruptures, Statsmodels, VectorBT, Stock Indicators ZigZag
-(offline; ZigZag repaints and can never validate an entry). They live in a
-separate Python 3.12/3.13 environment (`requirements-structure.txt`) because
-the MT5 runtime uses Python 3.14. The live process writes one immutable sample
-per completed M5 candle to `structure-shadow-input-YYYY-MM-DD.jsonl`; after
-three more M5 bars both native and external calls are labelled against the
-same ATR-normalised outcome. Shadow output never reaches prompts, validators
-or execution. No provider gains authority without walk-forward evidence and a
-revision of this document.
-
-### C7. Build identity
-
-`goldflow/core/build_manifest.py` hashes every decision-path module
-(`goldflow/...` relative paths) and the runtime tunables into a `build_id`;
-`frozen-build.json` records the frozen build. Results from different build ids
-must not be pooled. **The 2026-10-31 restructure changed every path, so
-re-freeze once before the next paper run:** `python tools/freeze_build.py`.
-
----
-
-## Part D — MT5 connection
-
-Every service — the live system and the structure engine's live feed and
-export — reaches MT5 through **one** module, `goldflow/core/mt5_connection.py`,
-configured by **one** file.
-
-1. Copy `backend/config/mt5_connection.example.json` to
-   `backend/config/mt5_connection.json` (git-ignored, per machine).
-2. Edit the properties:
-
-| Key | Meaning | Default |
-|---|---|---|
-| `terminal_path` | full path to `terminal64.exe` of the MT5 install to use | `C:\Program Files\MetaTrader 5\terminal64.exe` |
-| `login` | account number to pin (`null` = whatever the terminal is logged into) | `null` |
-| `server` | broker server name exactly as in MT5's login dialog | `null` |
-| `password_env` | **name** of the environment variable holding the password | `QWEN_MT5_PASSWORD` |
-| `timeout_ms` | how long MT5 may take to start/attach | `60000` |
-| `portable` | MT5 portable mode | `false` |
-| `fallback_attach_any` | if attaching at the path fails, attach to any running terminal (only when no `login` is pinned) | `true` |
-| `require_demo` | refuse non-demo accounts in `ensure_demo()` | `true` |
-| `broker_symbol` | the broker's exact gold symbol (XAUUSD, XAUUSDr, XAUUSD.m, GOLD…) | `XAUUSDr` |
-| `server_time` | broker clock for bar times: `"ny_close"` (UTC+2 winter / UTC+3 US summer), `"utc"`, or a fixed number of hours | `"ny_close"` |
-
-3. The password is **never** written in the file or git. To log in from
-   Python, set it in the environment (`setx QWEN_MT5_PASSWORD "..."` on
-   Windows, then open a new terminal). Leave it unset to use the terminal's
-   saved login, which is how the system has always run.
-4. One-off overrides without editing the file: `QWEN_MT5_TERMINAL`,
-   `QWEN_MT5_LOGIN`, `QWEN_MT5_SERVER`, `QWEN_MT5_SYMBOL`.
-   (`QWEN_PRIMARY_SYMBOL` still overrides the analysed symbol for the live system.)
-5. Check the connection: `python -m goldflow.core.mt5_connection` from
-   `backend/` prints the effective settings (no password), connects, and
-   reports login, server, demo status and whether the symbol exists.
-
-Unknown keys, or a `password` key, make loading fail, so a typo cannot
-silently connect to the wrong account. With a pinned `login`, a connection to
-any other account is refused. Live trading code additionally refuses non-demo
-accounts.
-
----
-
-## Part E — Training
-
-The curriculum, data preparation and training process are governed only by
-`model_training/CURRICULUM_AND_DATA_PREP.md`. New curriculum/data utilities go
-only in `model_training/python_utilities_for_models/`. The Colab fine-tuning
-pipeline is `scripts/` (`00_quickstart` → `01_preprocess` → `02_finetune` →
-`03_evaluate`, `Train_Qwen14B_Colab.ipynb`, deps in `scripts/requirements.txt`);
-`QuantLLMBot_training.zip` is the tracked curriculum bundle Colab pulls.
-The live model is whatever `DEFAULT_QWEN_MODEL` names (currently
-`qwen-trading-v004:latest` in code; the former README mentioned v005 — confirm
-on the PC with `ollama list` and update the constant, not this line).
-
----
-
-## Part F — Operations
-
-All commands from `apps/qwen_trade_software/backend` unless noted.
-
-| Task | Command |
-|---|---|
-| Live-code tests | `python -m pytest tests -q` (needs `QWEN_TIMESCALE_DSN` for the DB-backed tests) |
-| Structure-engine tests | `python -m pytest structure_engine/tests -q` |
-| Structure accuracy report | `python -m structure_engine.verification.synthetic_accuracy --seeds 5` |
-| Check MT5 connection | `python -m goldflow.core.mt5_connection` |
-| Restart everything | `Restart-QwenTradeSoftware.bat` (repo root) → `backend/restart-software.ps1` |
-| Context cache self-test (offline) | `python market_context_cache.py --self-test` |
-| Cache once, no model | `python market_context_cache.py --once --no-qwen --no-minute-benchmark` |
-| Re-freeze build | `python tools/freeze_build.py` |
-| Reconcile with broker | `python tools/reconcile_broker_truth.py` |
-| Strategy report | `python tools/strategy_report.py` |
-
-Repository hygiene: scratch scripts, back-test output and archived material go
-in the git-ignored `_archive/` (or `runs/`), never the repo root. Runtime logs,
-proposal/execution history, model files, lock files and caches are not committed.
 
 ---
 
@@ -801,3 +655,9 @@ detection · P21 closed response missed by stale playbook.
 - Later still: independent audit and three fixes from cross-verification;
   `research_lab` comparison (structure vs + Kronos vs XGBoost, walk-forward),
   first run with the bootstrap yardstick (B5a).
+- **Clean slate (2026-10-31, end of day):** removed the old Qwen system,
+  training material, research lab and all other documents (tag
+  `pre-clean-2026-10-31`); added the `quantllm` application — database
+  (schema `structure`), MT5 history + live feed, service with HTTP API, the
+  website rebuilt as a live structure chart, and `Start-QuantLLM.bat`.
+

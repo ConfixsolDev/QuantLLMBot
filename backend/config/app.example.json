@@ -1,0 +1,11 @@
+{
+  "_readme": "Optional. Copy to app.json to change defaults. The database connection is NOT here: set the QUANTLLM_DB_DSN environment variable (the old QWEN_TIMESCALE_DSN also works).",
+  "db_schema": "structure",
+  "api_host": "127.0.0.1",
+  "api_port": 8765,
+  "history_days": 365,
+  "replay_days": 60,
+  "poll_seconds": 2.0,
+  "keep_bars_per_tf": 3000,
+  "keep_events": 80000
+}

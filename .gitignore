@@ -1,108 +1,30 @@
-# Local secrets
-.env
-.env.*
-!.env.example
-
-# Python-generated files
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
+.venv/
+venv/
 
-# Runtime output
+# Website build output and dependencies
+web/node_modules/
+web/.next/
+web/out/
+web/tsconfig.tsbuildinfo
+
+# Per-machine settings (templates are tracked: *.example.json)
+backend/config/mt5_connection.json
+backend/config/app.json
+.env
+.env.*
+
+# Local output and archives
+runs/
+backend/runs/
 logs/
 *.log
-
-# Local virtual environments and editor state
-.venv/
-.venvs/
-venv/
-.codex_deps/
-.agents/
-.idea/
-.vscode/
-
-# Large vendor / research data (never commit)
-MT5Tester/
-Backtests/
-Books/
-EA/
-output/
-RandDData/
-tmp/
-
-# Qwen backend runtime cache and singleton lock files (regenerated every run)
-apps/qwen_trade_software/backend/cache/
-apps/qwen_trade_software/backend/*.lock
-apps/qwen_trade_software/backend/entry-dashboard-state.json
-apps/qwen_trade_software/backend/management-dashboard-state.json
-apps/qwen_trade_software/backend/qualified-levels.json
-apps/qwen_trade_software/backend/planner-state.json
-apps/qwen_trade_software/backend/model-residency.json
-apps/qwen_trade_software/backend/_tmp_*.py
-
-# Plan View (Next.js) — source in repo; deps and build output local only
-apps/qwen_trade_software/planview/node_modules/
-apps/qwen_trade_software/planview/.next/
-apps/qwen_trade_software/planview/out/
-apps/qwen_trade_software/planview/tsconfig.tsbuildinfo
-apps/qwen_trade_software/desk/tsconfig.tsbuildinfo
-
-# Other packaged dumps (regenerated; not source). QuantLLMBot_training.zip is
-# tracked so Colab/v004 weekly trains can pull the frozen curriculum bundle.
-*.training.zip
-
-# Legacy research paths (removed from tree; keep ignored if restored locally)
-ResearchLab/store/
-ResearchLab/model_training/
-ResearchLab/TempFiles/
-ResearchLab/config.json
-ResearchLab/output/
-
-# Store runtime ledgers (local only — not loaded by live Qwen app)
-store/episodes.jsonl
-store/audit_log.jsonl
-store/_quarantine/
-# Memory JSON — tracked in git when present
-!store/knowledge_cards.json
-!store/principles_registry.json
-!store/review_queue.json
-!store/run_state.json
-
-# Model training large artifacts (keep scripts + docs in git)
-model_training/adapters/
-model_training/exports/
-model_training/outputs/
-model_training/datasets/*
-!model_training/datasets/README.md
-model_training/sources/books/*
-!model_training/sources/books/README.md
-model_training/sources/v002_recovery/*
-!model_training/sources/v002_recovery/README.md
-# Permanent ticket/trade JSONL archive (local training store; README tracked)
-model_training/tick_data/*
-!model_training/tick_data/README.md
-
-# Packaged skill exports at repo root (use TRADING_KNOWLEDGE_BASE.md instead)
-/knowledge/
-
-# Temp / helper files
-_tracked_files.txt
-
-# Local clutter (never commit): archived untracked material, scratch scripts,
-# sandboxed test temp dirs
 _archive/
 .test-tmp-*/
-_tmp_*.py
-apps/qwen_trade_software/_*.py
-demo_restart.log
-backtest_runs/
-remove/
 
-# Per-machine MT5 connection settings (template: mt5_connection.example.json)
-apps/qwen_trade_software/backend/config/mt5_connection.json
-
-# Structure-engine back-test / review output (regenerate with structure_engine.runner)
-runs/
+# Large data (kept on disk, never in git)
+model_training/
+data/
