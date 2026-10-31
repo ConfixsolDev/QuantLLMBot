@@ -8,12 +8,13 @@ import subprocess
 import time
 from pathlib import Path
 
+from goldflow.core import mt5_connection
 from goldflow.market.market_context_cache import DEFAULT_DB, latest_readiness
 
 
 from goldflow.core.paths import APP_DIR  # backend dir: state/log/data root
 PYTHON = Path(r"C:\ProgramData\Miniconda3\python.exe")
-DEFAULT_SYMBOL = "XAUUSDr"
+DEFAULT_SYMBOL = mt5_connection.settings().broker_symbol
 QUALIFICATION_TIMEOUT_SECONDS = 900
 
 

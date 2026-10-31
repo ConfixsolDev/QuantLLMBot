@@ -14,6 +14,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from goldflow.core import mt5_connection
 from goldflow.planning import plan_branches
 from goldflow.core import build_manifest
 from goldflow.core import process_logging
@@ -351,7 +352,7 @@ def live_mid_from_mt5(symbol: str = SYMBOL) -> float | None:
         import MetaTrader5 as mt5
     except ImportError:
         return None
-    if not (mt5.initialize(path=DEFAULT_TERMINAL) or mt5.initialize()):
+    if not mt5_connection.initialize(mt5):
         return None
     try:
         tick = mt5.symbol_info_tick(symbol)

@@ -100,3 +100,6 @@ apps/qwen_trade_software/_*.py
 demo_restart.log
 backtest_runs/
 remove/
+
+# Per-machine MT5 connection settings (template: mt5_connection.example.json)
+apps/qwen_trade_software/backend/config/mt5_connection.json

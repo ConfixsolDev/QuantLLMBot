@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from goldflow.core import mt5_connection
 from goldflow.core.candle_clock import candle_clock
 
 
@@ -485,7 +486,7 @@ def build_management_prompt(facts: dict, store_root: Path) -> str:
     from goldflow.decision.prompt_composer import compose_market_prompt, instrument_knowledge
 
     contract = load_prompt_section("qwen_trade_management", store_root)
-    symbol = str(facts.get("symbol") or "XAUUSDr")
+    symbol = str(facts.get("symbol") or mt5_connection.settings().broker_symbol)
     return compose_market_prompt(
         generic_contract=contract,
         symbol=symbol,
@@ -785,7 +786,7 @@ def self_test() -> dict:
     replay_facts = build_management_facts(
         {
             "ticket": 2094693268,
-            "symbol": "XAUUSDr",
+            "symbol": mt5_connection.settings().broker_symbol,
             "side": "buy",
             "volume": 0.5,
             "open_price": 4062.989,

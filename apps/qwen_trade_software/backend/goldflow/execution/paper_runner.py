@@ -11,6 +11,7 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 
+from goldflow.core import mt5_connection
 from goldflow.core import build_manifest
 from goldflow.core import process_logging
 from goldflow.execution import paper_executor
@@ -125,7 +126,7 @@ def broker_filled_today() -> int:
     now_monotonic = time.monotonic()
     if now_monotonic - _BROKER_COUNT_CACHE["checked"] < BROKER_TRUTH_REFRESH_SECONDS:
         return int(_BROKER_COUNT_CACHE["count"])
-    if not mt5.initialize(path=paper_executor.DEFAULT_TERMINAL):
+    if not mt5_connection.initialize(mt5):
         raise RuntimeError(f"MT5 broker truth unavailable: {mt5.last_error()}")
     try:
         now = datetime.now(timezone.utc)
@@ -329,7 +330,7 @@ def proposal_runtime_failures(proposal: dict) -> list[str]:
 
 def has_open_qwen_position() -> bool:
     """Block every new entry while any Qwen-owned position remains open."""
-    if not mt5.initialize(path=paper_executor.DEFAULT_TERMINAL):
+    if not mt5_connection.initialize(mt5):
         raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
     try:
         positions = mt5.positions_get() or ()

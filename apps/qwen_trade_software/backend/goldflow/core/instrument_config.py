@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from goldflow.core import mt5_connection
+
 
 @dataclass(frozen=True, slots=True)
 class InstrumentConfig:
@@ -53,7 +55,7 @@ class InstrumentConfig:
 
 XAUUSD = InstrumentConfig(
     key="XAUUSD",
-    broker_symbol="XAUUSDr",
+    broker_symbol=mt5_connection.settings().broker_symbol,  # config/mt5_connection.json
     aliases=("GOLD",),
     prompt_section="instrument_xauusd",
     trade_enabled=True,

@@ -1,6 +1,7 @@
 """Single entry point for the complete local GoldFlow/Qwen software."""
 
 from __future__ import annotations
+from goldflow.core import mt5_connection
 from goldflow.core import paths as _paths
 
 import atexit
@@ -25,7 +26,7 @@ class QwenTradeSoftware:
     LOCK_FILE = APP_DIR / "software-runtime.lock"
 
     PYTHON = Path(r"C:\ProgramData\Miniconda3\python.exe")
-    MT5 = Path(r"C:\Program Files\MetaTrader 5\terminal64.exe")
+    MT5 = Path(mt5_connection.settings().terminal_path)  # config/mt5_connection.json
     OLLAMA_APP = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama app.exe"
 
     OLLAMA_HEALTH = "http://127.0.0.1:11434/api/tags"

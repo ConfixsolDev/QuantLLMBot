@@ -34,7 +34,9 @@ def completed_bars(timeframe: str, count: int = 80) -> tuple[str | None, list[di
         import MetaTrader5 as mt5
     except ImportError:
         return None, []
-    if not mt5.initialize():
+    from goldflow.core import mt5_connection
+
+    if not mt5_connection.initialize(mt5):
         return None, []
     symbol = discover_dxy_symbol(mt5)
     if not symbol:

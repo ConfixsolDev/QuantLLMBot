@@ -10,10 +10,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from goldflow.core import mt5_connection
+
 
 # Change this one constant when promoting the next trained model.
 DEFAULT_QWEN_MODEL = "qwen-trading-v004:latest"
-PRIMARY_MARKET_SYMBOL = os.environ.get("QWEN_PRIMARY_SYMBOL", "XAUUSDr")
+# Broker symbol default comes from config/mt5_connection.json (broker_symbol).
+PRIMARY_MARKET_SYMBOL = os.environ.get("QWEN_PRIMARY_SYMBOL", mt5_connection.settings().broker_symbol)
 
 # All processes resolve the override identically at startup.
 ACTIVE_QWEN_MODEL = os.environ.get("QWEN_MODEL", DEFAULT_QWEN_MODEL)

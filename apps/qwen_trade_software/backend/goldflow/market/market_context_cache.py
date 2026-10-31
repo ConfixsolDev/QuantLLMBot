@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import MetaTrader5 as mt5
+from goldflow.core import mt5_connection
 from goldflow.core.instrument_config import instrument_for
 
 from goldflow.structure import live_mapped_levels
@@ -327,7 +328,7 @@ class MT5MarketSource:
         self.symbol = symbol
 
     def connect(self) -> None:
-        if not mt5.initialize():
+        if not mt5_connection.initialize(mt5):
             raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
         account = mt5.account_info()
         if account is None:
@@ -3742,7 +3743,7 @@ def run_incremental_self_test() -> dict:
     test_schema = f"fallback_test_{os.getpid()}_{uuid.uuid4().hex[:10]}"
     with tempfile.TemporaryDirectory(prefix="qwen-context-") as folder:
         path = Path(folder) / "timescale-fixture"
-        symbol = "XAUUSDr"
+        symbol = mt5_connection.settings().broker_symbol
         opened = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
         cache = MarketContextCache(
             path, report_metadata_corrections=False, schema=test_schema
@@ -3888,7 +3889,7 @@ def run_incremental_self_test() -> dict:
 
 
 def latest_readiness(
-    symbol: str = "XAUUSDr", path: Path | str = DEFAULT_DB
+    symbol: str = mt5_connection.settings().broker_symbol, path: Path | str = DEFAULT_DB
 ) -> dict | None:
     try:
         cache = MarketContextCache(path)
@@ -3901,7 +3902,7 @@ def latest_readiness(
 
 
 def latest_entry_context(
-    symbol: str = "XAUUSDr",
+    symbol: str = mt5_connection.settings().broker_symbol,
     path: Path | str = DEFAULT_DB,
     *,
     now: datetime | None = None,
@@ -4070,7 +4071,7 @@ def get_cached_completed_bars(
     path: Path | str = DEFAULT_DB,
 ) -> list[dict]:
     """Closed bars from the TimescaleDB context cache. No MT5 call."""
-    symbol = symbol or "XAUUSDr"
+    symbol = symbol or mt5_connection.settings().broker_symbol
     try:
         cache = MarketContextCache(path)
         try:

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 
+from goldflow.core import mt5_connection
 from goldflow.intelligence.collector import collect_once
 from goldflow.intelligence.projection import reduce_event
 from goldflow.intelligence.store import IntelligenceStore
@@ -82,7 +83,7 @@ def run(db_path: Path, symbol: str, interval: float, once: bool = False) -> None
     while True:
         started = time.time()
         try:
-            if not mt5.initialize():
+            if not mt5_connection.initialize(mt5):
                 raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
             result = collect_once(store, mt5, symbol, lookback=300 if first_cycle else 20)
             first_cycle = False

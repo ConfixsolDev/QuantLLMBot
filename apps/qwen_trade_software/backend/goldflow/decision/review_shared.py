@@ -31,6 +31,7 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 
+from goldflow.core import mt5_connection
 from goldflow.market.market_context_cache import DEFAULT_STORE_ROOT, model_generation_lock
 from goldflow.core.runtime_config import (
     ACTIVE_QWEN_MODEL, DEFAULT_QWEN_MODEL, PRIMARY_MARKET_SYMBOL,
@@ -101,7 +102,7 @@ LOG_DIR = APP_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 REVIEW_TICKETS_FILE = APP_DIR / "review-tickets.json"
 MODEL_RESIDENCY_FILE = APP_DIR / "model-residency.json"
-DEFAULT_TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+DEFAULT_TERMINAL = mt5_connection.settings().terminal_path  # set in config/mt5_connection.json
 
 # 2026-08-06 split: reviewer.py (entry-decision) and trade_management.py
 # (management) are now separate processes with no shared memory, so the
@@ -468,7 +469,7 @@ def mt5_quote_is_fresh(
     terminal: str = DEFAULT_TERMINAL,
 ) -> tuple[bool, str]:
     """True when MT5 has a recent tick — ground truth for 'price is changing'."""
-    initialized = mt5.initialize(path=terminal) or mt5.initialize()
+    initialized = mt5_connection.initialize(mt5, terminal=terminal)
     if not initialized:
         return False, f"mt5_unavailable:{mt5.last_error()}"
     try:
@@ -662,7 +663,7 @@ def is_qwen_owned(position) -> bool:
 
 
 def connect_mt5() -> None:
-    if mt5.initialize(path=DEFAULT_TERMINAL) or mt5.initialize():
+    if mt5_connection.initialize(mt5):
         return
     raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
 

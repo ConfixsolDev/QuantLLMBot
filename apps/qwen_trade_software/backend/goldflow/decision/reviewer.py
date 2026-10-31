@@ -11,6 +11,7 @@ management-dashboard-state.json, which this process only ever reads.
 """
 
 import json
+from goldflow.core import mt5_connection
 from goldflow.core import paths as _paths
 import logging.handlers
 import os
@@ -1498,7 +1499,7 @@ def entry_contract_version() -> str:
 def build_entry_prompt(facts: dict) -> str:
     """Assemble generic doctrine + instrument overlay + compressed facts."""
     generic = load_prompt_section("qwen_cached_entry", STORE_ROOT)
-    profile = instrument_for(str(facts.get("symbol") or "XAUUSDr"))
+    profile = instrument_for(str(facts.get("symbol") or mt5_connection.settings().broker_symbol))
     if profile.prompt_section:
         specific = load_prompt_section(profile.prompt_section, STORE_ROOT)
     else:
@@ -2156,7 +2157,7 @@ def build_plan_snapshot() -> dict:
     planner["planner_alive"] = _planner_process_alive()
     facts: dict = {}
     try:
-        facts = planner_facts(str(planner.get("symbol") or "XAUUSDr"))
+        facts = planner_facts(str(planner.get("symbol") or mt5_connection.settings().broker_symbol))
         live_price = live_mid_from_facts(facts)
     except Exception:
         logging.exception("Plan snapshot live price lookup failed")
@@ -2519,7 +2520,7 @@ def build_snapshot() -> dict:
     snapshot["qwen_trace"] = entry_state.get("qwen_trace", {})
     snapshot["qwen_event_gate"] = dict(EVENT_GATE.state)
     snapshot.pop("qwen_management", None)
-    primary_symbol = str(snapshot.get("symbol") or "XAUUSDr")
+    primary_symbol = str(snapshot.get("symbol") or mt5_connection.settings().broker_symbol)
     snapshot["primary_symbol"] = instrument_for(primary_symbol).key
     snapshot["markets"] = {
         runtime.symbol: {
@@ -2641,7 +2642,7 @@ def _update_idea_lifecycle(
     All mutations are on the module-level _IDEA_MANAGER / _APPROACH_TRACKER.
     """
     runtime = runtime or _MARKET_RUNTIMES.get(
-        str(facts.get("symbol") or "XAUUSDr")
+        str(facts.get("symbol") or mt5_connection.settings().broker_symbol)
     )
     idea_manager = runtime.idea_manager
     approach_tracker = runtime.approach_tracker
@@ -2807,7 +2808,7 @@ def _update_idea_lifecycle(
 
 def generate_dashboard_deal_sheet() -> dict:
     snapshot = read_json_safe(MANAGEMENT_STATE_FILE, DEFAULT_MANAGEMENT_STATE)
-    symbol = str(snapshot.get("symbol") or "XAUUSDr")
+    symbol = str(snapshot.get("symbol") or mt5_connection.settings().broker_symbol)
     entry_cache = latest_entry_context(symbol)
     snapshot["entry_cache"] = entry_cache
     decision_levels = (
@@ -3658,7 +3659,7 @@ def self_test_entry_prompt() -> None:
         ],
     }
     decision_levels = cache_levels_for_decision(entry_cache)
-    facts = compact_entry_facts(entry_cache, decision_levels, {}, "XAUUSDr")
+    facts = compact_entry_facts(entry_cache, decision_levels, {}, mt5_connection.settings().broker_symbol)
     prompt = build_entry_prompt(facts)
     prompt_bytes = len(prompt.encode("utf-8"))
     assert "core_skill" not in prompt

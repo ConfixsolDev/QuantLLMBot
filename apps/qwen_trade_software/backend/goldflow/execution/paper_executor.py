@@ -12,6 +12,7 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 
+from goldflow.core import mt5_connection
 from goldflow.core import build_manifest
 from goldflow.structure import live_mapped_levels
 from goldflow.decision import trade_geometry
@@ -24,7 +25,7 @@ from goldflow.core.tick_data_archive import append_tick_record
 
 from goldflow.core.paths import APP_DIR  # backend dir: state/log/data root
 LOG_DIR = APP_DIR / "logs"
-DEFAULT_TERMINAL = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+DEFAULT_TERMINAL = mt5_connection.settings().terminal_path  # set in config/mt5_connection.json
 QWEN_MAGIC = 26072401
 QWEN_COMMENT_PREFIX = "QWEN"
 EXECUTION_LOCK_FILE = APP_DIR / "paper-executor.lock"
@@ -981,7 +982,7 @@ def _run(args) -> dict:
         }
         append_event(result)
         return result
-    if not mt5.initialize(path=args.terminal):
+    if not mt5_connection.initialize(mt5, terminal=args.terminal):
         raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
 
     try:

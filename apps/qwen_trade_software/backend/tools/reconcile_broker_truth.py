@@ -82,7 +82,9 @@ def broker_positions(days: int) -> dict[int, list]:
     import MetaTrader5 as mt5
     from goldflow.execution import paper_executor
 
-    if not mt5.initialize(path=paper_executor.DEFAULT_TERMINAL):
+    from goldflow.core import mt5_connection
+
+    if not mt5_connection.initialize(mt5):
         raise SystemExit(f"MT5 unavailable: {mt5.last_error()}")
     try:
         now = datetime.now(timezone.utc)

@@ -1,0 +1,18 @@
+{
+  "_readme": "Copy this file to mt5_connection.json in the same folder and edit it. mt5_connection.json is git-ignored. Keys starting with _ are comments. The password is NEVER stored here: set the environment variable named in password_env instead (or leave it unset to use the terminal's saved login).",
+
+  "terminal_path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe",
+  "login": null,
+  "server": null,
+  "password_env": "QWEN_MT5_PASSWORD",
+  "timeout_ms": 60000,
+  "portable": false,
+  "fallback_attach_any": true,
+  "require_demo": true,
+  "broker_symbol": "XAUUSDr",
+  "server_time": "ny_close",
+
+  "_login_example": "e.g. 52012345 (number, no quotes). null = whichever account the terminal is logged in to.",
+  "_server_example": "exact server name from MT5's login dialog, e.g. \"ICMarketsSC-Demo\"",
+  "_server_time_options": "\"ny_close\" (UTC+2 winter / UTC+3 US-summer, most brokers), \"utc\", or a fixed number of hours such as 3"
+}
