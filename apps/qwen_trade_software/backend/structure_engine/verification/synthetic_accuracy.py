@@ -18,7 +18,7 @@ causality no-repaint over random cut points + determinism + invariants.
 
 Synthetic accuracy proves the code does what the DEFINITIONS say. Whether
 the definitions are useful on real gold is a separate question, answered by
-point-in-time review on real XAUUSD (architecture doc, Part B §B5).
+point-in-time review on real XAUUSD (XAUUSD_SYSTEM_ARCHITECTURE_V3.md, Part B §B4).
 """
 
 from __future__ import annotations

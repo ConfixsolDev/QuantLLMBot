@@ -184,7 +184,7 @@ def _save_lifecycle_state() -> None:
 # are live -- but its dual-side decide() path is not wired, and a study of 71
 # closed trades found its two testable mechanisms either already delivered by the
 # existing funnel or inert on every trade on record. See
-# docs/research/dual_side_policy_study.md before reviving it.
+# docs/research/dual_side_policy_study.md (git history, commit b7af6e2) before reviving it.
 # Broker entry bracket is fixed; structure S/R is for the model zone + management.
 FIXED_STOP_DISTANCE = 3.0
 FIXED_TARGET_DISTANCE = 5.0

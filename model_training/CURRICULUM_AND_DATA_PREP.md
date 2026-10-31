@@ -18,7 +18,7 @@ Last updated: 2026-08-17
 | Put **new model-job Python** only in `python_utilities_for_models/` (read folder first) | Scatter new `.py` under `model_training/` or invent satellite folders |
 | Leave live system code in `apps/qwen_trade_software/` and Colab train pipeline in repo `scripts/` | Mix system runtime code into model utilities |
 
-Architecture overview lives only in `XAUUSD_SYSTEM_ARCHITECTURE_V2.md`; `AGENTS.md` is a pointer.
+Architecture overview lives only in `XAUUSD_SYSTEM_ARCHITECTURE_V3.md`; `AGENTS.md` is a pointer.
 Live doctrine stays in `store/core_skill.md` + `store/sop.md`.  
 **Everything about how we collect data, mature curriculum, and train = this file only.**
 
@@ -46,7 +46,7 @@ store/                                 ← live LLM template (core_skill + sop)
 ## 0.1 Hard rules (strategy)
 
 1. **One doc** — this file is the process source of truth for training and data prep.
-2. **Three-part system** — tick archive grows forever; store stays lean; code stabilizes (`XAUUSD_SYSTEM_ARCHITECTURE_V2.md`, with `AGENTS.md` as pointer).
+2. **Three-part system** — tick archive grows forever; store stays lean; code stabilizes (`XAUUSD_SYSTEM_ARCHITECTURE_V3.md`, with `AGENTS.md` as pointer).
 3. **Code owns where** — levels, Floor/Fib pivots, session gates, news/shock cool-down.
 4. **Qwen owns what happens at the level** — auction_state → open|wait|skip; in-trade hold|protect|close.
 5. **Never invent** levels, fib anchors, news, or SMC narratives in training labels.
@@ -556,7 +556,7 @@ Bump a row here when a pack lands. Do not create a second history doc.
 |------|------|
 | **This file** | Curriculum + data prep + train process |
 | `store/core_skill.md` / `store/sop.md` | Live LLM doctrine |
-| `XAUUSD_SYSTEM_ARCHITECTURE_V2.md` / `AGENTS.md` | Sole architecture / agent pointer |
+| `XAUUSD_SYSTEM_ARCHITECTURE_V3.md` / `AGENTS.md` | Sole architecture / agent pointer |
 | `model_training/python_utilities_for_models/` | Model-job Python |
 | `scripts/` | Colab train/eval (system pipeline) |
 | `apps/.../tick_data_archive.py` | Live JSONL dual-write (system) |
