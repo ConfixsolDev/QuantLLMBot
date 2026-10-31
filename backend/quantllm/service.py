@@ -23,6 +23,8 @@ reads three endpoints (all JSON, CORS open for localhost):
     GET /api/health                      status, progress, last bar, counts
     GET /api/chart?tf=M15&bars=300       closed candles + forming candle + overlays
     GET /api/snapshot                    what the engine thinks right now
+    GET /api/trading                     trading pipeline: mode, counters, recent Qwen
+                                         decisions and trades (config/trading.json)
 
 Replay page (verify the engine day by day, see replay.py):
 
@@ -86,6 +88,9 @@ class StructureService:
         self.replays = replay_mod.ReplayCache()
         self.replay_lock = threading.Lock()
         self.mt5 = None
+        self.pipeline = None                      # trading pipeline (config/trading.json mode paper/demo)
+        self.journal = None
+        self.broker = None
         self._stop = threading.Event()
 
     # ---------------------------------------------------------------- engine
@@ -193,7 +198,9 @@ class StructureService:
                 self.db.insert_candles(self.symbol, new)
                 evs = []
                 for b in new:
-                    evs.extend(self._push(b))
+                    bar_events = self._push(b)
+                    evs.extend(bar_events)
+                    self._trade(b, bar_events)
                 self.db.insert_events(self.symbol, evs)
             self._stop.wait(self.s.poll_seconds)
 
@@ -211,7 +218,73 @@ class StructureService:
         self.status["database"] = f"{self.s.db_schema} ({'TimescaleDB' if self.db.timescale else 'PostgreSQL'})"
         self.import_history()
         self.replay()
+        self.start_trading()
         self.live_loop()
+
+    # ---------------------------------------------------------------- trading (Part F)
+    def start_trading(self) -> None:
+        """Build the decision pipeline when config/trading.json mode is paper or demo.
+
+        Only LIVE bars go through it (never the history replay). Qwen is asked
+        inside the live loop; with the GPU and a prompt under 6 KB that takes
+        seconds, and a candidate stays valid for its whole test window.
+        """
+        from trading.settings import load_settings as trading_settings
+        try:
+            ts = trading_settings()
+        except ValueError as exc:
+            self.status["trading"] = f"settings error: {exc}"
+            log.error(self.status["trading"])
+            return
+        self.status["trading"] = ts.mode
+        if ts.mode == "off":
+            return
+        from qwen.decider import QwenDecider
+        from strategy import load as load_strategy
+        from trading.broker import MT5Broker, PaperBroker
+        from trading.executor import Executor
+        from trading.journal import DbJournal
+        from trading.pipeline import Pipeline
+        from trading.risk import XAUUSD_DEFAULT as XAU
+        strat = load_strategy(ts.strategy, ts.strategy_version)
+        if ts.mode == "demo":
+            if self.mt5 is None:
+                self.status["trading"] = "demo: waiting for MT5 (not connected) - trading off"
+                return
+            broker = MT5Broker(self.mt5, mt5_connection.server_to_utc_epoch)
+            if not broker.account()["demo"]:
+                self.status["trading"] = "REFUSED: the MT5 account is not a demo account"
+                log.error(self.status["trading"])
+                return
+        else:
+            spec = MT5Broker(self.mt5, mt5_connection.server_to_utc_epoch).spec(self.symbol) if self.mt5 else XAU
+            broker = PaperBroker(spec)
+        self.journal = DbJournal(self.db.conn)
+        self.broker = broker
+        self.pipeline = Pipeline(strat, self.engine, QwenDecider(), Executor(broker, ts, self.symbol, self.journal),
+                                 self.journal, mode=ts.mode)
+        self.status["trading"] = f"{ts.mode}: {strat.ref}, risk {ts.risk_pct}% per trade"
+        log.info("trading %s", self.status["trading"])
+
+    def _trade(self, bar, events) -> None:
+        if self.pipeline is None:
+            return
+        try:
+            if hasattr(self.broker, "on_bar"):                # paper broker: stops/targets inside the bar
+                self.broker.on_bar(bar)
+            with self.lock:
+                self.pipeline.on_bar(bar, events, self.engine.now)
+        except Exception:                                     # never stop the structure feed
+            log.exception("trading pipeline error")
+
+    def trading_view(self) -> dict:
+        j = self.journal
+        return {"status": self.status.get("trading", "off"),
+                "stats": self.pipeline.stats if self.pipeline else None,
+                "decisions": [{k: d.get(k) for k in ("id", "time", "action", "label", "candidate_key", "confidence",
+                                                      "why", "errors", "latency_ms", "prompt_bytes", "model")}
+                              for d in (j.decisions[-30:] if j else [])][::-1],
+                "trades": list(j.trades.values())[-50:][::-1] if j else []}
 
     def stop(self) -> None:
         self._stop.set()
@@ -342,6 +415,8 @@ def make_handler(service: StructureService):
                     self._send(200, service.chart(tf, n))
                 elif url.path == "/api/snapshot":
                     self._send(200, service.snapshot())
+                elif url.path == "/api/trading":
+                    self._send(200, service.trading_view())
                 elif url.path == "/api/replay/days":
                     self._send(200, {"days": service.db.days_with_data(service.symbol)})
                 elif url.path == "/api/replay/day":

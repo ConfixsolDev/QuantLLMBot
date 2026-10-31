@@ -479,6 +479,7 @@ requirements.txt            backend Python packages (psycopg, MetaTrader5, pytes
 backend/
   structure_engine/         Part B
   studies/                  research scripts (not used by the app): level_reaction.py (B3c)
+  strategy/ qwen/ trading/  Part F: strategies, the Qwen model, execution
   quantllm/
     settings.py             database / API / history settings (config/app.json + environment)
     mt5_connection.py       the one MT5 module (Part D)
@@ -598,7 +599,7 @@ Development: `cd web && npm run dev` with `NEXT_PUBLIC_API_BASE=http://127.0.0.1
 * Start: double-click `Start-QuantLLM.bat`. It checks the database variable,
   installs missing Python packages, builds the website once (needs Node.js),
   opens the browser and runs the service.
-* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests -q`.
+* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests strategy/tests qwen/tests trading/tests -q` (76 tests).
   The database tests use `QUANTLLM_TEST_DSN` (schema `quantllm_test`) or the
   `pgserver` package; they never touch the real schema.
 * Verified 2026-10-31 on 100,000 real XAUUSD M1 bars in PostgreSQL 16:
@@ -759,6 +760,94 @@ The runtime, not the model, enforces every safety invariant in phases 3 and 4.
   confirmation guard enforces a reached-level rejection or invalidation when
   completed M1 and M5 agree. P&L and elapsed time alone never confirm a close.
 
+## Part F — Decision and trading: strategy, Qwen, execution
+
+Owner's decisions (2026-11-01): one strategy at a time; Qwen only CHOOSES
+among code-built candidates (or waits) and never sets a price; position size
+= % of balance per stop distance; demo account only; no daily loss limit and
+risk per trade may be 10 % or more during the demo learning phase; results
+are judged in R so position size does not distort them; Qwen runs on the GPU
+and the prompt stays under 6 KB.
+
+```
+structure engine events ──► strategy/runner ──► asks (a level test = a plan)
+                                │                  └► strategy/template: doctrine + outlook + candidates
+                                │                     + evidence (E-ids), <= 6 KB ──► qwen/decider
+                                │                     ──► qwen/contract check ──► journal "decisions"
+                                ├─► intents (approved plan + M1 rejection) ──► trading/executor ──► broker
+                                └─► closes (rejection stalled)             ──► trading/executor
+trading/executor.sync ──► finished trades: net, R multiple, close reason ──► journal "trades"
+```
+
+### F1. Code
+
+```
+backend/strategy/            Module 2a — strategies as data
+  library/htf_level_m1_rejection.v1.json   rules (for code) + doctrine (for Qwen) + answer format
+  model.py       strict loader; id@vN#hash identifies a strategy in every record
+  outlook.py     compact market outlook from the engine snapshot + one-line event texts
+  candidates.py  plan (on level_test) and trigger (on level_rejection): all prices from code
+  runner.py      follows the event stream: asks / intents / closes / ended
+  template.py    the prompt; refuses (PromptTooLarge) rather than silently cutting
+  __main__.py    python -m strategy list | show | preview --m1 <bars> --date D [--save p.json]
+backend/qwen/                Module 2b — the model
+  client.py      Ollama or OpenAI-compatible server (LM Studio, llama.cpp, vLLM); stdlib only
+  contract.py    answer rules: decision = candidate id or wait; confidence >= 51 to trade;
+                 >= 1 citation, every citation an evidence id of this prompt
+  decider.py     QwenDecider (lane B) and take_all (lane A, the baseline)
+  __main__.py    python -m qwen ping | ask p.json
+backend/trading/             Module 3 — execution
+  intent.py      TradeIntent: the only object crossing from decision to execution
+  settings.py    config/trading.json (mode off | paper | demo, risk_pct, magic ...)
+  risk.py        lots = balance x risk% / ((|entry - stop| + spread + slippage) x value per unit),
+                 rounded down; below the minimum lot = no trade (the stop is never moved)
+  broker.py      MT5Broker (demo) and PaperBroker; lessons of the old executor kept
+                 (stop + target sent with the order, magic number, IOC, exit-deal settle wait,
+                 incomplete P&L never reported as zero)
+  executor.py    demo -> not expired -> one position -> price in range -> stop/target sides
+                 -> size -> order; close for strategy reasons; sync -> result in R
+  journal.py     tables decisions / trades / refusals (schema "structure")
+  pipeline.py    the bar-by-bar loop, the same for replay and live
+  backtest.py    python -m trading.backtest --m1 <bars> | --db --from D [--lane all|qwen]
+backend/config/qwen.example.json, trading.example.json   copy to qwen.json / trading.json
+```
+
+The service (Part C) builds the pipeline when `trading.json` mode is
+`paper` or `demo`; only live bars go through it, never the history replay.
+`GET /api/trading` shows the mode, counters, recent decisions and trades.
+
+### F2. The strategy as code sees it (htf_level_m1_rejection v1)
+
+* **Plan** on every `level_test` that passes the rules (side, session, test
+  number, approach): sell at resistance / buy at support; planned stop =
+  level + 0.4 ATR(M15); target = the nearest opposite HTF level at least
+  0.5 ATR away (else 2 R); R:R >= 1. Valid for the test window (10 + 3 + 1 bars).
+* **Trigger** on the `level_rejection` of the same level and test, only if
+  Qwen approved: stop = rejection candle extreme + 0.1 ATR (at least 0.3 ATR
+  from the close), entry range = close +- 0.3 ATR, valid 3 M1 bars, R:R re-checked.
+* **Close** at market when the rejection's `level_followthrough` is "stalled".
+* Broker stop and target always travel with the order.
+
+### F3. First baseline (lane A = take every candidate, paper broker)
+
+`python -m trading.backtest --m1 <Apr-Aug 2026> --from 2026-05-01` (97,054
+bars): 633 prompts, max 3,769 bytes (budget 6,000); 282 trades; win 22.7 %;
+**average +0.11 R**, total +30.9 R, **max drawdown -25.9 R**. Closed by stop
+175 (-0.90 R avg), by "stalled" 85 (0.00 R), by target 22 (+8.6 R). By test:
+1st test -0.14 R (195 trades), 2nd +0.71 R (62), 3rd+ +0.58 R (25).
+At 10 % risk per trade a 26 R drawdown empties the account (paper balance
+10,000 -> 330): judge the strategy in R, and expect demo resets.
+This is the yardstick: Qwen (lane B) must beat it on the same days.
+
+### F4. Running it
+
+1. `python -m qwen ping` — server reachable, model present (config/qwen.json).
+2. `python -m strategy preview --m1 <bars> --date D --save p.json`, then
+   `python -m qwen ask p.json` — one real prompt and Qwen's raw answer.
+3. `python -m trading.backtest --db --from <day> --lane qwen` vs `--lane all`.
+4. `config/trading.json` mode `paper` (live bars, simulated broker), later
+   `demo` (MT5 demo account). A live account is refused in settings and executor.
+
 ---
 
 ## Appendix — History
@@ -806,6 +895,10 @@ detection · P21 closed response missed by stale playbook.
   (A4); level-reaction study with a random-level control on real gold (B3c);
   `levels.py` records level tests, M1 rejections, follow-through, held/broken
   and M1 patterns at levels; chart layer, side panel, Replay check sheet.
+- **Part F (2026-11-01):** strategy / qwen / trading packages: versioned
+  strategy files, deterministic candidates, 6 KB prompt with evidence ids,
+  Qwen client + answer contract, risk sizing, MT5 + paper brokers, executor,
+  journal tables, bar-by-bar pipeline, backtest lanes; first take-all baseline.
 - **Expert replay review of real October days (2026-11-01):** the multi-
   timeframe narrative held up (e.g. 30 Oct: M5 CHoCH down → M15/M30/H1 BOS →
   H4 BOS; a false break of 3979 followed by an M5 CHoCH up; a failed sweep of
