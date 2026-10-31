@@ -78,7 +78,7 @@ def tm_module(mt5_fake, monkeypatch):
     the first test's fake. Rebinding the attribute is what makes assertions on
     `mt5_fake.sent` meaningful per test.
     """
-    import trade_management as tm
+    from goldflow.management import trade_management as tm
 
     monkeypatch.setattr(tm, "mt5", mt5_fake)
     tm._REBRACKETED_TICKETS.clear()
@@ -105,7 +105,7 @@ def _position(ticket=1, side="sell", entry=4332.822, sl=4335.822, tp=4327.822,
 # ===========================================================================
 
 def test_executor_places_stop_beyond_the_invalidation(mt5_fake):
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     args = Namespace(
         side="sell", management_reference_sl=4344.279, management_reference_tp=4315.0,
@@ -119,7 +119,7 @@ def test_executor_places_stop_beyond_the_invalidation(mt5_fake):
 
 def test_executor_refuses_entry_when_reward_risk_is_poor(mt5_fake, monkeypatch):
     """Hard skip only when QWEN_SKIP_ON_GEOMETRY is enabled."""
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     monkeypatch.setattr(
         pe,
@@ -137,7 +137,7 @@ def test_executor_refuses_entry_when_reward_risk_is_poor(mt5_fake, monkeypatch):
 
 def test_executor_falls_back_on_poor_rr_when_skip_disabled(mt5_fake, monkeypatch):
     """Observation window: poor R:R uses fixed $3/$5 instead of refusing."""
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     monkeypatch.setattr(pe, "SKIP_ON_GEOMETRY_REJECTION", frozenset())
     args = Namespace(
@@ -152,7 +152,7 @@ def test_executor_falls_back_on_poor_rr_when_skip_disabled(mt5_fake, monkeypatch
 
 def test_executor_refuses_htf_thesis_with_micro_fixed_bracket(mt5_fake, monkeypatch):
     """2026-08-13: H4+$3 stop is the Asia sudden-loss pattern — never fall back."""
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     monkeypatch.setattr(pe, "SKIP_ON_GEOMETRY_REJECTION", frozenset())
     monkeypatch.setattr(pe, "ENFORCE_HTF_MICRO_BRACKET", True)
@@ -171,7 +171,7 @@ def test_executor_refuses_htf_thesis_with_micro_fixed_bracket(mt5_fake, monkeypa
 
 def test_executor_observes_htf_micro_bracket_during_establishment(mt5_fake, monkeypatch):
     """Demo establishment mode takes the protected trade and records the bypass."""
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     monkeypatch.setattr(pe, "SKIP_ON_GEOMETRY_REJECTION", frozenset())
     monkeypatch.setattr(pe, "ENFORCE_HTF_MICRO_BRACKET", False)
@@ -201,7 +201,7 @@ def test_observation_window_records_what_it_would_have_refused(mt5_fake, monkeyp
     refusal to the P&L. Keyed on proposal_id, which is what the close record
     carries.
     """
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     captured = []
     monkeypatch.setattr(pe, "SKIP_ON_GEOMETRY_REJECTION", frozenset())
@@ -225,7 +225,7 @@ def test_observation_window_records_what_it_would_have_refused(mt5_fake, monkeyp
 
 def test_observation_recording_never_blocks_a_trade(mt5_fake, monkeypatch):
     """An observation is bookkeeping. If it throws, the trade still goes on."""
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     def explode(_event):
         raise OSError("disk full")
@@ -244,7 +244,7 @@ def test_observation_recording_never_blocks_a_trade(mt5_fake, monkeypatch):
 
 def test_accepted_entries_are_not_recorded_as_observations(mt5_fake, monkeypatch):
     """Only refusals go in the log; otherwise the comparison group is polluted."""
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     captured = []
     monkeypatch.setattr(pe, "append_event", captured.append)
@@ -261,7 +261,7 @@ def test_accepted_entries_are_not_recorded_as_observations(mt5_fake, monkeypatch
 
 def test_executor_falls_back_when_structure_is_missing(mt5_fake):
     """Missing information degrades to legacy; it never leaves a fill unprotected."""
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     args = Namespace(side="sell", management_reference_sl=None,
                      management_reference_tp=None)
@@ -281,7 +281,7 @@ def test_submit_single_position_always_returns_a_four_tuple():
     """
     import ast
 
-    source = (Path(__file__).resolve().parents[1] / "paper_executor.py").read_text(
+    source = (Path(__file__).resolve().parents[1] / "goldflow/execution/paper_executor.py").read_text(
         encoding="utf-8"
     )
     tree = ast.parse(source)
@@ -312,7 +312,7 @@ def test_submit_single_position_always_returns_a_four_tuple():
 
 def test_order_keeps_planned_invalidation_as_entry_gate_and_uses_atr_structure_stop():
     """The plan boundary gates entry; the filled order uses the ATR/structure bracket."""
-    source = (Path(__file__).resolve().parents[1] / "paper_executor.py").read_text(
+    source = (Path(__file__).resolve().parents[1] / "goldflow/execution/paper_executor.py").read_text(
         encoding="utf-8"
     )
     assert "planned_invalidation < order_price" in source
@@ -322,7 +322,7 @@ def test_order_keeps_planned_invalidation_as_entry_gate_and_uses_atr_structure_s
 
 def test_structural_stop_distance_controls_submitted_volume(mt5_fake):
     """Wide structural invalidation reduces size instead of increasing risk."""
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     args = Namespace(
         side="sell", management_reference_sl=4344.279,
@@ -340,7 +340,7 @@ def test_structural_stop_distance_controls_submitted_volume(mt5_fake):
 
 
 def test_flag_disables_structural_bracket(mt5_fake, monkeypatch):
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     monkeypatch.setattr(pe, "STRUCTURAL_BRACKET_ENABLED", False)
     args = Namespace(side="sell", management_reference_sl=4344.279,

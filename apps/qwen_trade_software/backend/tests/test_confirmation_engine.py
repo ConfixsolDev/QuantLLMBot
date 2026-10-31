@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import confirmation_engine as ce  # noqa: E402
+from goldflow.decision import confirmation_engine as ce  # noqa: E402
 
 
 def _bar(o, h, l, c, eid=None):

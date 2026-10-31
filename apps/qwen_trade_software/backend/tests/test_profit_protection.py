@@ -1,5 +1,5 @@
-from profit_protection_policy import evaluate
-from trade_manager import validate_management_decision
+from goldflow.management.profit_protection_policy import evaluate
+from goldflow.management.trade_manager import validate_management_decision
 
 
 def test_sell_arms_and_locks_profit_like_observed_trade():

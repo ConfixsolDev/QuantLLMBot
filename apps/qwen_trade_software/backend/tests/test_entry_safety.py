@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from entry_safety import candle_boundary_entry_block
+from goldflow.decision.entry_safety import candle_boundary_entry_block
 
 
 def utc(hour: int, minute: int, second: int) -> datetime:

@@ -111,7 +111,7 @@ def test_qualification_sections_still_exist():
 
 def test_production_code_hashes_raw_text():
     """Fail loudly if someone drops keep_comments=True from the hash input."""
-    source = (Path(__file__).resolve().parents[1] / "market_context_cache.py").read_text(
+    source = (Path(__file__).resolve().parents[1] / "goldflow/market/market_context_cache.py").read_text(
         encoding="utf-8"
     )
     start = source.find("self.qualification_contract_hash = content_hash(")

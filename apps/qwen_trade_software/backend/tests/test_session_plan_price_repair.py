@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from session_planner import (  # noqa: E402
+from goldflow.planning.session_planner import (  # noqa: E402
     apply_live_price_sanity,
     plan_needs_price_repair,
 )

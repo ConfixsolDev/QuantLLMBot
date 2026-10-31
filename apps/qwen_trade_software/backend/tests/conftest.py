@@ -98,7 +98,7 @@ def never_write_to_the_live_log_files():
 @pytest.fixture(autouse=True)
 def never_write_to_the_live_execution_log(monkeypatch):
     try:
-        import paper_executor
+        from goldflow.execution import paper_executor
     except Exception:
         return
     monkeypatch.setattr(

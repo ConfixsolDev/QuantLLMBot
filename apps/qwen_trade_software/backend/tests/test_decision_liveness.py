@@ -10,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import decision_liveness as dl  # noqa: E402
+from goldflow.decision import decision_liveness as dl  # noqa: E402
 
 
 def event(**kw):

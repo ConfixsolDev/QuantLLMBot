@@ -3,29 +3,58 @@
 This directory is the version-controlled source snapshot for the complete local
 GoldFlow/Qwen demo-trading application.
 
+## Code layout
+
+All backend logic lives in the `backend/goldflow/` package, grouped by
+responsibility. Runtime state, logs, caches and data files stay in `backend/`
+itself (`goldflow.core.paths.APP_DIR`), so moving code never moves data.
+
+| Package | Responsibility |
+|---------|----------------|
+| `goldflow/core/` | Config (`runtime_config`, `instrument_config`), logging, TimescaleDB access, build manifest, tick archive, candle clock, `paths` |
+| `goldflow/market/` | Candle/context cache, market runtime, ATR, news blackout, memory worker, qualification gate |
+| `goldflow/intelligence/` | Persistent market-intelligence event ledger, projections, retrieval |
+| `goldflow/structure/` | Deterministic detectors: structure, FVG, order blocks, liquidity, OTE, zones, qualified/mapped levels |
+| `goldflow/regime/` | Regime engine and regime policy |
+| `goldflow/planning/` | Session planner, plan branches/ladder, idea lifecycle, approach tracker |
+| `goldflow/decision/` | Entry Qwen reviewer + dashboard API, prompt composer, entry gates, trade geometry |
+| `goldflow/execution/` | Paper runner and MT5 demo executor |
+| `goldflow/management/` | Open-position management and profit protection |
+| `goldflow/runtime/` | `software_runtime` process supervisor |
+
+`backend/*.py` files are thin launchers (`reviewer.py`, `paper_runner.py`,
+`software_runtime.py`, ...) kept at their historical paths so the supervisor,
+`.ps1` scripts and scheduled tasks work unchanged. Each one only runs its
+`goldflow.<package>.<module>` as `__main__`. New code goes in the package, never
+in a launcher. Inside the package, import with absolute paths:
+`from goldflow.core import runtime_config`.
+
+`backend/tools/` holds operator scripts; `backend/tests/` the pytest suite
+(`python -m pytest tests` from `backend/`).
+
 ## Components
 
-- `backend/software_runtime.py` is the single startup and supervision entry
+- `backend/goldflow/runtime/software_runtime.py` is the single startup and supervision entry
   point. It starts MT5 and Ollama when needed, verifies the IIS website, and
   supervises the reviewer, cache-context service, and demo paper runner.
-- `backend/market_context_cache.py` maintains the SQLite/WAL candle and context
+- `backend/goldflow/market/market_context_cache.py` maintains the SQLite/WAL candle and context
   hierarchy, builds the compact minute packet, runs deterministic/Qwen
   qualification gates, and publishes the readiness manifest. Its ready packet
   is the mandatory provenance source for entry Qwen; it still never places an
   order itself.
-- `backend/reviewer.py` builds MT5 snapshots, requests Qwen reviews, records
+- `backend/goldflow/decision/reviewer.py` builds MT5 snapshots, requests Qwen reviews, records
   proposals, and serves the local dashboard API. Proposal context comes from
   cache-qualified D1 through M1 structure, sessions, playbooks, levels, volume,
   and exact evidence IDs. Prior execution outcomes and P&L are excluded.
-- `backend/session_planner.py` runs the session-hierarchy planner (day plan,
+- `backend/goldflow/planning/session_planner.py` runs the session-hierarchy planner (day plan,
   session plans, hourly updates, session verdicts). Writes `planner-state.json`
   and archives to `tick_data/`. Supervised by `software_runtime.py`.
-- `backend/trade_manager.py` is the separate single-position management layer.
+- `backend/goldflow/management/trade_manager.py` is the separate single-position management layer.
   It preserves the exact peak/giveback path and prior decisions, then validates
   reached-level rejection or thesis invalidation from completed M1/M5 evidence.
-- `backend/paper_runner.py` consumes only fresh validated proposals and holds a
+- `backend/goldflow/execution/paper_runner.py` consumes only fresh validated proposals and holds a
   process-wide singleton lock so two runners cannot execute concurrently.
-- `backend/paper_executor.py` enforces the MT5 demo-account lock, opens exactly
+- `backend/goldflow/execution/paper_executor.py` enforces the MT5 demo-account lock, opens exactly
   one 0.50-lot position, and maintains the broker safety stop. It never adds,
   averages, or closes merely because of elapsed time or small gross profit.
 - `planview/` is the sole local UI (Next.js GoldFlow Plan View: session

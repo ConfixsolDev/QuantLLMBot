@@ -12,8 +12,8 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-from market_structure_providers import run_shadow_providers  # noqa: E402
-from market_structure_shadow import (  # noqa: E402
+from goldflow.structure.market_structure_providers import run_shadow_providers  # noqa: E402
+from goldflow.structure.market_structure_shadow import (  # noqa: E402
     HORIZON_BARS, STATE_FILE, build_summary, realised_direction, _atomic_json,
 )
 

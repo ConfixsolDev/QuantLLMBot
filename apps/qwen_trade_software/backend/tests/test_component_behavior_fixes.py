@@ -6,8 +6,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import paper_executor  # noqa: E402
-import reviewer  # noqa: E402
+from goldflow.execution import paper_executor  # noqa: E402
+from goldflow.decision import reviewer  # noqa: E402
 
 
 def test_executor_initializes_instrument_before_position_sizing():
@@ -27,7 +27,7 @@ def test_geometry_omission_does_not_trigger_slow_second_model_call():
 
 
 def test_breakout_promotion_requires_m5_and_m15_closed_alignment(tmp_path, monkeypatch):
-    import qualified_levels
+    from goldflow.structure import qualified_levels
 
     monkeypatch.setattr(
         qualified_levels, "QUALIFIED_LEVELS_PATH", tmp_path / "qualified.json"
@@ -56,7 +56,7 @@ def test_breakout_promotion_requires_m5_and_m15_closed_alignment(tmp_path, monke
 
 
 def test_directional_breakout_blocks_opposite_plan(tmp_path, monkeypatch):
-    import qualified_levels
+    from goldflow.structure import qualified_levels
 
     monkeypatch.setattr(
         qualified_levels, "QUALIFIED_LEVELS_PATH", tmp_path / "qualified.json"

@@ -94,7 +94,7 @@ state and are not committed.
 
 ### Unified startup
 
-`apps/qwen_trade_software/backend/software_runtime.py` is the single launcher.
+`apps/qwen_trade_software/backend/goldflow/runtime/software_runtime.py` is the single launcher.
 It acquires a singleton, starts or verifies MT5 and Ollama, verifies IIS, then
 supervises three child processes:
 

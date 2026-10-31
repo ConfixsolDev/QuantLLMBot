@@ -5,12 +5,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from instrument_config import InstrumentConfig, XAUUSD, instrument_for  # noqa: E402
-import market_structure  # noqa: E402
-from market_runtime import MarketRuntimeRegistry  # noqa: E402
-import reviewer  # noqa: E402
-import runtime_config  # noqa: E402
-import trade_geometry  # noqa: E402
+from goldflow.core.instrument_config import InstrumentConfig, XAUUSD, instrument_for  # noqa: E402
+from goldflow.structure import market_structure  # noqa: E402
+from goldflow.market.market_runtime import MarketRuntimeRegistry  # noqa: E402
+from goldflow.decision import reviewer  # noqa: E402
+from goldflow.core import runtime_config  # noqa: E402
+from goldflow.decision import trade_geometry  # noqa: E402
 
 
 def _config(key: str, symbol: str, scale: float) -> InstrumentConfig:
@@ -143,7 +143,7 @@ def test_provider_shadow_publishes_closed_bar_without_execution_authority(tmp_pa
             "open": close - 0.2, "high": close + 0.5,
             "low": close - 0.5, "close": close,
         })
-    monkeypatch.setattr("market_structure_shadow.LOG_DIR", tmp_path)
+    monkeypatch.setattr("goldflow.structure.market_structure_shadow.LOG_DIR", tmp_path)
     shadow = market_structure._publish_shadow_input(
         "XAUUSDr", {"M5": bars},
         {"htf_bias": "bullish", "trends": {"M5": "bearish"}, "alignment": "mixed"},

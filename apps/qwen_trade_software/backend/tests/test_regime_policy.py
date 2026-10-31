@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from regime_policy import execution_settings, range_entry_allowed  # noqa: E402
+from goldflow.regime.regime_policy import execution_settings, range_entry_allowed  # noqa: E402
 
 
 def test_range_is_faster_but_never_higher_cash_risk():

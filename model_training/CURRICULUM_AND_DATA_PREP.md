@@ -106,7 +106,7 @@ Every stage_02 / stage_04 / stage_05 row and every live Qwen I/O record carries:
 | `atr_timeframe` | always `M1` |
 | `atr_source` | e.g. `mt5_m1_eod:2026-08-12` or live request snapshot |
 
-Live capture: `apps/qwen_trade_software/backend/market_atr.py` (on every `ollama_generate`).  
+Live capture: `apps/qwen_trade_software/backend/goldflow/market/market_atr.py` (on every `ollama_generate`).  
 Backfill + curriculum stamp: `python_utilities_for_models/enrich_atr_v5.py`.  
 Sample Prepared must show `ATR M1: 51=… \| 3=… \| ratio3/51=…` (`scripts/utils.py`).
 
@@ -185,7 +185,7 @@ Operator gap this pack fixes: cutting sideways fades on temporary gold loss whil
 - Hot: `apps/qwen_trade_software/backend/logs/{name}-YYYY-MM-DD.jsonl`
 - Permanent: `model_training/tick_data/YYYY-MM-DD/{name}.jsonl`
 
-Code: `apps/qwen_trade_software/backend/tick_data_archive.py`  
+Code: `apps/qwen_trade_software/backend/goldflow/core/tick_data_archive.py`  
 Synced by `software_runtime.py`. **Never auto-delete** `tick_data/`.
 
 | File | Meaning |

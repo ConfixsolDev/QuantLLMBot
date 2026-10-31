@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import entry_policy as ep  # noqa: E402
+from goldflow.decision import entry_policy as ep  # noqa: E402
 
 
 # --- helpers ---------------------------------------------------------------

@@ -33,7 +33,7 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))
 
-import build_manifest  # noqa: E402
+from goldflow.core import build_manifest  # noqa: E402
 
 
 def show() -> None:

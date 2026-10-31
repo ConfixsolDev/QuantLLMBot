@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from market_context_cache import MarketContextCache, QwenContextShadow  # noqa: E402
+from goldflow.market.market_context_cache import MarketContextCache, QwenContextShadow  # noqa: E402
 
 
 def _cache() -> MarketContextCache:

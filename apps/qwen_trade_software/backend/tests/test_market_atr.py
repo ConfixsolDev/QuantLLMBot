@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import io_performance_log as iol
-import market_atr
+from goldflow.core import io_performance_log as iol
+from goldflow.market import market_atr
 
 
 def test_wilder_atr_known_series():
@@ -60,11 +60,11 @@ def test_log_qwen_generate_records_dual_m1_atr(monkeypatch):
 
 
 def test_append_qwen_decision_stores_atr(monkeypatch):
-    from tick_data_archive import append_qwen_decision
+    from goldflow.core.tick_data_archive import append_qwen_decision
 
     captured = []
     monkeypatch.setattr(
-        "tick_data_archive.append_tick_record",
+        "goldflow.core.tick_data_archive.append_tick_record",
         lambda base, record: captured.append((base, record)),
     )
     atr = {

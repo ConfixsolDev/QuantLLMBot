@@ -27,8 +27,8 @@ import pytest
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-import build_manifest  # noqa: E402
-import paper_executor as _pe  # noqa: E402
+from goldflow.core import build_manifest  # noqa: E402
+from goldflow.execution import paper_executor as _pe  # noqa: E402
 
 # Captured at import, before the conftest fixture stubs append_event out to
 # keep tests from writing into the live execution log. This test needs the real
@@ -96,7 +96,7 @@ def test_proposal_id_is_minted_before_the_decision_is_written():
     new_proposal_id() has to be called first. Reversing these two lines is what
     severed live trading from model training for months, silently.
     """
-    source = (BACKEND / "reviewer.py").read_text(encoding="utf-8")
+    source = (BACKEND / "goldflow/decision/reviewer.py").read_text(encoding="utf-8")
     mint = source.index("proposal_id = new_proposal_id()")
     decision = source.index('decision_type="entry"')
     proposal = source.index("proposal = append_paper_proposal(")
@@ -107,7 +107,7 @@ def test_proposal_id_is_minted_before_the_decision_is_written():
 
 def test_the_decision_write_actually_passes_the_id():
     """Minting it is useless if it is not threaded through."""
-    tree = ast.parse((BACKEND / "reviewer.py").read_text(encoding="utf-8"))
+    tree = ast.parse((BACKEND / "goldflow/decision/reviewer.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -123,25 +123,25 @@ def test_the_decision_write_actually_passes_the_id():
 
 
 def test_proposal_id_format_is_joinable():
-    import reviewer
+    from goldflow.decision import reviewer
     pid = reviewer.new_proposal_id()
     assert pid.startswith("paper-") and len(pid.split("-")) == 3
 
 
 def test_runtime_never_manufactures_model_confidence():
     """A zero-confidence ready plan must be refused, not promoted to 55."""
-    source = (BACKEND / "reviewer.py").read_text(encoding="utf-8")
+    source = (BACKEND / "goldflow/decision/reviewer.py").read_text(encoding="utf-8")
     assert "confidence_floor_override" not in source
     assert "confidence_floor_applied" not in source
 
 
 def test_live_level_gates_are_fail_closed_by_default():
-    source = (BACKEND / "reviewer.py").read_text(encoding="utf-8")
+    source = (BACKEND / "goldflow/decision/reviewer.py").read_text(encoding="utf-8")
     assert 'os.environ.get("QWEN_LEVEL_ENTRY_GATES", "1") != "0"' in source
 
 
 def test_ids_are_unique():
-    import reviewer
+    from goldflow.decision import reviewer
     assert len({reviewer.new_proposal_id() for _ in range(200)}) == 200
 
 
@@ -163,7 +163,7 @@ def test_monitor_rows_go_to_the_path_log_and_decisions_do_not(monkeypatch):
 
 def test_the_path_tail_reads_the_path_log():
     """Its only consumer must follow the rows to their new file."""
-    source = (BACKEND / "trade_management.py").read_text(encoding="utf-8")
+    source = (BACKEND / "goldflow/management/trade_management.py").read_text(encoding="utf-8")
     start = source.index("def refresh_execution_monitor_cache")
     body = source[start:start + 1200]
     assert '_dated_log_path("paper-path")' in body, (
@@ -176,7 +176,7 @@ def test_the_path_tail_reads_the_path_log():
 
 def test_the_unread_policy_flag_is_gone():
     """A switch that promises a behaviour change and delivers none."""
-    source = (BACKEND / "reviewer.py").read_text(encoding="utf-8")
+    source = (BACKEND / "goldflow/decision/reviewer.py").read_text(encoding="utf-8")
     assert "QWEN_POLICY_V2 = " not in source
 
 
@@ -194,7 +194,7 @@ def test_every_log_family_the_executor_writes_is_archive_registered():
     blocked every new proposal on a position it thought was still open. A
     missing dictionary entry took the trading system down for 40 minutes.
     """
-    import tick_data_archive as tda
+    from goldflow.core import tick_data_archive as tda
 
     for base in (_pe.PATH_LOG, _pe.EXECUTION_LOG):
         assert base in tda.ARCHIVE_FILES, (
@@ -206,7 +206,7 @@ def test_every_log_family_the_executor_writes_is_archive_registered():
 
 def test_an_archive_failure_cannot_kill_a_trade(tmp_path, monkeypatch):
     """Recording a trade is not more important than managing one."""
-    import tick_data_archive as tda
+    from goldflow.core import tick_data_archive as tda
 
     monkeypatch.setattr(tda, "LOG_DIR", tmp_path)
     monkeypatch.setattr(tda, "runtime_log_path",
@@ -253,7 +253,7 @@ def test_reconstructed_rows_are_kept_out_of_training():
 # --- broker truth beats cached belief ---------------------------------------
 
 def _tm(monkeypatch):
-    import trade_management as tm
+    from goldflow.management import trade_management as tm
     tm.LAST_MANAGED_M1_BY_TICKET.clear()
     tm.ENTRY_CONTEXT_BY_TICKET.clear()
     tm._REBRACKETED_TICKETS.clear()
@@ -317,7 +317,7 @@ def test_a_reused_ticket_is_not_treated_as_already_rebracketed(monkeypatch):
 
 def test_reconcile_is_called_before_any_decision(monkeypatch):
     """Reconciling after acting on stale state would be pointless."""
-    source = (BACKEND / "trade_management.py").read_text(encoding="utf-8")
+    source = (BACKEND / "goldflow/management/trade_management.py").read_text(encoding="utf-8")
     start = source.index("def review_positions")
     body = source[start:]
     assert body.index("reconcile_position_state(") < body.index('if not positions:')
@@ -332,14 +332,14 @@ def test_every_live_path_module_is_in_the_manifest():
     with build_id unchanged, so the broken system and the fixed one were
     reported as the same build.
     """
-    import build_manifest as bm
+    from goldflow.core import build_manifest as bm
 
     must_track = {
-        "paper_executor.py", "paper_runner.py", "reviewer.py",
-        "trade_management.py", "trade_manager.py", "entry_policy.py",
-        "trade_geometry.py", "management_policy.py", "session_planner.py",
-        "tick_data_archive.py", "process_logging.py",
-        "market_context_cache.py", "review_shared.py",
+        "goldflow/execution/paper_executor.py", "goldflow/execution/paper_runner.py", "goldflow/decision/reviewer.py",
+        "goldflow/management/trade_management.py", "goldflow/management/trade_manager.py", "goldflow/decision/entry_policy.py",
+        "goldflow/decision/trade_geometry.py", "goldflow/management/management_policy.py", "goldflow/planning/session_planner.py",
+        "goldflow/core/tick_data_archive.py", "goldflow/core/process_logging.py",
+        "goldflow/market/market_context_cache.py", "goldflow/decision/review_shared.py",
     }
     missing = must_track - set(bm.DECISION_MODULES)
     assert not missing, f"live-path modules absent from the build manifest: {sorted(missing)}"
@@ -347,7 +347,7 @@ def test_every_live_path_module_is_in_the_manifest():
 
 def test_manifest_modules_all_exist():
     """A typo would hash as 'missing' forever and never move the build id."""
-    import build_manifest as bm
+    from goldflow.core import build_manifest as bm
 
     absent = [m for m in bm.DECISION_MODULES if not (bm.APP_DIR / m).exists()]
     assert not absent, f"manifest names files that do not exist: {absent}"
@@ -364,7 +364,7 @@ def test_a_winning_trade_now_cools_down_too():
     immediately after taking profit means entering at a level that has just
     been reached and reacted to.
     """
-    import paper_runner as pr
+    from goldflow.execution import paper_runner as pr
 
     seconds, label = pr.cooldown_for({"net_pnl": 118.0})
     assert seconds == pr.WIN_COOLDOWN_SECONDS and label == "Win"
@@ -372,7 +372,7 @@ def test_a_winning_trade_now_cools_down_too():
 
 def test_a_positive_protection_sl_has_no_cooldown():
     """A tightened profit floor is successful management, not a loss pause."""
-    import paper_runner as pr
+    from goldflow.execution import paper_runner as pr
 
     result = {
         "reason": "managed_or_safety_sl",
@@ -384,7 +384,7 @@ def test_a_positive_protection_sl_has_no_cooldown():
 
 
 def test_a_negative_sl_still_has_loss_cooldown():
-    import paper_runner as pr
+    from goldflow.execution import paper_runner as pr
 
     result = {
         "reason": "managed_or_safety_sl",
@@ -396,7 +396,7 @@ def test_a_negative_sl_still_has_loss_cooldown():
 
 
 def test_a_losing_trade_still_cools_down():
-    import paper_runner as pr
+    from goldflow.execution import paper_runner as pr
 
     seconds, label = pr.cooldown_for({"net_pnl": -52.25})
     assert seconds == pr.LOSS_COOLDOWN_SECONDS and label == "Loss"
@@ -405,7 +405,7 @@ def test_a_losing_trade_still_cools_down():
 
 def test_loss_cooldown_bypass_requires_high_confidence_and_rr():
     """Loss pause (5m) interruptible only by 82%+ and R:R >= 2.5."""
-    import paper_runner as pr
+    from goldflow.execution import paper_runner as pr
 
     strong = {
         "qwen": {
@@ -454,7 +454,7 @@ def test_loss_cooldown_bypass_requires_high_confidence_and_rr():
 
 def test_a_trade_that_never_happened_does_not_cool_down():
     """signal_expired held no position. Pausing on it throttles for nothing."""
-    import paper_runner as pr
+    from goldflow.execution import paper_runner as pr
 
     assert pr.cooldown_for({"reason": "signal_expired", "net_pnl": None}) == (0, "")
     assert pr.cooldown_for({}) == (0, "")
@@ -463,7 +463,7 @@ def test_a_trade_that_never_happened_does_not_cool_down():
 def test_an_unsettled_pnl_does_not_drive_the_cooldown():
     """net_pnl is the entry commission when the closing deal never settled, so
     its sign carries no information about whether the trade won or lost."""
-    import paper_runner as pr
+    from goldflow.execution import paper_runner as pr
 
     assert pr.cooldown_for({"net_pnl": -3.5, "pnl_is_complete": False}) == (0, "")
 
@@ -471,7 +471,7 @@ def test_an_unsettled_pnl_does_not_drive_the_cooldown():
 def test_both_cooldowns_are_in_the_build_manifest():
     """A cooldown change is a behaviour change; it must move the build_id, or
     two regimes get averaged into one sample."""
-    import build_manifest as bm
+    from goldflow.core import build_manifest as bm
 
     assert "paper_runner.WIN_COOLDOWN_SECONDS" in bm.MANIFEST["tunables"]
     assert "paper_runner.LOSS_COOLDOWN_SECONDS" in bm.MANIFEST["tunables"]
@@ -489,7 +489,7 @@ def test_the_manifest_captures_every_named_tunable():
     modules import build_manifest) and silently captured 0 of paper_runner's
     constants. Changing LOSS_COOLDOWN_SECONDS would not have changed build_id.
     """
-    import build_manifest as bm
+    from goldflow.core import build_manifest as bm
 
     broken = [k for k in bm.MANIFEST["tunables"]
               if "<missing>" in k or "<unreadable>" in k]
@@ -502,7 +502,7 @@ def test_the_manifest_captures_every_named_tunable():
 def test_manifest_reads_annotated_assignments_too():
     """SCORE_WEIGHTS is declared `X: dict[str, float] = {...}` -- a different
     AST node from a plain assignment, and originally missed."""
-    import build_manifest as bm
+    from goldflow.core import build_manifest as bm
 
     weights = bm.MANIFEST["tunables"].get("entry_policy.SCORE_WEIGHTS")
     assert isinstance(weights, dict) and weights, "annotated assignment not captured"
@@ -515,7 +515,7 @@ def test_manifest_does_not_import_the_modules_it_inspects():
     _tunables explains the old __import__ approach and a substring search
     matches its own history lesson.
     """
-    tree = ast.parse((BACKEND / "build_manifest.py").read_text(encoding="utf-8"))
+    tree = ast.parse((BACKEND / "goldflow/core/build_manifest.py").read_text(encoding="utf-8"))
     tunables = next(
         n for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "_tunables"

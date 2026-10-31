@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from market_intelligence.projection import reduce_event, relationship_state
-from market_intelligence.retrieval import RetrievalBroker
-from market_intelligence.store import IntelligenceStore
-from market_intelligence.collector import ingest_bars
+from goldflow.intelligence.projection import reduce_event, relationship_state
+from goldflow.intelligence.retrieval import RetrievalBroker
+from goldflow.intelligence.store import IntelligenceStore
+from goldflow.intelligence.collector import ingest_bars
 
 
 def event(symbol="XAUUSDr", timeframe="H1", direction="bullish", suffix="1"):

@@ -333,7 +333,7 @@ Primary decision path (unchanged doctrine)
 |------|----------------|
 | Process / curriculum size / ATR fields | `model_training/CURRICULUM_AND_DATA_PREP.md` |
 | Distilled books | `model_training/knowledge/topics/07–09, 04` |
-| Live ATR | `apps/qwen_trade_software/backend/market_atr.py` |
+| Live ATR | `apps/qwen_trade_software/backend/goldflow/market/market_atr.py` |
 | Parked full dual decide note | `reviewer.py` comment; this draft supersedes missing study for *sanity* scope |
 | This design | `docs/research/dual_side_sanity_check_design.md` |
 

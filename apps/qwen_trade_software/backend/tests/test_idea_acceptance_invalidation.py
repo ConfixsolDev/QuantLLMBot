@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from idea_lifecycle import IdeaManager  # noqa: E402
+from goldflow.planning.idea_lifecycle import IdeaManager  # noqa: E402
 
 
 def _idea(side: str) -> IdeaManager:

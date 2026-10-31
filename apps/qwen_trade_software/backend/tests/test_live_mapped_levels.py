@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import live_mapped_levels as lml  # noqa: E402
+from goldflow.structure import live_mapped_levels as lml  # noqa: E402
 
 
 def _bar(i: int, open_: float, high: float, low: float, close: float, tf: str = "M1"):
@@ -113,7 +113,7 @@ def test_nearby_prefers_live_map_not_last_bar():
 
 
 def test_execution_ladder_pins_live_near_price_not_distant_shelf():
-    from reviewer import _execution_level_ladder
+    from goldflow.decision.reviewer import _execution_level_ladder
     decision = {
         "M5": [
             {
@@ -149,7 +149,7 @@ def test_execution_ladder_pins_live_near_price_not_distant_shelf():
 
 
 def test_compact_facts_expose_live_map_ids():
-    from reviewer import compact_entry_facts
+    from goldflow.decision.reviewer import compact_entry_facts
     entry_cache = {
         "validated_at_utc": "2026-08-14T01:47:00Z",
         "decision_time_utc": "2026-08-14T01:47:00Z",

@@ -20,7 +20,7 @@ import pytest
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-import news_blackout as nb  # noqa: E402
+from goldflow.market import news_blackout as nb  # noqa: E402
 
 CPI = "2026-08-12T08:30:00-04:00"          # 12:30 UTC
 EVENTS = [
@@ -124,14 +124,14 @@ def test_management_is_never_gated_by_news():
     release more than at any other time. Abandoning a live trade because a
     calendar entry exists would be a worse decision than the one avoided.
     """
-    source = (BACKEND / "trade_management.py").read_text(encoding="utf-8")
+    source = (BACKEND / "goldflow/management/trade_management.py").read_text(encoding="utf-8")
     assert "news_blackout" not in source, (
         "trade_management must never consult the news gate"
     )
 
 
 def test_the_gate_is_on_the_entry_path_only():
-    source = (BACKEND / "reviewer.py").read_text(encoding="utf-8")
+    source = (BACKEND / "goldflow/decision/reviewer.py").read_text(encoding="utf-8")
     assert "news_blackout_active()" in source
     # and it must sit in the entry cycle, before the deal sheet is generated
     assert source.index("news_blackout_active()") < source.index(
@@ -142,7 +142,7 @@ def test_the_gate_is_on_the_entry_path_only():
 def test_the_fetch_is_not_on_the_decision_path():
     """A network call inside the entry loop is a new way for entries to stall,
     and entry latency is already the binding constraint here."""
-    source = (BACKEND / "reviewer.py").read_text(encoding="utf-8")
+    source = (BACKEND / "goldflow/decision/reviewer.py").read_text(encoding="utf-8")
     start = source.index("def news_blackout_active")
     body = source[start:start + 1800]
     assert "refresh_calendar" not in body

@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import trade_manager as tm  # noqa: E402
+from goldflow.management import trade_manager as tm  # noqa: E402
 
 
 def _base_facts(**overrides):

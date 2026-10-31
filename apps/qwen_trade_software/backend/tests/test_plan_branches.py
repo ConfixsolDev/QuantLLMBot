@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import plan_branches as pb  # noqa: E402
+from goldflow.planning import plan_branches as pb  # noqa: E402
 
 
 def bull(trigger=4405.8, inval=4397.6, targets=(4405.8, 4409.2)):

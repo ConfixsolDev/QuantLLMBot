@@ -28,7 +28,7 @@ sys.path.insert(0, str(BACKEND))
 
 def _resident(size_gb=9.0, vram_gb=9.0, name=None):
     if name is None:
-        from runtime_config import ACTIVE_QWEN_MODEL
+        from goldflow.core.runtime_config import ACTIVE_QWEN_MODEL
         name = ACTIVE_QWEN_MODEL
     return {"models": [{"name": name, "size": size_gb * 1e9,
                         "size_vram": vram_gb * 1e9}]}
@@ -36,7 +36,7 @@ def _resident(size_gb=9.0, vram_gb=9.0, name=None):
 
 @pytest.fixture
 def rs(monkeypatch):
-    import review_shared
+    from goldflow.decision import review_shared
     return review_shared
 
 
@@ -54,7 +54,7 @@ def _fake_ps(rs, monkeypatch, payload):
 
 def test_payload_asks_for_every_layer_on_gpu():
     """The fix that stops the silent fallback: ask, explicitly, every call."""
-    source = (BACKEND / "review_shared.py").read_text(encoding="utf-8")
+    source = (BACKEND / "goldflow/decision/review_shared.py").read_text(encoding="utf-8")
     start = source.index("def _ollama_generate_raw")
     body = source[start:start + 1400]
     assert '"num_gpu": FORCE_GPU_LAYERS' in body, (
@@ -95,7 +95,7 @@ def test_probe_failure_never_raises(rs, monkeypatch):
 # --- the gate -------------------------------------------------------------
 
 def _reviewer(monkeypatch):
-    import reviewer
+    from goldflow.decision import reviewer
     reviewer._GPU_GATE_STATE.update({"checked_at": 0.0, "ok": True, "alarmed_at": 0.0})
     return reviewer
 
@@ -138,15 +138,15 @@ def test_the_override_exists_and_works(monkeypatch):
 
 
 def test_model_identity_has_one_runtime_source_of_truth():
-    import market_context_cache
-    import review_shared
-    import runtime_config
+    from goldflow.market import market_context_cache
+    from goldflow.decision import review_shared
+    from goldflow.core import runtime_config
 
     assert review_shared.MODEL == runtime_config.ACTIVE_QWEN_MODEL
     assert market_context_cache.MODEL == runtime_config.ACTIVE_QWEN_MODEL
 
     runtime_files = [
-        path for path in BACKEND.glob("*.py")
+        path for path in (BACKEND / "goldflow").rglob("*.py")
         if path.name != "runtime_config.py"
     ]
     duplicated = [
@@ -166,7 +166,7 @@ def test_management_is_never_gated_on_placement():
     an unprotected position. It reports placement and carries on -- and the
     deterministic guard can act without the model at all.
     """
-    source = (BACKEND / "trade_management.py").read_text(encoding="utf-8")
+    source = (BACKEND / "goldflow/management/trade_management.py").read_text(encoding="utf-8")
     assert "require_gpu(" in source, "management should report placement"
     assert "gpu_ready_for_entry" not in source, (
         "management must never gate its cycle on GPU placement"
@@ -183,7 +183,8 @@ def test_the_quoted_ttl_matches_the_real_one():
     import ast
 
     def const(module: str, name: str):
-        tree = ast.parse((BACKEND / module).read_text(encoding="utf-8"))
+        from goldflow.core.paths import module_source
+        tree = ast.parse(module_source(Path(module).stem).read_text(encoding="utf-8"))
         for node in tree.body:
             if isinstance(node, ast.Assign):
                 for t in node.targets:

@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from market_structure_shadow import build_summary, native_decision, realised_direction  # noqa: E402
+from goldflow.structure.market_structure_shadow import build_summary, native_decision, realised_direction  # noqa: E402
 
 
 def test_native_decision_freezes_htf_before_m5_fallback():

@@ -9,7 +9,7 @@
 
 **Original date:** 2026-08-17 | **Confirmed active:** 2026-08-19
 
-**Model selection:** the single `DEFAULT_QWEN_MODEL` constant in `apps/qwen_trade_software/backend/runtime_config.py`
+**Model selection:** the single `DEFAULT_QWEN_MODEL` constant in `apps/qwen_trade_software/backend/goldflow/core/runtime_config.py`
 
 **Broker:** MetaTrader 5 demo account | **Instrument:** XAUUSD (Gold)
 
@@ -24,6 +24,20 @@ structure projections, and retrieval audits have no SQLite fallback. Local
 JSON/JSONL logs, health records, journals, and operational state remain enabled
 as inspectable evidence for later strategy improvement. A missing Timescale DSN
 fails closed before trading services can become ready.
+
+---
+
+### Modular code layout — 2026-10-31
+
+Live code under `apps/qwen_trade_software/backend/` is organised as the
+`goldflow` package: `core`, `market`, `intelligence`, `structure`, `regime`,
+`planning`, `decision`, `execution`, `management`, `runtime`. Module names and
+behaviour are unchanged; only their location moved. Process entry points keep
+their historical `backend/<name>.py` paths as launch shims, and all runtime
+state/log/cache paths still resolve to `backend/` via `goldflow.core.paths`.
+`DEFAULT_QWEN_MODEL` now lives in `backend/goldflow/core/runtime_config.py`.
+Because build_manifest digests file paths, the build id changes once at this
+restructure; results before and after it must not be pooled.
 
 ---
 

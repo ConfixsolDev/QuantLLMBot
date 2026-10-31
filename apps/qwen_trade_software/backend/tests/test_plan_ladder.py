@@ -15,8 +15,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import plan_branches as pb  # noqa: E402
-import plan_ladder as pl  # noqa: E402
+from goldflow.planning import plan_branches as pb  # noqa: E402
+from goldflow.planning import plan_ladder as pl  # noqa: E402
 
 
 def branch(side, trigger, inval, targets=(), state=pb.ARMED, confidence=50):

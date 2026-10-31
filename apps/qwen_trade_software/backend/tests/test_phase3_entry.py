@@ -7,12 +7,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import live_mapped_levels as lml  # noqa: E402
-from paper_executor import pre_fill_zone_cancellation  # noqa: E402
-import paper_executor as pe  # noqa: E402
-import qualified_levels as ql  # noqa: E402
-import regime_engine as re  # noqa: E402
-import reviewer  # noqa: E402
+from goldflow.structure import live_mapped_levels as lml  # noqa: E402
+from goldflow.execution.paper_executor import pre_fill_zone_cancellation  # noqa: E402
+from goldflow.execution import paper_executor as pe  # noqa: E402
+from goldflow.structure import qualified_levels as ql  # noqa: E402
+from goldflow.regime import regime_engine as re  # noqa: E402
+from goldflow.decision import reviewer  # noqa: E402
 
 
 def test_m1_failure_for_buy_support():
@@ -127,7 +127,7 @@ def test_levels_for_ui_marks_qualified(monkeypatch, tmp_path):
     path = tmp_path / "qualified-levels.json"
     monkeypatch.setattr(ql, "QUALIFIED_LEVELS_PATH", path)
     ql.remember_qualified_level_ids(["M5_PREVIOUS_LOW"])
-    import trade_management as tm
+    from goldflow.management import trade_management as tm
 
     monkeypatch.setattr(tm, "historical_respect_counts", lambda *a, **k: {})
     grouped = tm.levels_for_ui(

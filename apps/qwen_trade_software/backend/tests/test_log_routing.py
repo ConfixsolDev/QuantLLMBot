@@ -25,8 +25,9 @@ import pytest
 
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
+from goldflow.core.paths import module_source  # noqa: E402
 
-import process_logging  # noqa: E402
+from goldflow.core import process_logging  # noqa: E402
 
 ENTRYPOINTS = ("reviewer", "session_planner", "trade_management", "paper_runner")
 
@@ -91,7 +92,7 @@ def test_configure_creates_the_log_directory(tmp_path, real_file_logging):
 def test_entrypoints_do_not_use_bare_basic_config(module):
     """A bare basicConfig is the bug. Only process_logging.configure may set up
     the root logger, because only it passes force=True."""
-    tree = ast.parse((BACKEND / f"{module}.py").read_text(encoding="utf-8"))
+    tree = ast.parse(module_source(module).read_text(encoding="utf-8"))
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -115,7 +116,7 @@ def test_entrypoints_do_not_use_bare_basic_config(module):
 @pytest.mark.parametrize("module", ENTRYPOINTS)
 def test_each_entrypoint_claims_a_distinct_log_file(module):
     """Two processes writing one file interleaves two stories into one."""
-    tree = ast.parse((BACKEND / f"{module}.py").read_text(encoding="utf-8"))
+    tree = ast.parse(module_source(module).read_text(encoding="utf-8"))
 
     owners = [
         kw.value.value

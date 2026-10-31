@@ -44,7 +44,7 @@ def tokens():
     msvcrt.LK_NBLCK, msvcrt.LK_UNLCK = 1, 0
     sys.modules.setdefault("msvcrt", msvcrt)
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    import market_context_cache as mcc
+    from goldflow.market import market_context_cache as mcc
 
     return mcc.RESPONSE_TOKENS, mcc.BUY_REVERSAL_TOKENS, mcc.SELL_REVERSAL_TOKENS
 

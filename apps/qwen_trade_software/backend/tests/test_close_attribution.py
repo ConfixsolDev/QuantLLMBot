@@ -49,7 +49,7 @@ def _deal(position_id, entry, profit=0.0, commission=0.0, comment="", volume=0.5
 
 @pytest.fixture
 def executor(monkeypatch):
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     fake = types.SimpleNamespace(
         DEAL_ENTRY_IN=DEAL_ENTRY_IN,
@@ -166,7 +166,7 @@ def test_broker_comment_wins_over_the_decision_log(executor):
 
 def test_manager_lookup_reads_the_decision_log(tmp_path, monkeypatch):
     """manager_closed_position must find a real close record by position id."""
-    import paper_executor as pe
+    from goldflow.execution import paper_executor as pe
 
     log = tmp_path / "qwen-decisions-2026-08-11.jsonl"
     log.write_text(

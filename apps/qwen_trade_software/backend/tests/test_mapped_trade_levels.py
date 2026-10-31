@@ -8,8 +8,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from market_context_cache import MAPPED_TRADE_LEVELS_PATH  # noqa: E402
-from reviewer import _execution_level_ladder  # noqa: E402
+from goldflow.market.market_context_cache import MAPPED_TRADE_LEVELS_PATH  # noqa: E402
+from goldflow.decision.reviewer import _execution_level_ladder  # noqa: E402
 
 
 def test_mapped_trade_levels_file_has_chart_marks():

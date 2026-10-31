@@ -1,6 +1,6 @@
 import os
 
-import market_memory_worker
+from goldflow.market import market_memory_worker
 
 
 def test_health_publication_retries_windows_reader_lock(tmp_path, monkeypatch):

@@ -12,10 +12,10 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import trade_geometry as tg          # noqa: E402
-import management_policy as mp       # noqa: E402
-import contract_gate as cg           # noqa: E402
-import configuration_ledger as cl    # noqa: E402
+from goldflow.decision import trade_geometry as tg          # noqa: E402
+from goldflow.management import management_policy as mp       # noqa: E402
+from goldflow.decision import contract_gate as cg           # noqa: E402
+from goldflow.core import configuration_ledger as cl    # noqa: E402
 
 
 # ===========================================================================
@@ -663,7 +663,7 @@ def test_rebracket_not_needed_is_not_an_overdue_alarm():
     indistinguishable at the policy boundary from 'no structure existed'.
     Success and failure must not share a log line.
     """
-    import trade_management as tm
+    from goldflow.management import trade_management as tm
     import inspect
 
     source = inspect.getsource(tm.apply_initial_rebracket) if hasattr(

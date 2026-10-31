@@ -80,7 +80,7 @@ def our_fills(days: int) -> dict[int, dict]:
 
 def broker_positions(days: int) -> dict[int, list]:
     import MetaTrader5 as mt5
-    import paper_executor
+    from goldflow.execution import paper_executor
 
     if not mt5.initialize(path=paper_executor.DEFAULT_TERMINAL):
         raise SystemExit(f"MT5 unavailable: {mt5.last_error()}")
@@ -107,7 +107,7 @@ def main() -> int:
     args = parser.parse_args()
 
     import MetaTrader5 as mt5
-    import paper_executor
+    from goldflow.execution import paper_executor
 
     grouped = broker_positions(args.days)
     recorded = our_closed_position_ids(args.days)

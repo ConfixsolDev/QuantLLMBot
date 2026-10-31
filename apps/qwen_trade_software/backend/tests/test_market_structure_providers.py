@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from market_structure_providers import (  # noqa: E402
+from goldflow.structure.market_structure_providers import (  # noqa: E402
     CapabilityProvider, ProviderResult, StructureEvent, provider_inventory,
     run_shadow_providers,
 )

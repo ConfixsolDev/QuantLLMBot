@@ -1,4 +1,4 @@
-from qwen_event_gate import QwenEventGate, fingerprint
+from goldflow.decision.qwen_event_gate import QwenEventGate, fingerprint
 
 
 def test_unchanged_state_skips_until_heartbeat(tmp_path):

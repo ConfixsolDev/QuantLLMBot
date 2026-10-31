@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from candle_clock import candle_clock
+from goldflow.core.candle_clock import candle_clock
 
 
 def test_last_trade_clock_exposes_m15_and_h1_close_risk():

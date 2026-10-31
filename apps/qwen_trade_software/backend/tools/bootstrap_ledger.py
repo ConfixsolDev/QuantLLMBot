@@ -26,9 +26,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import configuration_ledger as cl   # noqa: E402
-import contract_gate as cg          # noqa: E402
-import entry_policy as ep           # noqa: E402
+from goldflow.core import configuration_ledger as cl   # noqa: E402
+from goldflow.decision import contract_gate as cg          # noqa: E402
+from goldflow.decision import entry_policy as ep           # noqa: E402
 
 
 BACKEND = Path(__file__).resolve().parent.parent
