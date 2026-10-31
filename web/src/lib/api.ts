@@ -12,7 +12,7 @@ export type Box = {
   t1: number; t2: number; status: string; tests: number; alive: boolean;
 };
 export type Marker = {
-  kind: string; time: number; price: number; position: "above" | "below"; text: string;
+  kind: string; time: number; price: number; position: "above" | "below"; text: string; detail?: string;
   level?: number; level_t1?: number;
 };
 export type Level = { name: string; side: "high" | "low"; price: number; t1: number; confirmed: boolean };

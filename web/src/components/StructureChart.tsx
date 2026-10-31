@@ -146,15 +146,18 @@ export default function StructureChart({ chart, layers, fitKey }: { chart: Chart
         const isLiq = m.level !== undefined;
         if ((isLiq && !layers.liquidity) || (!isLiq && !layers.other)) continue;
         markers.push({ time: m.time as UTCTimestamp, position: m.position === "above" ? "aboveBar" : "belowBar",
-          color: isLiq ? C.liq : m.kind === "close_spike" ? C.spike : C.pattern, shape: "circle", text: m.text, size: 0.7 });
+          color: isLiq ? C.liq : m.kind === "close_spike" ? C.spike : C.pattern, shape: "circle", text: m.text, size: 0.5 });
       }
     }
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     s.setMarkers(markers);
     dataRef.current = { ov, layers };
-    if (fittedRef.current !== fitKey && rows.length) {
+    // Zoom to the last ~160 candles when the timeframe changes, and again while
+    // history is still arriving (the first refresh may hold only a few bars).
+    const fitTag = `${fitKey}:${rows.length < 160 ? rows.length : "full"}`;
+    if (fittedRef.current !== fitTag && rows.length) {
       ch.timeScale().setVisibleLogicalRange({ from: Math.max(0, rows.length - 160), to: rows.length + 5 });
-      fittedRef.current = fitKey;
+      fittedRef.current = fitTag;
     }
     requestAnimationFrame(draw);
     // eslint-disable-next-line react-hooks/exhaustive-deps

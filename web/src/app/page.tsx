@@ -75,9 +75,15 @@ export default function Page() {
         <div className="card min-w-0 flex-1 p-1">
           <StructureChart chart={chart} layers={layers} fitKey={tf} />
         </div>
-        <aside className="w-[380px] shrink-0 overflow-y-auto">
+        <aside className="w-[340px] shrink-0 overflow-y-auto xl:w-[380px]">
           <SidePanel snap={snap} />
         </aside>
+      </div>
+      <div className="text-xs text-slate-500">
+        Labels: <span className="text-cyan-300">SW</span> sweep · <span className="text-cyan-300">SW✗</span> sweep failed ·{" "}
+        <span className="text-cyan-300">FB</span> false break · <span className="text-cyan-300">TK</span> liquidity taken ·{" "}
+        <span className="text-yellow-300">DT/DB/TT/TB</span> double/triple top/bottom · HH/HL/LH/LL swings ·
+        boxes: zones (fill), order blocks (outlined), FVG (light), ranges (dashed)
       </div>
       <footer className="text-xs text-slate-500">
         config {health?.config_id} · {health?.config_hash} · {health?.bars_processed ?? 0} M1 bars processed · {health?.events ?? 0} events

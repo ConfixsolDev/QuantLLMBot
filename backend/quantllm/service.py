@@ -164,9 +164,16 @@ class StructureService:
             self._stop.wait(self.s.poll_seconds)
 
     def run(self) -> None:
-        self._set("starting", "connecting to the database")
+        while self.db is None and not self._stop.is_set():
+            self._set("starting", "connecting to the database")
+            try:
+                self.db = Database(self.s.db_dsn, self.s.db_schema)
+            except Exception as exc:                        # e.g. Docker not started yet
+                self.status["database"] = f"unreachable: {exc}"
+                self._set("waiting", "database unreachable - is the TimescaleDB container running? retrying in 10 s")
+                self._stop.wait(10)
         if self.db is None:
-            self.db = Database(self.s.db_dsn, self.s.db_schema)
+            return
         self.status["database"] = f"{self.s.db_schema} ({'TimescaleDB' if self.db.timescale else 'PostgreSQL'})"
         self.import_history()
         self.replay()

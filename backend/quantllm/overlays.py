@@ -10,8 +10,9 @@ Output (all prices raw, all times UTC epoch seconds)::
     lines    BOS / CHoCH: horizontal line from the broken swing to the breaking candle
     boxes    FVG, order block, supply/demand zone, range: low..high from start
              until it ended (filled / broken / expired) or until now if alive
-    markers  liquidity sweep / failed sweep / false break / accepted break,
-             close spikes, confirmed double/triple tops & bottoms
+    markers  liquidity sweep / failed sweep / false break / accepted break
+             (SW, SW✗, FB, TK), close spikes, confirmed double/triple tops &
+             bottoms (DT, TT, DB, TB); ``detail`` holds the long description
     levels   confirmed Asia / London / New York / day / week highs and lows
              (last 48 h) and the forming session / day range
     swings   confirmed swing highs/lows of this timeframe with HH/HL/LH/LL labels
@@ -21,6 +22,9 @@ from __future__ import annotations
 
 LIQ = {"liquidity_sweep": "sweep", "sweep_failed": "sweep failed",
        "false_break": "false break", "liquidity_taken": "taken"}
+# Short chart labels: the chart stays readable; the side panel has the details.
+SHORT = {"liquidity_sweep": "SW", "sweep_failed": "SW✗", "false_break": "FB", "liquidity_taken": "TK"}
+PATTERN_SHORT = {"double_top": "DT", "triple_top": "TT", "double_bottom": "DB", "triple_bottom": "TB"}
 BOX_START = {"fvg_created": "fvg", "order_block_created": "ob", "zone_created": "zone", "range_formed": "range"}
 BOX_END = {"fvg_filled", "fvg_expired", "order_block_broken", "order_block_expired",
            "zone_broken", "zone_expired", "range_break", "range_expired"}
@@ -68,17 +72,17 @@ def build(events: list[dict], tf: str, t_from: int, now: int, snap, snapshot: di
             for lv in levels[:1]:
                 markers.append({"kind": k, "time": snap(d["candle"]["time"]), "price": d["extreme"],
                                 "position": "above" if d["side"] == "high" else "below",
-                                "text": f"{LIQ[k]} {lv['kind'].replace('_', ' ')}",
+                                "text": SHORT[k], "detail": f"{LIQ[k]} {lv['kind'].replace('_', ' ')}",
                                 "level": lv["price"], "level_t1": snap(max(lv["time"], t_from))})
         elif k == "close_spike":
             markers.append({"kind": "close_spike", "time": snap(d["close_time"] - 60), "price": d["extreme"],
                             "position": "above" if d["direction"] == "up" else "below",
-                            "text": f"{etf} close spike {d['move']:.1f}"})
+                            "text": f"{etf} spike", "detail": f"{etf} close spike {d['move']:.1f}"})
         elif k == "pattern_confirmed":
             markers.append({"kind": "pattern", "time": snap(d["peaks"][-1]["time"]),
                             "price": d["peaks"][-1]["price"],
                             "position": "above" if d["kind"].endswith("top") else "below",
-                            "text": d["kind"].replace("_", " ")})
+                            "text": PATTERN_SHORT.get(d["kind"], d["kind"]), "detail": d["kind"].replace("_", " ")})
         elif k == "swing" and etf == tf:
             swings.append({"time": snap(d["time"]), "price": d["price"], "kind": d["kind"],
                            "label": d["label"] or ""})
