@@ -185,9 +185,9 @@ file's header comment.
 | Range | M15, H1 | last 20 candles within 3 ATR, top and bottom each touched ≥ 3 times; edges become liquidity pools; ends with a close beyond an edge | `ranges.py` |
 | Close spikes | H1, H4 closes | the larger M1 move in the last 10 minutes before the close is ≥ 0.75 × H1 ATR (optional dollar floor); context: held vs rejected close, previous-candle sweep, session/prior-day levels swept (last 24 h), zone hit, H4 swing trend, volume ratio, session; outcome after 15/60/240 min: reversal (back beyond the spike start), continuation (beyond the extreme) or partial | `spikes.py` |
 
-| VWAP + bands | from M1; events judged on M5 | volume-weighted typical price (h+l+c)/3 with MT5 tick volume, ±1σ / ±2σ bands; anchors: **day** (resets 17:00 New York), **week** (Sunday 17:00 NY), **session** (Asia / London / New York windows); `vwap_cross` = M5 close on the other side of VWAP than the previous close; `vwap_band_reject` = M5 candle trades beyond the 2σ band and closes back inside; events only after 30 M1 bars of the period | `vwap.py` |
+| VWAP + bands | from M1; events judged on M5 | volume-weighted typical price (h+l+c)/3 with MT5 tick volume, ±1σ / ±2σ bands; anchors: **day** (resets 17:00 New York), **week** (Sunday 17:00 NY), **session** (Asia / London / New York windows); `vwap_cross` = price changed side: an M5 close ≥ 0.5 ATR(M5) beyond VWAP on the other side from the last confirmed side (hysteresis: without it half the crosses were re-crossed within 15 min); `vwap_band_reject` = M5 candle trades beyond the 2σ band and closes back inside, once per episode (re-armed after a close back inside 1σ); events only after 30 M1 bars of the period | `vwap.py` |
 
-| HTF levels (strategy A4) | levels: H1/H4 swings + session/day/week; tests on M1; breaks on M5 | a level is registered only while price is on the right side of it; levels within 0.3 ATR(M15) merge (sources = confluence; the outermost price until the first test). **Test** = M1 extreme within 0.10 ATR after price was ≥ 1.0 ATR away, numbered 1, 2, 3…, with approach (push / squeeze / drift over 20 M1 bars), stretch (H1 ATR over 24 h) and M15/H1/H4 trend; **rejection** = within 10 M1 bars, poke ≥ 0.05 ATR beyond and close back inside; **follow-through** = 3 M1 bars later moved ≥ 0.5 ATR away or stalled; **held** = 1.0 ATR away; **broken** = M5 close 0.3 ATR beyond (level retired); **level_pattern** = confirmed M1 double/triple top/bottom with peaks within 0.5 ATR of a level tested in the last hour | `levels.py` |
+| HTF levels (strategy A4) | levels: H1/H4 swings + session/day/week; tests on M1; breaks on M5 | a level is registered only while price is on the right side of it; levels within 0.3 ATR(M15) merge (sources = confluence; the outermost price until the first test). **Test** = M1 extreme within 0.10 ATR after price was ≥ 1.0 ATR away, numbered 1, 2, 3…, with approach (push / squeeze / drift over 20 M1 bars), stretch (H1 ATR over 24 h) and M15/H1/H4 trend; **rejection** = within 10 M1 bars, poke ≥ 0.05 ATR beyond and close back inside; **follow-through** = 3 M1 bars later moved ≥ 0.5 ATR away or stalled; **held** = 1.0 ATR away; **broken** = M5 close 0.3 ATR beyond (level retired); **expired** after 120 h (never during a test); **level_pattern** = confirmed M1 double/triple top/bottom with peaks within 0.5 ATR of a level tested in the last hour | `levels.py` |
 
 Every threshold above is a key in `config/xauusd_structure_v1.json`; the
 numbers here are the shipped values, not code constants.
@@ -589,6 +589,12 @@ Development: `cd web && npm run dev` with `NEXT_PUBLIC_API_BASE=http://127.0.0.1
 
 ### C5. Start and test
 
+* Restart (after an update, or if anything looks stale): double-click
+  `Restart-QuantLLM.bat`. It stops every running copy (console windows,
+  anything on port 8765, any `quantllm serve`) and starts again. A second copy
+  can no longer start silently next to an old one: the server refuses a port
+  that is in use (on Windows the default socket option let both bind, and the
+  old process kept answering — found 2026-10-31).
 * Start: double-click `Start-QuantLLM.bat`. It checks the database variable,
   installs missing Python packages, builds the website once (needs Node.js),
   opens the browser and runs the service.
@@ -800,6 +806,15 @@ detection · P21 closed response missed by stale playbook.
   (A4); level-reaction study with a random-level control on real gold (B3c);
   `levels.py` records level tests, M1 rejections, follow-through, held/broken
   and M1 patterns at levels; chart layer, side panel, Replay check sheet.
+- **10-day check (2026-11-01):** day-by-day replay of the last 10 trading days
+  (invariants, determinism, no-repaint, audit, point-in-time charts, level
+  lifecycles — all pass). Fixed: expired HTF levels were drawn as still alive
+  on Replay (new `level_expired` event); VWAP crosses whipsawed (0.5 ATR
+  hysteresis: 35 → 14 a day, re-cross within 15 min 50 % → 12 %); band
+  rejects repeated every candle of one poke (one per episode: 42 → 15 a day);
+  two band rejects in one candle shared an id; a restarted service could share
+  port 8765 with the old one (`Restart-QuantLLM.bat`, exclusive port); the
+  console logged "live" every 2 s.
 - **VWAP and Replay (2026-10-31, night):** day / week / session VWAP with
   bands, crosses and band rejects (B2); Replay & verify page with check sheet,
   automatic day checks and monthly scorecard; `reviews` table (C2, C4b).

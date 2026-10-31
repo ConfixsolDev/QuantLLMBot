@@ -56,9 +56,10 @@ def build(events: list[dict], tf: str, t_from: int, now: int, snap, snapshot: di
             lv = d if k == "level_created" else d["level"]
             h = hl.setdefault(lv["id"], {"id": lv["id"], "price": lv["price"], "side": lv["side"],
                                          "sources": lv["sources"], "t1": lv["created_at"], "t2": None, "tests": 0})
+            h["sources"], h["price"] = lv["sources"], lv["price"]   # merges add sources later
             if k == "level_test":
                 h["tests"] = d["test_no"]
-            elif k == "level_broken":
+            elif k in ("level_broken", "level_expired"):
                 h["t2"] = e["available_at"]
             continue
         if e["available_at"] < t_from and k not in BOX_START and k not in BOX_END and k not in BOX_UPDATE:

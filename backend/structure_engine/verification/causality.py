@@ -119,7 +119,7 @@ def invariants(events: list[Event], cfg: StructureConfig) -> list[str]:
                     bad.append(f"{e.id}: rejection did not poke beyond and close back inside")
             if e.kind == "level_broken" and not sg * (c["close"] - lv["price"]) > 0:
                 bad.append(f"{e.id}: break candle did not close beyond the level")
-            if e.kind == "level_broken":
+            if e.kind in ("level_broken", "level_expired"):
                 level_tests.pop(lv["id"], None)
             if e.kind == "level_pattern":
                 top = d["pattern"].endswith("top")

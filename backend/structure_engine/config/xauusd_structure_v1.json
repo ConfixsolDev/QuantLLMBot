@@ -168,6 +168,7 @@
       2.0
     ],
     "detect_timeframe": "M5",
+    "cross_buffer_atr": 0.5,
     "reject_band": 2.0,
     "min_bars": 30
   },

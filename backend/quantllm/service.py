@@ -42,6 +42,8 @@ from __future__ import annotations
 import json
 import logging
 import mimetypes
+import os
+import socket
 import threading
 import time
 from collections import deque
@@ -109,10 +111,12 @@ class StructureService:
 
     # ---------------------------------------------------------------- startup
     def _set(self, state: str, message: str = "", progress: float | None = None) -> None:
+        changed = (state, message) != (self.status["state"], self.status["message"])
         self.status["state"], self.status["message"] = state, message
         if progress is not None:
             self.status["progress"] = round(progress, 3)
-        log.info("%s %s", state, message)
+        if changed:                                        # log changes, not every 2-second poll
+            log.info("%s %s", state, message)
 
     def import_history(self) -> None:
         if not self.use_mt5:
@@ -392,9 +396,30 @@ def make_handler(service: StructureService):
     return Handler
 
 
+class _Server(ThreadingHTTPServer):
+    """HTTP server that refuses a port another process already holds.
+
+    Python's default (SO_REUSEADDR) lets a SECOND server bind the same port on
+    Windows; requests then keep going to the OLD process while the new one
+    looks fine. Seen 2026-10-31: a restarted service kept serving old code.
+    """
+    allow_reuse_address = os.name != "nt"
+
+    def server_bind(self) -> None:
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 def serve(settings: Settings, use_mt5: bool = True) -> None:
+    try:
+        httpd = _Server((settings.api_host, settings.api_port), None)
+    except OSError as exc:
+        log.error("port %d is already in use (%s): QuantLLM is probably still running. "
+                  "Close it, or use Restart-QuantLLM.bat.", settings.api_port, exc)
+        raise SystemExit(1)
     service = StructureService(settings, use_mt5)
-    httpd = ThreadingHTTPServer((settings.api_host, settings.api_port), make_handler(service))
+    httpd.RequestHandlerClass = make_handler(service)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     log.info("API on http://%s:%d/api/health", settings.api_host, settings.api_port)
     try:

@@ -178,3 +178,14 @@ def test_replay_day_and_reviews_api(db, dsn):
         post("/api/reviews", {"id": "x", "day": date, "kind": "bos", "tf": "M5", "verdict": "maybe"})
     assert err.value.code == 400
     httpd.shutdown()
+
+
+def test_server_refuses_a_port_that_is_already_in_use():
+    """A second QuantLLM must fail loudly, not share the port with the old one."""
+    from quantllm.service import _Server
+    first = _Server(("127.0.0.1", 0), None)
+    try:
+        with pytest.raises(OSError):
+            _Server(("127.0.0.1", first.server_address[1]), None)
+    finally:
+        first.server_close()

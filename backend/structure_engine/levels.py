@@ -51,6 +51,7 @@ Life of a level, drawn for a resistance (support is the mirror image)::
   level_held        after a test, price gets hold_atr away from the level
   level_broken      a ``break_timeframe`` (M5) candle CLOSES beyond the level by
                     break_buffer_atr; the level is retired
+  level_expired     max_age_hours passed without a break (never during a test)
   level_pattern     an M1 double/triple top (bottom) is CONFIRMED whose peaks
                     are within pattern_link_atr of a level tested in the last
                     pattern_link_hours — the M1 pattern "formed at" that level
@@ -191,6 +192,7 @@ class LevelBook:
         for lv in list(self.active):                            # age out (never mid-test)
             if now >= lv.expires_at and lv.test is None:
                 self.active.remove(lv)
+                out.append(("level_expired", lv, {"tests": lv.tests}))
         return out
 
     def _rejection(self, lv: Level, t: _Test, bar: Bar, out: list) -> None:

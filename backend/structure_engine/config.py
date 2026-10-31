@@ -108,7 +108,7 @@ SCHEMA: dict[str, Any] = {
         "anchors": ("list", STR),
         "day_anchor": {"timezone": STR, "hour": INT},
         "bands": ("list", POS_NUM),
-        "detect_timeframe": TF,
+        "detect_timeframe": TF, "cross_buffer_atr": NUM,
         "reject_band": POS_NUM,
         "min_bars": POS_INT,
     },

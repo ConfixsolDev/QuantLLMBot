@@ -277,8 +277,8 @@ class StructureEngine:
             for kind, lv, data in self.levels.on_break_bar(bar, self._lv_atr()):
                 ev.append(self._ev(kind, tf, bar.time, {"level": lv.as_dict(), **data}, key=lv.id))
         if tf == cfg["vwap"]["detect_timeframe"]:
-            for kind, data in self.vwap.on_detect_bar(bar):
-                ev.append(self._ev(kind, tf, bar.time, data, key=f"{data['anchor']}:{kind}"))
+            for kind, data in self.vwap.on_detect_bar(bar, atr):
+                ev.append(self._ev(kind, tf, bar.time, data, key=f"{data['anchor']}:{kind}:{data.get('side') or data.get('direction')}"))
         if tf in self.ranges:
             for kind, data in self.ranges[tf].on_bar(bar, atr, self.now):
                 ev.append(self._ev(kind, tf, data["start"], data, key=f"{kind}:{bar.time}"))

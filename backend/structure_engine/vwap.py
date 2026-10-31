@@ -24,10 +24,18 @@ session  resets at each Asia / London / New York window start
 Events (judged on CLOSED ``detect_timeframe`` candles, M5 by default; only
 once ``min_bars`` M1 bars have built the period, so a fresh VWAP is not noise)
 ------------------------------------------------------------------------------
-vwap_cross        the candle closed on the other side of VWAP than the
-                  previous candle (direction up / down)
+vwap_cross        price has CHANGED SIDE of VWAP: the candle closed at least
+                  ``cross_buffer_atr`` x ATR (of detect_timeframe; 0.5) beyond VWAP,
+                  on the other side from the last confirmed side (up / down).
+                  Closes inside the buffer change nothing (hysteresis). Real
+                  gold Apr-Aug 2026, crosses re-crossed within 15 minutes:
+                  no buffer 50 % (35 a day), 0.25 ATR 27 %, 0.5 ATR 12 %
+                  (14 a day), 0.75 ATR 5 % (11 a day) — 0.5 keeps real
+                  changes of side and drops most of the chop.
 vwap_band_reject  the candle traded beyond the ``reject_band`` band but closed
-                  back inside it (upper or lower)
+                  back inside it (upper or lower). One event per episode: the
+                  same anchor and side fire again only after a candle has
+                  closed back inside the 1-sigma band.
 
 The current VWAP and bands of every anchor are in ``engine.snapshot()``.
 """
@@ -65,7 +73,8 @@ class VwapTracker:
         self.windows = sorted((v[0] * 3600, v[1] * 3600, k) for k, v in cfg["sessions"]["windows_utc"].items())
         self.day_offset = cfg["sessions"]["day_start_utc_hour"] * 3600
         self.periods: dict[str, _Period | None] = {a: None for a in self.c["anchors"]}
-        self.prev_close: float | None = None
+        self.side: dict[str, tuple[int, str] | None] = {a: None for a in self.c["anchors"]}  # (period start, up|down)
+        self.armed: dict[tuple[str, str], bool] = {}          # band-reject episode per (anchor, side)
 
     def _anchor(self, anchor: str, t: int) -> tuple[int, str] | None:
         if anchor == "day":
@@ -108,23 +117,36 @@ class VwapTracker:
                            "bands": {str(k): [round(vw - k * sd, 4), round(vw + k * sd, 4)] for k in self.c["bands"]}}
         return out
 
-    def on_detect_bar(self, bar: Bar) -> list[tuple[str, dict]]:
-        """A detect-timeframe candle closed (after its M1 bars were added)."""
+    def on_detect_bar(self, bar: Bar, atr: float | None = None) -> list[tuple[str, dict]]:
+        """A detect-timeframe candle closed (after its M1 bars were added).
+        ``atr``: ATR of the detect timeframe as of BEFORE this candle."""
         out = []
-        prev, self.prev_close = self.prev_close, bar.close
         k = self.c["reject_band"]
+        buf = self.c["cross_buffer_atr"] * atr if atr else 0.0
         for anchor, p in self.periods.items():
             if p is None or p.bars < self.c["min_bars"]:
                 continue
             vw, sd = p.value()
             base = {"anchor": anchor, "name": p.name, "vwap": round(vw, 4), "sd": round(sd, 4),
                     "candle": bar.as_dict()}
-            if prev is not None and (prev < vw <= bar.close or prev > vw >= bar.close):
-                out.append(("vwap_cross", {**base, "direction": "up" if bar.close >= vw else "down"}))
+            now_side = "up" if bar.close > vw + buf else "down" if bar.close < vw - buf else None
+            last = self.side[anchor]
+            if last is not None and last[0] != p.start:
+                last = None                                   # new period: start fresh
+            if now_side is not None:
+                if last is not None and last[1] != now_side:
+                    out.append(("vwap_cross", {**base, "direction": now_side}))
+                self.side[anchor] = (p.start, now_side)
             if sd > 0:
                 up, dn = vw + k * sd, vw - k * sd
-                if bar.high > up and bar.close < up:
-                    out.append(("vwap_band_reject", {**base, "side": "upper", "band": k, "level": round(up, 4)}))
-                elif bar.low < dn and bar.close > dn:
-                    out.append(("vwap_band_reject", {**base, "side": "lower", "band": k, "level": round(dn, 4)}))
+                # both sides are checked: a huge candle can reject both bands
+                for side, hit in (("upper", bar.high > up and bar.close < up),
+                                  ("lower", bar.low < dn and bar.close > dn)):
+                    key = (anchor, side)
+                    if hit and self.armed.get(key, True):
+                        out.append(("vwap_band_reject", {**base, "side": side, "band": k,
+                                                         "level": round(up if side == "upper" else dn, 4)}))
+                        self.armed[key] = False
+                    elif not hit and (bar.close < vw + sd if side == "upper" else bar.close > vw - sd):
+                        self.armed[key] = True                 # back inside 1 sigma: re-armed
         return out
