@@ -478,7 +478,8 @@ Start-QuantLLM.bat          one-click start (repository root)
 requirements.txt            backend Python packages (psycopg, MetaTrader5, pytest)
 backend/
   structure_engine/         Part B
-  studies/                  research scripts (not used by the app): level_reaction.py (B3c)
+  studies/                  research scripts (not used by the app): level_reaction.py (B3c),
+                            trade_geometry.py (F3c)
   strategy/ qwen/ trading/  Part F: strategies, the Qwen model, execution
   quantllm/
     settings.py             database / API / history settings (config/app.json + environment)
@@ -599,7 +600,7 @@ Development: `cd web && npm run dev` with `NEXT_PUBLIC_API_BASE=http://127.0.0.1
 * Start: double-click `Start-QuantLLM.bat`. It checks the database variable,
   installs missing Python packages, builds the website once (needs Node.js),
   opens the browser and runs the service.
-* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests strategy/tests qwen/tests trading/tests -q` (77 tests).
+* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests strategy/tests qwen/tests trading/tests -q` (80 tests).
   The database tests use `QUANTLLM_TEST_DSN` (schema `quantllm_test`) or the
   `pgserver` package; they never touch the real schema.
 * Verified 2026-10-31 on 100,000 real XAUUSD M1 bars in PostgreSQL 16:
@@ -809,6 +810,7 @@ backend/trading/             Module 3 — execution
   journal.py     tables decisions / trades / refusals (schema "structure")
   pipeline.py    the bar-by-bar loop, the same for replay and live
   backtest.py    python -m trading.backtest --m1 <bars> | --db --from D [--lane all|qwen]
+  verify.py      system checks on every decision and trade of a run (F3c)
 backend/config/qwen.example.json, trading.example.json   copy to qwen.json / trading.json
 ```
 
@@ -847,7 +849,7 @@ irresistible but comes from a tiny planned stop; evidence that repeated the
 candidate and wasted space on session-VWAP touches; ages like "6157m"; and the
 decision taken at the level TOUCH, before the most informative fact (the M1
 rejection itself) existed. v2 (strategy file `htf_level_m1_rejection.v2.json`,
-v1 retired unused):
+v1 retired unused; superseded by v3, F3c):
 
 * Qwen is asked AT the M1 rejection (`rules.decision_point = "rejection"`);
   an approval enters at once (GPU latency is seconds).
@@ -879,6 +881,34 @@ target / management variants on these 3 months found no robust winner (the
 best, break-even at +1 R, averaged +0.16 R, inside the noise of 331 trades).
 Decision for the owner: freeze the trade geometry on the full year of data
 before collecting Qwen answers.
+
+### F3c. Strategy v3: stop at least 1.2 ATR (owner's rule, 2026-11-01)
+
+Owner: "gold's noise is always high — the stop must be at least 1 to 1.2 ATR",
+or behind the next higher-timeframe level. `htf_level_m1_rejection.v3.json`:
+
+* stop = beyond the rejection candle (+0.1 ATR) and **at least 1.2 ATR(M15)**
+  from the entry (`stop_mode: "atr"`). Option `stop_mode:
+  "beyond_higher_level"`: just beyond the nearest H4 / day / week level beyond
+  the traded level, if within `max_stop_atr` (3) — built and tested, not the
+  default (see below);
+* target = **1.5 R** of the real risk (`target: "r_multiple"`);
+* **no early "stalled" exit** — the trade ends at its stop or target;
+* doctrine rewritten: Qwen's one question is "will this level hold?".
+
+What the data said (May–Aug 2026, every candidate, `python -m
+studies.trade_geometry`): with 1.2 ATR the outcome is decided by the level —
+held ≈ +0.7 R, broken ≈ −0.6 R, about half and half — so selection (Qwen)
+is what matters. A stop behind the next higher level averaged −0.004 R vs
++0.04 R for 1.2 ATR: the wider stop pushes the 1.5 R target out of reach.
+Re-run the study on the full year before changing the default.
+
+`trading/verify.py` checks that the system behaves exactly as specified on
+every decision and trade (prompt budget, nothing trades without a "take",
+stop >= 1.2 ATR on the right side, target = 1.5 R, risk money <= budget,
+filled inside the entry window, one position at a time, complete P&L, exits
+at the stop / target price, no early close). `python -m trading.backtest`
+prints "system checks: ALL PASS" — May–Aug 2026: 246 trades, all pass.
 
 ### F4. Running it
 

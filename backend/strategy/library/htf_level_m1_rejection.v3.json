@@ -1,0 +1,74 @@
+{
+  "id": "htf_level_m1_rejection",
+  "version": 3,
+  "name": "Higher-timeframe level, M1 rejection",
+  "_readme": "v3 (2026-11-01, owner's rule): the stop is at least 1.2 ATR(M15) beyond the entry (never tighter than the rejection candle), the target is 1.5 R, and there is no early 'stalled' exit. On May-Aug 2026 the v2 stop (0.3-0.5 ATR) stopped out 72 % of the trades whose level then HELD; with 1.2 ATR the result is decided by one question - does the level hold (held +0.5 to +1.0 R, broken -0.6 to -0.8 R). Qwen's job is that question. 'rules' is evaluated by code; 'doctrine' + 'legend' are what Qwen reads.",
+  "rules": {
+    "kind": "htf_level_rejection",
+    "decision_point": "rejection",
+    "sides": [
+      "buy",
+      "sell"
+    ],
+    "sessions": [
+      "ASIA",
+      "LONDON",
+      "NEW_YORK",
+      "OFF"
+    ],
+    "max_test_no": 6,
+    "approaches": [
+      "push",
+      "drift",
+      "squeeze",
+      "unknown"
+    ],
+    "rejection_within_bars": 10,
+    "entry_window_bars": 3,
+    "stop_buffer_atr": 0.1,
+    "min_stop_atr": 1.2,
+    "stop_mode": "atr",
+    "max_stop_atr": 3.0,
+    "plan_stop_allowance_atr": 1.2,
+    "target": "r_multiple",
+    "target_r": 1.5,
+    "fallback_target_r": 2.0,
+    "min_target_atr": 0.5,
+    "min_rr": 1.0,
+    "min_confidence": 51,
+    "close_on_stalled_followthrough": false,
+    "max_candidates": 2
+  },
+  "prompt": {
+    "max_bytes": 6000,
+    "max_levels": 4,
+    "max_evidence": 12
+  },
+  "doctrine": [
+    "You are the trade judge for ONE gold (XAUUSD) setup: fade a higher-timeframe level (H1/H4 swing, session, day or week high/low) right after an M1 rejection of it.",
+    "The rejection has ALREADY happened: an M1 candle poked beyond the level and closed back inside. If you answer with a candidate id, code enters at once at market. The stop is at least 1.2 ATR away (beyond the rejection candle), the target is 1.5 R. There is no early exit. You never change prices.",
+    "So the only question is: WILL THIS LEVEL HOLD? If it holds, the trade usually reaches its target; if it breaks, the trade loses a full stop.",
+    "Weigh FOR: a clear rejection (long wick, close well back inside, high volume); earlier tests of the level held; confluence (several sources at one price); a fast push into the level that then stopped; higher timeframes with you, or price at a range edge; room to the first obstacle.",
+    "Weigh AGAINST: the 1st test of a fresh level (stops rest beyond it - it breaks more often); a squeeze into the level (tight, pressing); a shallow poke with a weak close; fresh BOS on M15/H1 against you; levels just beyond yours already 'beyond' (price is breaking through the area); a very fast market (m15_range_vs_atr high).",
+    "Answer 'wait' when the evidence is mixed. Waiting costs nothing; a broken level costs a full stop.",
+    "Confidence 51-100 = how sure you are the level holds; it is not a profit promise. Cite what you used: evidence ids (E1 ...) and/or candidate facts (C1.rejection, C1.level.history ...)."
+  ],
+  "legend": [
+    "Distances *_atr are in ATR(M15); ages in m(inutes), h(ours), d(ays).",
+    "trend.<tf>: dir from BOS/CHoCH on that timeframe; protected = the swing whose break flips it. The breaks are in evidence.",
+    "vwap.<anchor>: VWAP price; sd_away = standard deviations price is from it (+ above).",
+    "levels: other higher-timeframe levels near price (R/S, sources, tests so far, distance; beyond = price is past it but no M5 close has confirmed a break yet).",
+    "level.history: earlier tests of this level - rejected? moved or stalled? held or broke?",
+    "approach (last 20 M1 bars): push = fast one-way, squeeze = tight and pressing, drift; move_atr, eff = net/path (0-1), press = bars within 0.5 ATR of the level.",
+    "rejection: poke_atr beyond the level; wick = rejection wick / candle range; back_atr = close back inside; vol_x = volume / average M1 volume.",
+    "obstacles: prices between entry and target that may stop the move."
+  ],
+  "answer": {
+    "decision": "a candidate id (C1 ...) or \"wait\"",
+    "confidence": "integer 0-100",
+    "cites": [
+      "evidence ids used"
+    ],
+    "why": "one short sentence, at most 200 characters"
+  }
+}

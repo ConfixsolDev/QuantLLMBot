@@ -102,6 +102,7 @@ def test_executor_refusals():
 def test_backtest_take_all_smoke():
     from trading.backtest import report, run
     res = run(random_walk_m1(3, 6 * 1440), lane="all")
+    assert res["verify"] == []                          # every system rule held on every trade
     st = res["pipeline"]
     assert st["bars"] == 6 * 1440 and st["too_large"] == 0 and st["max_prompt_bytes"] <= 6000
     assert st["prompts"] == st["take"] and st["filled"] + st["refused"] == st["intents"]
@@ -183,3 +184,20 @@ def test_mt5_broker_request_fields_and_exit_reasons():
     assert req["magic"] == 26110101 and req["type_filling"] == FakeMT5.ORDER_FILLING_IOC
     ex = b.exit_summary(77, T0)
     assert ex.reason == "stop" and ex.complete and ex.net == pytest.approx(-202.0) and ex.exit_price == 2001.0
+
+
+def test_verify_catches_rule_breaks():
+    from types import SimpleNamespace
+    from strategy import load
+    from trading.verify import verify
+    s = load("htf_level_m1_rejection")
+    j = MemoryJournal()
+    j.decision({"id": "d1", "prompt_bytes": 9000, "action": "take", "label": "C1", "candidates": {"C1": "k"}})
+    j.trade_opened({"id": "t1", "decision_id": "d1", "side": "sell", "stop": 2001.0, "target": 1990.0,
+                    "risk_money": 2000.0, "balance_before": 10_000.0, "opened_at": T0 + 60, "atr": 5.0,
+                    "intent_created_at": T0, "meta": {"rejection_candle": {"time": T0, "close": 1999.0}}})
+    j.trade_opened({"id": "t2", "decision_id": "dX", "side": "sell", "stop": 2006.0, "target": 1988.5,
+                    "risk_money": 100.0, "balance_before": 10_000.0, "opened_at": T0 + 120, "atr": 5.0,
+                    "intent_created_at": T0, "meta": {"rejection_candle": {"time": T0, "close": 1999.0}}})
+    codes = {f.split(" ")[0] for f in verify(s, SimpleNamespace(risk_pct=10.0, max_open_positions=1), j)}
+    assert {"D1", "T1", "T2", "T3", "T4", "T6"} <= codes

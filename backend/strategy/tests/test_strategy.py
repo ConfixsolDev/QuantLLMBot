@@ -64,8 +64,10 @@ class FakeEngine:
 
 
 def test_strategy_file_is_strict_and_hashed():
-    assert S.version == 2 and S.rules["decision_point"] == "rejection" and S.ref.startswith("htf_level_m1_rejection@v2#")
-    raw = json.loads(next(Path(__file__).resolve().parents[1].joinpath("library").glob("*.v2.json")).read_text())
+    assert S.version == 3 and S.rules["decision_point"] == "rejection" and S.ref.startswith("htf_level_m1_rejection@v3#")
+    assert S.rules["min_stop_atr"] == 1.2 and S.rules["target"] == "r_multiple" and S.rules["target_r"] == 1.5
+    assert S.rules["close_on_stalled_followthrough"] is False
+    raw = json.loads(next(Path(__file__).resolve().parents[1].joinpath("library").glob("*.v3.json")).read_text())
     assert parse(raw).hash == S.hash
     with pytest.raises(StrategyError, match="unknown"):
         parse({**raw, "rules": {**raw["rules"], "min_rrr": 1}})
@@ -76,13 +78,17 @@ def test_strategy_file_is_strict_and_hashed():
 
 def test_plan_and_trigger_prices():
     c, why = cands.plan(S, level_test(), SNAP, "LONDON")
-    assert why == "ok" and c.side == "sell" and c.target == 1990.0 and c.rr == pytest.approx(5.0)
+    # v3: planned stop 1.2 ATR beyond the level, target 1.5 R
+    assert why == "ok" and c.side == "sell" and c.plan_stop == pytest.approx(2006.0)
+    assert c.target == pytest.approx(2000.0 - 1.5 * 6.0) and c.rr == pytest.approx(1.5)
     assert cands.plan(S, level_test(test_no=9), SNAP, "LONDON")[0] is None
     c.decision_id = "D1"
     it, why = cands.trigger(S, c, rejection(), T0 + 120)
-    assert why == "ok" and it.stop == pytest.approx(2001.5) and it.entry_high < it.stop and it.target == 1990.0
-    tiny, _ = cands.trigger(S, c, rejection(high=2000.05, close=2000.0), T0 + 120)
-    assert tiny.stop - 2000.0 == pytest.approx(0.3 * 5.0)
+    # the rejection extreme + 0.1 ATR (2001.5) is closer than 1.2 ATR: the stop goes to 1999 + 6 = 2005
+    assert why == "ok" and it.stop == pytest.approx(2005.0) and it.entry_high < it.stop
+    assert it.target == pytest.approx(1999.0 - 1.5 * 6.0) and it.meta["rr"] == pytest.approx(1.5)
+    wide, _ = cands.trigger(S, c, rejection(high=2008.0, close=1999.0), T0 + 120)
+    assert wide.stop == pytest.approx(2008.5)                  # structure wider than 1.2 ATR wins
 
 
 def test_runner_asks_at_the_rejection_and_fires_on_approval():
@@ -95,7 +101,13 @@ def test_runner_asks_at_the_rejection_and_fires_on_approval():
     assert it is not None and it.decision_id == "D9" and it.side == "sell"
     stalled = ev("level_followthrough", T0 + 240, {"level": LEVEL, "test_no": 2, "result": "stalled",
                                                    "move_atr": 0.1, "rejection_time": T0 + 60})
-    assert r.observe([stalled], lambda: SNAP, T0 + 300).closes[0][0] == key
+    assert r.observe([stalled], lambda: SNAP, T0 + 300).closes == []        # v3: no early exit
+    v2 = load("htf_level_m1_rejection", 2)
+    r3 = StrategyRunner(v2, lambda t: "LONDON")
+    r3.observe([level_test()], lambda: SNAP, T0 + 60)
+    k3 = r3.observe([rejection()], lambda: SNAP, T0 + 120).asks[0].key
+    r3.approve(k3, "D", T0 + 125)
+    assert r3.observe([stalled], lambda: SNAP, T0 + 300).closes[0][0] == k3  # v2 closed stalled trades
     r2 = StrategyRunner(S, lambda t: "LONDON")
     r2.observe([level_test()], lambda: SNAP, T0 + 60)
     k2 = r2.observe([rejection()], lambda: SNAP, T0 + 120).asks[0].key
@@ -124,7 +136,8 @@ def test_template_v2_named_fields_budget_and_dedupe():
     assert set(u) == {"market", "candidates", "evidence"} and p.bytes <= S.prompt["max_bytes"]
     c = u["candidates"][0]
     assert c["id"] == "C1" and c["level"]["test"] == 2 and c["rejection"]["vol_x"] == pytest.approx(1.5)
-    assert c["trade"]["stop"] == pytest.approx(2001.5) and c["obstacles"][0]["what"] in ("M15 swing low", "VWAP day")
+    assert c["trade"]["stop"] == pytest.approx(2005.0) and c["trade"]["rr"] == pytest.approx(1.5)
+    assert c["obstacles"][0]["what"] in ("M15 swing low", "VWAP day")
     assert u["market"]["trend"]["H1"] == {"dir": "up", "protected": 1980.0}
     assert "FIELDS:" in p.system and p.previews["C1"] is not None
     # two levels hit by the same candle give the same trade: offered once
@@ -148,3 +161,25 @@ def test_dataset_builder_writes_prompts_and_hidden_labels(tmp_path):
     for p in prompts:
         assert p["bytes"] <= 6000 and "r" not in json.loads(p["user"])           # no answer key inside
         assert set(labels[p["id"]]["candidates"]) == set(p["candidate_map"])
+
+
+def test_stop_beyond_the_next_higher_level_option():
+    """Owner's alternative: trade an H1 level, put the stop just beyond the next H4/day/week level."""
+    import dataclasses
+    h4 = {"id": "Vh4", "price": 2004.0, "side": "high", "sources": ["H4 swing high"], "tests": 0}
+    far = {"id": "Vfar", "price": 2030.0, "side": "high", "sources": ["WEEK high"], "tests": 0}
+    snap = {**SNAP, "htf_levels": SNAP["htf_levels"] + [h4, far]}
+    s2 = dataclasses.replace(S, rules={**S.rules, "stop_mode": "beyond_higher_level"})
+    c, _ = cands.plan(s2, level_test(), snap, "LONDON")
+    assert c.higher_beyond == [2004.0, 2030.0]                  # H4/day/week levels beyond, nearest first
+    it, _ = cands.trigger(s2, c, rejection(), T0 + 120)
+    # 1.2 ATR from 1999 = 2005 is already beyond 2004 + 0.5: the wider of the two wins -> 2005 (atr)
+    assert it.stop == pytest.approx(2005.0) and it.meta["stop_source"] == "atr"
+    h4b = {**h4, "price": 2007.0}
+    c2, _ = cands.plan(s2, level_test(), {**SNAP, "htf_levels": SNAP["htf_levels"] + [h4b, far]}, "LONDON")
+    it2, _ = cands.trigger(s2, c2, rejection(), T0 + 120)
+    assert it2.stop == pytest.approx(2007.5) and it2.meta["stop_source"] == "beyond higher level"
+    assert it2.target == pytest.approx(1999.0 - 1.5 * 8.5)       # 1.5 R of the wider stop
+    # the WEEK high at 2030 is 6 ATR away (> max_stop_atr 3): never used
+    c3, _ = cands.plan(s2, level_test(), {**SNAP, "htf_levels": SNAP["htf_levels"] + [far]}, "LONDON")
+    assert cands.trigger(s2, c3, rejection(), T0 + 120)[0].meta["stop_source"] == "atr"

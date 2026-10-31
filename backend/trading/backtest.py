@@ -60,14 +60,19 @@ def run(bars, lane: str = "all", balance: float = 10_000.0, spread: float = 0.2,
         if start is not None and bar.time < start:      # warm-up: engine only
             continue
         pipe.on_bar(bar, events, engine.now)
+    from trading.verify import verify
     return {"strategy": strat.ref, "lane": lane, "pipeline": pipe.stats, "journal": journal,
-            "balance": round(broker.balance, 2), "start_balance": balance}
+            "balance": round(broker.balance, 2), "start_balance": balance,
+            "verify": verify(strat, settings, journal)}
 
 
 def report(res: dict) -> str:
     trades = [t for t in res["journal"].trades.values() if t.get("r_multiple") is not None]
+    fails = res.get("verify", [])
     lines = [f"strategy {res['strategy']}  lane {res['lane']}",
-             f"pipeline {res['pipeline']}"]
+             f"pipeline {res['pipeline']}",
+             "system checks (trading/verify.py): " + ("ALL PASS" if not fails else f"{len(fails)} FAILURES")]
+    lines += [f"  {f}" for f in fails[:20]]
     if not trades:
         return "\n".join(lines + ["no closed trades"])
     rs = [t["r_multiple"] for t in trades]
@@ -83,6 +88,9 @@ def report(res: dict) -> str:
     by = defaultdict(list)
     for t in trades:
         by[t["close_reason"] + (f" ({t['close_note'][:20]})" if t.get("close_note") else "")].append(t["r_multiple"])
+    stop_atr = [abs(t["meta"]["rejection_candle"]["close"] - t["stop"]) / t["atr"] for t in trades]
+    lines.append(f"  stop distance: min {min(stop_atr):.2f}  median {statistics.median(stop_atr):.2f}  "
+                 f"max {max(stop_atr):.2f} ATR(M15)")
     for k, v in sorted(by.items()):
         lines.append(f"  closed by {k:<40} n={len(v):4d}  avg {statistics.mean(v):+.2f} R")
     bt = defaultdict(list)

@@ -46,8 +46,9 @@ EXCURSION_BARS = 60
 class Labeller:
     """Follows each offered candidate forward on M1 bars until its simulated trade ends."""
 
-    def __init__(self, spread: float) -> None:
+    def __init__(self, spread: float, close_on_stalled: bool = True) -> None:
         self.spread = spread
+        self.close_on_stalled = close_on_stalled
         self.open: list[dict] = []
         self.done: dict[str, dict] = {}            # prompt id -> {label: outcome}
 
@@ -88,7 +89,7 @@ class Labeller:
                 t["out"] = ("stop", t["stop"])
             elif (s > 0 and hi >= t["target"]) or (s < 0 and lo <= t["target"]):
                 t["out"] = ("target", t["target"])
-            elif t["ft"] == "stalled":
+            elif t["ft"] == "stalled" and self.close_on_stalled:
                 t["out"] = ("stalled", bar.close + (self.spread if s < 0 else 0))
             elif t["bars"] >= MAX_HOLD_BARS:
                 t["out"] = ("timeout", bar.close + (self.spread if s < 0 else 0))
@@ -121,7 +122,7 @@ def build(bars, out: Path, start: int | None, end: int | None, strategy_id: str 
     s = load(strategy_id)
     engine = StructureEngine(load_config())
     runner = StrategyRunner(s, engine._session_name)
-    lab = Labeller(spread)
+    lab = Labeller(spread, s.rules["close_on_stalled_followthrough"])
     out.mkdir(parents=True, exist_ok=True)
     (out / "system.txt").write_text(template.system_message(s), encoding="utf-8")
     sizes, months, n = [], Counter(), 0

@@ -23,7 +23,7 @@ LIBRARY = Path(__file__).resolve().parent / "library"
 RULE_KEYS = {
     "kind": str, "decision_point": str, "sides": list, "sessions": list, "max_test_no": int, "approaches": list,
     "rejection_within_bars": int, "entry_window_bars": int, "stop_buffer_atr": float,
-    "min_stop_atr": float, "plan_stop_allowance_atr": float, "target": str,
+    "min_stop_atr": float, "stop_mode": str, "max_stop_atr": float, "plan_stop_allowance_atr": float, "target": str, "target_r": float,
     "fallback_target_r": float, "min_target_atr": float, "min_rr": float, "min_confidence": int,
     "close_on_stalled_followthrough": bool, "max_candidates": int,
 }
@@ -76,6 +76,11 @@ def parse(raw: dict) -> Strategy:
     r = body["rules"]
     if r["kind"] not in KINDS:
         raise StrategyError(f"rules.kind {r['kind']!r} unknown; known {sorted(KINDS)}")
+    if r["stop_mode"] not in ("atr", "beyond_higher_level"):
+        raise StrategyError("rules.stop_mode: 'atr' (min_stop_atr from entry, beyond the rejection candle) or "
+                            "'beyond_higher_level' (just beyond the next H4/day/week level, <= max_stop_atr)")
+    if r["target"] not in ("next_htf_level", "r_multiple"):
+        raise StrategyError("rules.target: 'next_htf_level' or 'r_multiple' (target_r x the real risk)")
     if r["decision_point"] not in ("test", "rejection"):
         raise StrategyError("rules.decision_point: 'test' (ask when price reaches the level) or "
                             "'rejection' (ask at the M1 rejection)")
