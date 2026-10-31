@@ -242,6 +242,7 @@
     "merge_tolerance_atr": 0.3,
     "touch_tolerance_atr": 0.1,
     "reset_atr": 1.0,
+    "min_minutes_between_tests": 15,
     "hold_atr": 1.0,
     "break_timeframe": "M5",
     "break_buffer_atr": 0.3,

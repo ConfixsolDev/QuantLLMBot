@@ -28,7 +28,11 @@ Life of a level, drawn for a resistance (support is the mirror image)::
 
   level_created     a new level (not merged into an existing one)
   level_test        the M1 high comes within touch_tolerance_atr of the level
-                    after price had been at least reset_atr away. Counted:
+                    after price had been at least reset_atr away and at least
+                    min_minutes_between_tests after the previous test began
+                    (in a news spike — FOMC 28 Oct 2026 — the pre-news ATR is
+                    tiny and price crossed it every minute: one level got
+                    "tested" 7 times in 15 minutes). Counted:
                     test 1, 2, 3 ... Carries:
                       approach   push    — >= push.min_move_atr into the level
                                            in the last approach_bars M1 bars,
@@ -44,7 +48,9 @@ Life of a level, drawn for a resistance (support is the mirror image)::
                       trend      M15 / H1 / H4 trend state (trend.py) at the touch
   level_rejection   within rejection_within_bars of the touch, an M1 candle
                     pokes beyond the level by >= rejection_min_pierce_atr and
-                    CLOSES back inside ("poke and reclaim")
+                    CLOSES back inside ("poke and reclaim") — and no M5 candle
+                    has closed beyond the level since the touch (after that a
+                    poke back is a retest from the other side, not a rejection)
   level_followthrough  followthrough_bars M1 candles after the rejection:
                     "moved" if price got >= followthrough_atr away from the
                     level, else "stalled"
@@ -82,6 +88,7 @@ class _Test:
     rejection: dict | None = None
     ft_left: int | None = None        # M1 bars until the follow-through verdict
     ft_best: float = 0.0              # best distance away since the rejection
+    closed_beyond: bool = False       # an M5 candle closed beyond the level during this test
 
 
 @dataclass
@@ -168,6 +175,7 @@ class LevelBook:
                     self._rejection(lv, t, bar, out)
                     if s * (p - opp) >= c["hold_atr"] * t.atr:
                         if t.ft_left is not None:            # held before the verdict: it moved
+                            t.ft_best = max(t.ft_best, s * (p - opp))
                             out.append(("level_followthrough", lv, {
                                 "test_no": t.no, "result": "moved", "move_atr": round(t.ft_best / t.atr, 3),
                                 "rejection_time": t.rejection["candle"]["time"]}))
@@ -178,7 +186,9 @@ class LevelBook:
                     continue
                 if dist > c["reset_atr"] * atr:
                     lv.away = True
-                if lv.away and dist <= c["touch_tolerance_atr"] * atr:
+                gap_ok = lv.last_test_time is None or \
+                    bar.time - lv.last_test_time >= c["min_minutes_between_tests"] * 60
+                if lv.away and gap_ok and dist <= c["touch_tolerance_atr"] * atr:
                     lv.tests += 1
                     lv.away = False
                     lv.last_test_time = bar.time
@@ -197,8 +207,8 @@ class LevelBook:
 
     def _rejection(self, lv: Level, t: _Test, bar: Bar, out: list) -> None:
         c, s, p = self.c, lv.sgn, lv.price
-        if t.rejection is not None or t.bars > c["rejection_within_bars"]:
-            return
+        if t.rejection is not None or t.bars > c["rejection_within_bars"] or t.closed_beyond:
+            return                         # after an M5 close beyond, a poke back is a retest, not a rejection
         pierce = s * ((bar.high if s > 0 else bar.low) - p)
         if pierce >= c["rejection_min_pierce_atr"] * t.atr and s * (p - bar.close) > 0:
             t.rejection = {"candle": bar.as_dict(), "pierce_atr": round(pierce / t.atr, 3)}
@@ -213,6 +223,8 @@ class LevelBook:
         if atr is None or atr <= 0:
             return out
         for lv in list(self.active):
+            if lv.test is not None and lv.sgn * (bar.close - lv.price) > 0:
+                lv.test.closed_beyond = True
             if lv.sgn * (bar.close - lv.price) > self.c["break_buffer_atr"] * atr:
                 out.append(("level_broken", lv, {"candle": bar.as_dict(), "tests": lv.tests,
                                                  "during_test": lv.test.no if lv.test else None}))

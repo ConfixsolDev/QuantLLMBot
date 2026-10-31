@@ -58,6 +58,20 @@ def day_bounds(date: str) -> tuple[int, int]:
     return start, start + DAY
 
 
+def pool_names(levels: list[dict]) -> str:
+    """Pools hit together, grouped by price: '4058.25 (M15 + H1 swing high, london high)'.
+    (The same swing seen on two timeframes used to be listed twice.)"""
+    by: dict[float, list[str]] = {}
+    for x in levels:
+        kind = x["kind"].replace("_", " ")
+        if kind.startswith(("swing", "equal")):
+            kind = f"{x['source_tf']} {kind}"
+        names = by.setdefault(round(x["price"], 2), [])
+        if kind not in names:
+            names.append(kind)
+    return "; ".join(f"{price:.2f} ({', '.join(n)})" for price, n in by.items())
+
+
 def describe(e: dict) -> str:
     """One readable line per event for the check sheet."""
     k, d, tf = e["kind"], e["data"], e["tf"]
@@ -65,8 +79,7 @@ def describe(e: dict) -> str:
     if k in ("bos", "choch"):
         return f"{tf} {k.upper()} {d['direction']} — closed beyond {p(d['level'])}"
     if k in overlays.LIQ:
-        lv = ", ".join(f"{x['kind'].replace('_', ' ')} {p(x['price'])}" for x in d["levels"])
-        return f"{overlays.LIQ[k]} ({d['side']}) — {lv}"
+        return f"{overlays.LIQ[k]} ({d['side']}) — {pool_names(d['levels'])}"
     if k in ("equal_highs", "equal_lows"):
         return f"{tf} {k.replace('_', ' ')} at {p(d['pool']['price'])} ({d['count']} swings)"
     if k == "fvg_created":
@@ -152,8 +165,12 @@ class ReplayDay:
             return {"tf": tf, "candles": [], "future": [], "overlays": None, "as_of": t}
         t_from = past[0].time
         k = bisect.bisect_right(self.avail, t)
+        # older events still matter when they start, update or END a box/level
+        # drawn in the window (without the end events, gaps filled days ago
+        # were drawn as still open across the whole chart)
+        keep = set(overlays.BOX_START) | overlays.BOX_END | overlays.BOX_UPDATE
         evs = [e for e in self.events[:k]
-               if e["available_at"] >= t_from or e["kind"] in overlays.BOX_START or e["kind"].startswith("level_")]
+               if e["available_at"] >= t_from or e["kind"] in keep or e["kind"].startswith("level_")]
         levels = [e["data"] for e in self.events[:k] if e["kind"] in ("session_level", "prior_day_level", "prior_week_level")]
         snap = {"levels": levels[-40:], "forming": {}}
         ov = overlays.build(evs, tf, t_from, t, self.snaps[tf], snap)

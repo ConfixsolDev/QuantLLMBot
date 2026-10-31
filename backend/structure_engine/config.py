@@ -94,7 +94,7 @@ SCHEMA: dict[str, Any] = {
     },
     "htf_levels": {
         "swing_timeframes": TF_LIST, "session_levels": BOOL, "atr_timeframe": TF,
-        "merge_tolerance_atr": POS_NUM, "touch_tolerance_atr": POS_NUM, "reset_atr": POS_NUM,
+        "merge_tolerance_atr": POS_NUM, "touch_tolerance_atr": POS_NUM, "reset_atr": POS_NUM, "min_minutes_between_tests": INT,
         "hold_atr": POS_NUM, "break_timeframe": TF, "break_buffer_atr": NUM, "max_age_hours": POS_INT,
         "approach_bars": POS_INT,
         "push": {"min_move_atr": POS_NUM, "min_efficiency": POS_NUM},

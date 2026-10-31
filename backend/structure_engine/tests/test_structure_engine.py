@@ -501,6 +501,8 @@ def test_htf_level_life_test_rejection_followthrough_held_then_break():
     assert test["test_no"] == 1 and test["approach"] == "push" and test["trend"] == {"H1": "up"}
     assert ("level_followthrough", "moved") in [(k, d.get("result")) for k, d in ev]
     assert "level_held" in kinds
+    for k in range(12):                                  # wait below (tests are >= 15 min apart)
+        bar(107.8, 108.0, 107.6, 107.8)
     for k in range(10):                                  # back up: test 2, no rejection
         p = 108 + k * 0.2
         bar(p, p + 0.15, p - 0.1, p + 0.15)
@@ -508,6 +510,22 @@ def test_htf_level_life_test_rejection_followthrough_held_then_break():
     br = book.on_break_bar(Bar(t + 60 * i, 109.9, 111.2, 109.8, 111.0, 50), atr)
     assert [k for k, _, _ in br] == ["level_broken"] and br[0][2]["tests"] == 2 and br[0][2]["during_test"] == 2
     assert book.active == []
+
+
+def test_htf_level_retest_after_m5_close_beyond_is_not_a_rejection():
+    book, atr, t = _lv_book(), 2.0, _utc("2026-07-14T08:00:00")
+    book.add("H1 swing high", "high", 110.0, t, t, atr, 100.0)
+    out = []
+    for k in range(40):
+        p = 100 + k * 0.24
+        b = Bar(t + 60 * k, p, p + 0.2, p - 0.2, p + 0.24, 10)
+        out += [x[0] for x in book.on_m1(b, b.close_time, atr, 4.0, {})]
+    b = Bar(t + 2400, 109.8, 110.05, 109.7, 109.9, 10)              # touch, no poke
+    out += [x[0] for x in book.on_m1(b, b.close_time, atr, 4.0, {})]
+    book.on_break_bar(Bar(t + 2400 - 240, 109.5, 110.4, 109.4, 110.3, 50), atr)   # M5 closes above (< buffer)
+    b = Bar(t + 2460, 110.3, 110.6, 109.9, 109.95, 10)              # poke + close back below
+    out += [x[0] for x in book.on_m1(b, b.close_time, atr, 4.0, {})]
+    assert out.count("level_test") == 1 and "level_rejection" not in out
 
 
 def test_htf_level_stalled_rejection_and_registration_rules():

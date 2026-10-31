@@ -33,6 +33,7 @@ export default function StructureChart({ chart, layers, fitKey, cursor, focus }:
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const dataRef = useRef<{ ov: Overlays | null; layers: Layers; cursor?: number; futureFrom?: number }>({ ov: null, layers });
   const fittedRef = useRef<string>("");
+  const cursorRef = useRef<number | undefined>(undefined);
 
   // ----- draw boxes, lines and levels on the canvas
   const draw = () => {
@@ -226,6 +227,13 @@ export default function StructureChart({ chart, layers, fitKey, cursor, focus }:
     // Zoom to the last ~160 candles when the timeframe changes, and again while
     // history is still arriving (the first refresh may hold only a few bars).
     const fitTag = `${fitKey}:${rows.length < 160 ? rows.length : "full"}`;
+    if (cursor !== undefined && cursorRef.current !== cursor && fittedRef.current === fitTag && rows.length) {
+      // replay: the cursor moved — keep the engine's "now" at ~75 % of the view, same zoom
+      const r = ch.timeScale().getVisibleLogicalRange();
+      const width = r ? Math.max(40, r.to - r.from) : 160;
+      ch.timeScale().setVisibleLogicalRange({ from: rows.length - width * 0.75, to: rows.length + width * 0.25 });
+    }
+    cursorRef.current = cursor;
     if (fittedRef.current !== fitTag && rows.length) {
       const extra = Math.min(future.length, 40);
       ch.timeScale().setVisibleLogicalRange({ from: Math.max(0, rows.length - 160), to: rows.length + extra + 5 });

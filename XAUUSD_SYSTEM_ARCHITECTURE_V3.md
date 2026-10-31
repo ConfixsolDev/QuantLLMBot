@@ -90,7 +90,7 @@ a first look, one trending regime, to be re-run on the full history.
 |---|---|---|---|
 | MTF-01 | Work only at a higher-timeframe level (H1/H4 swing, session, day, week) | `level_created`, `htf_levels` in the snapshot | A level alone holds no better than a random nearby level (−2.5 pts) — location is necessary, not sufficient |
 | MTF-02 | A touch is "get ready", never an entry | `level_test` | **Supported**: a touch without M1 rejection holds 40.5 % vs 47.5 % for random levels |
-| MTF-03 | Enter only on a finished M1 rejection: poke beyond and close back inside, or an M1 double top | `level_rejection`, `level_pattern` | **Supported**: with rejection 54 % hold, without 40.5 % (engine: 50 % vs 34 %). Also true at random levels: it is a price-action fact, the level gives the place |
+| MTF-03 | Enter only on a finished M1 rejection: poke beyond and close back inside, or an M1 double top | `level_rejection`, `level_pattern` | **Supported**: with rejection 54 % hold, without 40.5 % (engine: 51 % vs 35 %). Also true at random levels: it is a price-action fact, the level gives the place |
 | MTF-04 | Best: poke past the level, close back, then the M1 double top | `level_pattern` (+ the earlier `level_rejection`; pattern tag `sweep`) | Promising, too few cases: 75 % vs 50 % random, n = 28 |
 | MTF-05 | Do not fade a squeeze (tight range / rising lows into resistance) | `level_test.approach = squeeze` (+ detail) | **Inconclusive**: n = 59 (study) / 21 (engine), the two disagree in direction |
 | MTF-06 | Fade a push: price driven into the level | `approach = push` | Not different from random (−2.3 pts) |
@@ -187,7 +187,7 @@ file's header comment.
 
 | VWAP + bands | from M1; events judged on M5 | volume-weighted typical price (h+l+c)/3 with MT5 tick volume, ±1σ / ±2σ bands; anchors: **day** (resets 17:00 New York), **week** (Sunday 17:00 NY), **session** (Asia / London / New York windows); `vwap_cross` = price changed side: an M5 close ≥ 0.5 ATR(M5) beyond VWAP on the other side from the last confirmed side (hysteresis: without it half the crosses were re-crossed within 15 min); `vwap_band_reject` = M5 candle trades beyond the 2σ band and closes back inside, once per episode (re-armed after a close back inside 1σ); events only after 30 M1 bars of the period | `vwap.py` |
 
-| HTF levels (strategy A4) | levels: H1/H4 swings + session/day/week; tests on M1; breaks on M5 | a level is registered only while price is on the right side of it; levels within 0.3 ATR(M15) merge (sources = confluence; the outermost price until the first test). **Test** = M1 extreme within 0.10 ATR after price was ≥ 1.0 ATR away, numbered 1, 2, 3…, with approach (push / squeeze / drift over 20 M1 bars), stretch (H1 ATR over 24 h) and M15/H1/H4 trend; **rejection** = within 10 M1 bars, poke ≥ 0.05 ATR beyond and close back inside; **follow-through** = 3 M1 bars later moved ≥ 0.5 ATR away or stalled; **held** = 1.0 ATR away; **broken** = M5 close 0.3 ATR beyond (level retired); **expired** after 120 h (never during a test); **level_pattern** = confirmed M1 double/triple top/bottom with peaks within 0.5 ATR of a level tested in the last hour | `levels.py` |
+| HTF levels (strategy A4) | levels: H1/H4 swings + session/day/week; tests on M1; breaks on M5 | a level is registered only while price is on the right side of it; levels within 0.3 ATR(M15) merge (sources = confluence; the outermost price until the first test). **Test** = M1 extreme within 0.10 ATR after price was ≥ 1.0 ATR away and ≥ 15 min after the previous test, numbered 1, 2, 3…, with approach (push / squeeze / drift over 20 M1 bars), stretch (H1 ATR over 24 h) and M15/H1/H4 trend; **rejection** = within 10 M1 bars, poke ≥ 0.05 ATR beyond and close back inside, with no M5 close beyond the level since the touch; **follow-through** = 3 M1 bars later moved ≥ 0.5 ATR away or stalled; **held** = 1.0 ATR away; **broken** = M5 close 0.3 ATR beyond (level retired); **expired** after 120 h (never during a test); **level_pattern** = confirmed M1 double/triple top/bottom with peaks within 0.5 ATR of a level tested in the last hour | `levels.py` |
 
 Every threshold above is a key in `config/xauusd_structure_v1.json`; the
 numbers here are the shipped values, not code constants.
@@ -806,6 +806,17 @@ detection · P21 closed response missed by stale playbook.
   (A4); level-reaction study with a random-level control on real gold (B3c);
   `levels.py` records level tests, M1 rejections, follow-through, held/broken
   and M1 patterns at levels; chart layer, side panel, Replay check sheet.
+- **Expert replay review of real October days (2026-11-01):** the multi-
+  timeframe narrative held up (e.g. 30 Oct: M5 CHoCH down → M15/M30/H1 BOS →
+  H4 BOS; a false break of 3979 followed by an M5 CHoCH up; a failed sweep of
+  3965 followed by the H1 level break). Fixed from the review: (1) during the
+  28 Oct FOMC spike one H1 level was "tested" 7 times in 15 minutes — tests
+  now need 15 min between them; (2) an M1 poke back after an M5 close beyond
+  the level was called a rejection — it is a retest, no longer counted; (3) a
+  follow-through "moved 0.0 ATR" when the rejection candle itself held the
+  level; (4) the same swing on M15 and H1 was listed twice in sweeps; (5)
+  Replay drew FVGs filled days earlier as open bands across the chart;
+  (6) the Replay chart did not follow the cursor.
 - **Broker clock (2026-11-01):** the 10-day check on real October data found
   every stored bar 3 hours early: the broker (XAUUSDr) reports UTC but
   `server_time` defaulted to "ny_close". Sessions, the New York H4 grid and
