@@ -29,6 +29,10 @@ For a HIGH pool (lows are the mirror image):
       ACCEPTED BREAK   the window passes without a close back inside ->
                        liquidity taken, price accepted beyond the level
 
+    SWEEP FAILED     after a sweep, a candle CLOSES beyond the level within
+                     ``false_break_bars`` candles: the sweep was only the first
+                     leg of a real break (follow-up event; the sweep stays)
+
 All pools hit by the same candle on the same side are reported in ONE event
 (an H1 swing high and the London high at the same price are one sweep).
 Events are known at the close of the candle that decides them.
@@ -70,6 +74,7 @@ class LiquidityBook:
         self.pools: list[Pool] = []
         self.recent_swings: dict[str, list[Swing]] = {}   # for equal highs/lows
         self.history: list[dict] = []                     # recent sweep/break events (snapshot)
+        self.watch: list[list] = []                       # [pool, candles left] after a sweep
 
     # ------------------------------------------------------------ registration
     def add(self, kind: str, side: str, price: float, source_tf: str, time: int, now: int) -> Pool:
@@ -117,6 +122,18 @@ class LiquidityBook:
         pierce, brk, reclaim = c["min_pierce_atr"] * atr, c["break_buffer_atr"] * atr, c["reclaim_buffer_atr"] * atr
         hits: dict[tuple[str, str], list[Pool]] = {}
         done: list[Pool] = []
+        # swept levels stay watched for false_break_bars candles: a close
+        # beyond the level right after the sweep means the "sweep" was only
+        # the first leg of a real break
+        for w in list(self.watch):
+            p = w[0]
+            if (bar.close > p.price + brk) if p.side == "high" else (bar.close < p.price - brk):
+                hits.setdefault(("sweep_failed", p.side), []).append(p)
+                self.watch.remove(w)
+                continue
+            w[1] -= 1
+            if w[1] <= 0:
+                self.watch.remove(w)
         for p in self.pools:
             if bar.time < p.active_from:
                 continue                                 # not known yet when this candle opened
@@ -138,6 +155,7 @@ class LiquidityBook:
             elif pierced and back_inside:
                 hits.setdefault(("liquidity_sweep", p.side), []).append(p)
                 done.append(p)
+                self.watch.append([p, c["false_break_bars"]])
         for p in done:
             self.pools.remove(p)
         out = []

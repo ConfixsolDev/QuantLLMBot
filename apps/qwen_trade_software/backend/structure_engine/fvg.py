@@ -14,6 +14,7 @@
     bullish: c3.low  > c1.high   gap = [c1.high, c3.low]
     bearish: c3.high < c1.low    gap = [c3.high, c1.low]
     and gap size >= min_gap_atr x ATR (ATR as of before c3)
+    and c1, c2, c3 are CONSECUTIVE candles (no weekend / daily-break hole)
 
 Price moved so fast through the gap that one side barely traded there. Price
 often returns to "rebalance" it. Detected at the CLOSE of c3.
@@ -79,7 +80,11 @@ class GapBook:
                 g.age_bars += 1
                 if g.age_bars > self.c["max_age_bars"]:
                     out.append(("fvg_expired", self._close(g, "EXPIRED", now)))
-        if len(last3) == 3:
+        # The three candles must be consecutive. Across the weekend or the
+        # daily 21-22 UTC break, the "gap" is a market closure, not an
+        # imbalance (found in the first real-data review, 2026-10-31).
+        contiguous = len(last3) == 3 and last3[2].time - last3[0].time == 2 * last3[0].minutes * 60
+        if contiguous:
             found = find_gap(*last3, atr_before_c3, self.c["min_gap_atr"])
             if found:
                 d, lo, hi = found

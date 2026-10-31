@@ -52,16 +52,18 @@ from .engine import StructureEngine
 
 W, H, PAD_L, PAD_R, PAD_T, PAD_B = 1100, 430, 10, 70, 22, 26
 
-LIQ_KINDS = ("liquidity_sweep", "false_break", "liquidity_taken")
+LIQ_KINDS = ("liquidity_sweep", "false_break", "liquidity_taken", "sweep_failed")
 DRAWN_KINDS = ("bos", "choch", "fvg_created", "order_block_created", "range_formed",
                "equal_highs", "equal_lows") + LIQ_KINDS
-END_KINDS = ("fvg_filled", "fvg_expired", "order_block_broken", "order_block_expired")
+END_KINDS = ("fvg_filled", "fvg_expired", "order_block_broken", "order_block_expired",
+             "range_break", "range_expired")
 STRUCTURE_KINDS = ("pattern_confirmed", "pattern_pending", "close_spike", "swing") + DRAWN_KINDS + END_KINDS
 ALL_LAYERS = ("swings", "levels", "zones", "patterns", "spikes", "trend", "liquidity", "eq", "fvg", "ob", "ranges")
 DEFAULT_LAYERS = ("swings", "levels", "trend", "liquidity", "eq", "ob", "ranges")
 LAYER_OF = {"bos": "trend", "choch": "trend", "fvg_created": "fvg", "order_block_created": "ob",
             "range_formed": "ranges", "equal_highs": "eq", "equal_lows": "eq",
-            "liquidity_sweep": "liquidity", "false_break": "liquidity", "liquidity_taken": "liquidity"}
+            "liquidity_sweep": "liquidity", "false_break": "liquidity", "liquidity_taken": "liquidity",
+            "sweep_failed": "liquidity"}
 
 
 def _iso(t: int) -> str:
@@ -193,7 +195,9 @@ def _svg(m: dict) -> str:
                        f'{"FVG" if k == "fvg_created" else "OB"}</text>')
         elif k == "range_formed":
             x1 = max(PAD_L, x(st["start"]))
-            out.append(f'<rect x="{x1:.1f}" y="{y(st["top"]):.1f}" width="{max(2, xf_now - x1):.1f}" '
+            end = m.get("ended", {}).get(st["id"])
+            xe = x(end) if end and end <= m["t"] else xf_now
+            out.append(f'<rect x="{x1:.1f}" y="{y(st["top"]):.1f}" width="{max(2, xe - x1):.1f}" '
                        f'height="{y(st["bottom"]) - y(st["top"]):.1f}" fill="none" stroke="var(--muted)" '
                        f'stroke-dasharray="2 2"/>')
             out.append(f'<text x="{x1 + 2:.1f}" y="{y(st["bottom"]) + 10:.1f}" fill="var(--muted)">range</text>')
@@ -216,7 +220,8 @@ def _svg(m: dict) -> str:
                            f'{"EQH" if k == "equal_highs" else "EQL"}</text>')
         elif k in LIQ_KINDS:
             cx = x(st["candle"]["time"]) + cw / 2
-            tag = {"liquidity_sweep": "sweep", "false_break": "false brk", "liquidity_taken": "taken"}[k]
+            tag = {"liquidity_sweep": "sweep", "false_break": "false brk", "liquidity_taken": "taken",
+                   "sweep_failed": "sweep failed"}[k]
             for lv in st["levels"][:1]:
                 if not lo <= lv["price"] <= hi:
                     continue

@@ -19,9 +19,10 @@ The state machine
   change of character.
 * A WICK beyond a level is NOT a break. Wicks beyond levels are liquidity
   sweeps (liquidity.py); only a close counts here.
-* A swing can be broken once. Swing lows broken inside an up-trend that are
-  NOT the protected low (minor pull-back lows) are retired quietly: they are
-  internal structure, not a change of character.
+* A swing can be broken once, and ONE close takes out every level it closed
+  beyond. Levels taken without an event (minor pull-back lows inside an
+  up-trend, or older swings behind the one reported) are retired quietly:
+  internal structure, never a late BOS.
 * A swing only exists once it is confirmed (k candles after it), so a level
   cannot be "broken" before the engine could know it was a swing: no
   look-ahead. A BOS is known at the close of the breaking candle.
@@ -85,21 +86,25 @@ class TrendTracker:
                 out.append(self._break("choch", "down", self.protected, bar, disp))
             elif self.state == "down" and bar.close > p.price + buf:
                 out.append(self._break("choch", "up", self.protected, bar, disp))
-        if out:
-            return out
-        # ----- continuation (or first) break
-        hi = self._latest_unbroken(self.highs)
-        lo = self._latest_unbroken(self.lows)
-        if self.state in ("up", "none") and hi and bar.close > hi.swing.price + buf:
-            out.append(self._break("bos", "up", hi, bar, disp))
-        elif self.state in ("down", "none") and lo and bar.close < lo.swing.price - buf:
-            out.append(self._break("bos", "down", lo, bar, disp))
-        else:
-            # internal levels taken inside the trend: retire quietly
-            if self.state == "up" and lo and bar.close < lo.swing.price - buf and lo is not self.protected:
-                lo.broken = True
-            if self.state == "down" and hi and bar.close > hi.swing.price + buf and hi is not self.protected:
-                hi.broken = True
+        if not out:
+            # ----- continuation (or first) break
+            hi = self._latest_unbroken(self.highs)
+            lo = self._latest_unbroken(self.lows)
+            if self.state in ("up", "none") and hi and bar.close > hi.swing.price + buf:
+                out.append(self._break("bos", "up", hi, bar, disp))
+            elif self.state in ("down", "none") and lo and bar.close < lo.swing.price - buf:
+                out.append(self._break("bos", "down", lo, bar, disp))
+        # ----- one close takes out EVERY level it closed beyond. Levels taken
+        # without an event (internal structure, or older swings behind the
+        # one reported) are retired so they can never produce a late "BOS"
+        # later. (The first real-data audit, 2026-10-31, found 30 % of BOS
+        # events on levels price had already closed beyond.)
+        for lv in self.highs:
+            if not lv.broken and bar.close > lv.swing.price + buf and lv is not self.protected:
+                lv.broken = True
+        for lv in self.lows:
+            if not lv.broken and bar.close < lv.swing.price - buf and lv is not self.protected:
+                lv.broken = True
         return out
 
     def _break(self, kind: str, direction: str, level: _Level, bar: Bar, disp: dict | None) -> dict:

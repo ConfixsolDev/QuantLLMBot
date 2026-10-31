@@ -387,7 +387,7 @@ def test_fvg_stream_equals_offline_reference():
         for i, b in enumerate(tfb):
             prev.append(atr.value)
             atr.update(b)
-            if i >= 2:
+            if i >= 2 and b.time - tfb[i - 2].time == 2 * b.minutes * 60:
                 g = find_gap(tfb[i - 2], tfb[i - 1], b, prev[i], CFG["fvg"]["min_gap_atr"])
                 if g:
                     ref.add((tfb[i - 2].time, g[0], g[1], g[2]))
@@ -406,3 +406,30 @@ def test_structure_layer_no_repaint_and_invariants():
     walk = random_walk_m1(13, 5000)
     assert no_repaint(walk, CFG, cuts=4, seed=9) == []
     assert invariants(run(walk, CFG), CFG) == []
+
+
+def test_no_fvg_across_a_market_closure():
+    """Friday close -> Sunday open jump is a closure gap, not a fair value gap."""
+    bars = []
+    t = _utc("2026-07-17T16:00:00")                      # Friday, last 5 hours
+    for i in range(300):
+        bars.append(Bar(t + 60 * i, 100, 100.3, 99.7, 100, 10))
+    t2 = _utc("2026-07-19T22:00:00")                     # Sunday open, 30 higher
+    for i in range(60):
+        bars.append(Bar(t2 + 60 * i, 130, 130.3, 129.7, 130, 10))
+    engine = StructureEngine(CFG)
+    gaps = [e for b in bars for e in engine.push(b) if e.kind == "fvg_created"]
+    assert engine.atr["M5"].value is not None            # the gap WOULD qualify on size
+    assert gaps == []
+
+
+def test_sweep_followed_by_break_is_reported_as_failed():
+    cfg = load_config(overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]}})
+    seq = (_flat(100, 20) + _peak(103) + _flat(101, 4)
+           + [(101, 103.4, 100.9, 102.5), (102.5, 104.6, 102.4, 104.5)] + _flat(104.5, 4))
+    m1, _ = _m5(seq)
+    ev = run(m1, cfg)
+    kinds = [e.kind for e in ev if e.kind in ("liquidity_sweep", "sweep_failed")
+             and any(lv["price"] == 103.0 for lv in e.data["levels"])]
+    assert kinds == ["liquidity_sweep", "sweep_failed"]
+    assert invariants(ev, cfg) == []

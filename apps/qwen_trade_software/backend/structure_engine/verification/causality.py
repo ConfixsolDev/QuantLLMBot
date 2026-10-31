@@ -98,7 +98,12 @@ def invariants(events: list[Event], cfg: StructureConfig) -> list[str]:
                     bad.append(f"{e.id}: high sweep geometry")
                 if d["side"] == "low" and not (d["extreme"] < lv["price"] and d["candle"]["close"] > lv["price"]):
                     bad.append(f"{e.id}: low sweep geometry")
-        if e.kind in ("liquidity_sweep", "false_break", "liquidity_taken"):
+        if e.kind == "sweep_failed":
+            for lv in d["levels"]:
+                c = d["candle"]["close"]
+                if (d["side"] == "high" and not c > lv["price"]) or (d["side"] == "low" and not c < lv["price"]):
+                    bad.append(f"{e.id}: sweep_failed close not beyond the level")
+        if e.kind in ("liquidity_sweep", "false_break", "liquidity_taken", "sweep_failed"):
             if any(lv["active_from"] > d["candle"]["time"] + tfmin[e.tf] * 60 for lv in d["levels"]):
                 bad.append(f"{e.id}: level used before it was known")
     return bad

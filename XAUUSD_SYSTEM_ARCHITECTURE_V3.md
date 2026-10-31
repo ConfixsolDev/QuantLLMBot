@@ -293,16 +293,36 @@ chart" limit; raise it to Unlimited before exporting more history.
 
   | | M5 | M15 | M30 | H1 | H4 |
   |---|---|---|---|---|---|
-  | BOS | 1862 | 677 | 307 | 170 | 33 |
-  | CHoCH | 480 | 141 | 78 | 43 | 9 |
+  | BOS | 1407 | 499 | 237 | 125 | 25 |
+  | CHoCH | 470 | 141 | 78 | 41 | 9 |
   | Displacement | 1233 | 427 | 202 | 111 | 34 |
-  | FVG | 2104 | 720 | 370 | 190 | 59 |
-  | Order blocks | – | 271 | 141 | 84 | 19 |
+  | FVG | 2056 | 690 | 346 | 171 | 51 |
+  | Order blocks | – | 237 | 121 | 70 | 16 |
   | Equal highs / lows | – | 154 / 120 | – | 35 / 25 | – |
   | Ranges | – | 44 | – | 5 | – |
 
-  Liquidity (judged on M5): 765 sweeps, 339 false breaks, 360 accepted breaks;
-  14 prior-week levels.
+  Liquidity (judged on M5): 765 sweeps — of which **330 (43 %) failed**
+  (a close beyond the level within 3 candles) — 339 false breaks, 360
+  accepted breaks; 14 prior-week levels.
+* **Cross-verification (2026-10-31).**
+  - Numeric: `verification/audit.py` rebuilt every candle from the raw M1 file
+    with independent code (New York H4 via the `zoneinfo` tz database) and
+    re-checked all 9,423 BOS/CHoCH, sweep, false/accepted break, failed-sweep,
+    FVG and order-block events: **0 disagreements**.
+  - Visual: Claude reviewed trend, liquidity, order-block, FVG and
+    range/equal-level charts. Definitions held on every chart checked. The
+    review found and fixed three real problems:
+    1. *Late BOS*: 30 % of BOS events were on levels price had already closed
+       beyond earlier (an older swing behind the one reported was never
+       retired). Fixed: one close now retires every level it closes beyond;
+       BOS events fell from 3,049 to 2,293, all remaining ones first breaks.
+    2. *Weekend "FVGs"*: Friday-close → Sunday-open jumps were counted as fair
+       value gaps. Fixed: the three candles must be consecutive.
+    3. *Sweeps that were really breaks*: a wick-and-close-back candle followed
+       at once by a close through the level. Now reported as `sweep_failed`.
+    Open tuning questions for the owner's review (config only): M5 swing
+    strength 2 → 3; a small reclaim buffer (e.g. 0.1 ATR) so a false break
+    needs a real close back, not a tick back; zones remain sparse.
 * Claude's first look at the per-layer review charts: BOS/CHoCH lines, order
   blocks (last opposite candle before the impulse), FVG lifecycles and
   sweep / false-break / taken labels matched the candles in every sampled
@@ -416,8 +436,9 @@ structure_engine/
   runner.py        CLI: backtest | live | export (files or whole folders)
   review.py        point-in-time review charts (HTML/SVG) + review template
   studies/         close_spikes.py: base rates from a back-test's events
-  verification/    synthetic.py, reference.py, matching.py, causality.py, synthetic_accuracy.py
-  tests/           pytest suite (40 tests)
+  verification/    synthetic.py, reference.py, matching.py, causality.py, synthetic_accuracy.py,
+                   audit.py (independent re-check of every event against raw candles)
+  tests/           pytest suite (42 tests)
 ```
 
 ### B7. Run it
@@ -437,6 +458,7 @@ python -m structure_engine.studies.close_spikes runs/real/events.jsonl --json ru
 python -m structure_engine.review --m1 ../../../model_training/datasets/raw/candles/XAUUSDr/M1 --out runs/review --samples 16 --tf M15
 python -m structure_engine.review --m1 <M1 folder> --out runs/review_trend --tf M15 --layers swings,trend,ob   # one structure family at a time
 #   layers: swings, levels, zones, patterns, spikes, trend, liquidity, eq, fvg, ob, ranges
+python -m structure_engine.verification.audit --m1 <M1 folder> --events runs/real/events.jsonl   # independent numeric re-check
 ```
 
 Back-test output folder: `events.jsonl`, `snapshots.jsonl`, `final_snapshot.json`,
