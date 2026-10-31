@@ -409,6 +409,44 @@ Design for B (agreed 2026-10-31):
   through close spikes (B2) and, next, lower-timeframe breaks that come before
   the higher-timeframe confirmation (lead time in minutes).
 
+#### B5a. The comparison lab (`backend/research_lab/`, built 2026-10-31)
+
+Three stages, so the expensive Kronos part runs once on the trading PC and
+everything else runs anywhere:
+
+| Stage | Command (from `apps/qwen_trade_software/backend`) | Where |
+|---|---|---|
+| 0 dataset | `python -m research_lab.dataset --m1 <M1 folder> --out lab_runs/real` | anywhere, seconds |
+| 1 forecasts | `python -m research_lab.forecast --m1 <M1 folder> --decisions lab_runs/real/decisions.jsonl --forecaster kronos --device dml --kronos-repo C:\Kronos --out lab_runs/real/forecasts_kronos.jsonl` (resumable; `--limit 50` to test) | trading PC, `kronos-dml` env |
+| 1b yardstick | same with `--forecaster bootstrap --out .../forecasts_bootstrap.jsonl` | anywhere, seconds |
+| 2 compare | `python -m research_lab.compare --decisions lab_runs/real/decisions.jsonl --forecasts kronos=... --forecasts bootstrap=... --out lab_runs/real/report.json` | anywhere |
+
+* Decision points: every H1 close (1,530 in the 3.3 months of data).
+* Without Kronos = 63 deterministic structure features (trend/BOS/CHoCH per
+  timeframe, protected-level distance, liquidity above/below and what just
+  happened there, FVG/OB/zone distances, ranges, session, momentum, spike).
+* With Kronos = the same plus Kronos path summaries on M1, M30, H1, H4.
+* Labels: direction after 1 h and 4 h; ±1 ATR(H1) first-touch within 4 h;
+  spike reversal after 60 min. Walk-forward; training only on labels already
+  known; paired bootstrap of the Brier difference decides "better".
+* Contenders: base rate, each forecaster alone, XGBoost on structure,
+  XGBoost on structure + Kronos, XGBoost on structure + bootstrap (control).
+
+**First result (3.3 months, bootstrap only — Kronos not yet run):** nothing
+beat the base rate. XGBoost on structure features was *worse* than the base
+rate (Brier skill −6 % to −14 %): ~600 training rows and 63 features are too
+few, so it learns noise. This is the expected small-sample outcome, not a
+verdict on the features; the 10-year export (~60,000 H1 decisions) is needed
+before any model comparison means something.
+
+**Where XGBoost belongs (recommendation):** not in detection — structure
+definitions stay deterministic and reviewable. Its place is a calibrated,
+walk-forward *meta-model* that turns the structure snapshot (and, if it
+earns it, Kronos features) into probabilities for well-defined outcomes,
+plus an ablation tool: with vs without Kronos, with a bootstrap control.
+Keep it shallow (depth 3), few features, retrained on known labels only, and
+accept it only if it beats the base rate out of sample with a clear interval.
+
 ### B6. Layout
 
 ```
@@ -760,3 +798,6 @@ detection · P21 closed response missed by stale playbook.
   highs/lows, FVG, order blocks, ranges, prior-week levels — with scenario
   tests, an FVG reference and real-data checks; per-layer review charts;
   roadmap B9 (Module 1 first).
+- Later still: independent audit and three fixes from cross-verification;
+  `research_lab` comparison (structure vs + Kronos vs XGBoost, walk-forward),
+  first run with the bootstrap yardstick (B5a).

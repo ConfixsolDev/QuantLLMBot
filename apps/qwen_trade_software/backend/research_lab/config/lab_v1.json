@@ -1,0 +1,24 @@
+{
+  "lab_id": "XAUUSD_LAB_V1",
+  "decision_timeframe": "H1",
+  "barrier_atr": 1.0,
+  "label_tolerance_minutes": 30,
+  "forecast": {
+    "timeframes": {
+      "M1": {"lookback": 480, "horizon": 3},
+      "M30": {"lookback": 480, "horizon": 4},
+      "H1": {"lookback": 480, "horizon": 4},
+      "H4": {"lookback": 120, "horizon": 2}
+    },
+    "paths": 32,
+    "temperature": 1.0,
+    "top_p": 0.9,
+    "seed": 7,
+    "kronos_model": "NeoQuasar/Kronos-small",
+    "kronos_tokenizer": "NeoQuasar/Kronos-Tokenizer-base",
+    "max_context": 512
+  },
+  "walk_forward": {"initial_train_fraction": 0.4, "retrain_every": 50, "min_train": 200},
+  "xgboost": {"n_estimators": 200, "max_depth": 3, "learning_rate": 0.05, "subsample": 0.8,
+              "colsample_bytree": 0.8, "min_child_weight": 5, "reg_lambda": 1.0, "use_xgboost": true}
+}
