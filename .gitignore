@@ -90,3 +90,13 @@ model_training/tick_data/*
 
 # Temp / helper files
 _tracked_files.txt
+
+# Local clutter (never commit): archived untracked material, scratch scripts,
+# sandboxed test temp dirs
+_archive/
+.test-tmp-*/
+_tmp_*.py
+apps/qwen_trade_software/_*.py
+demo_restart.log
+backtest_runs/
+remove/
