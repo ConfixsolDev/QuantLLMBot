@@ -59,6 +59,7 @@ class Candidate:
     status: str = "new"       # new -> asked -> approved / refused -> triggered | expired
     decision_id: str | None = None
     rejection: dict | None = None                         # the rejection event, once seen
+    test_event: dict | None = None                        # the level_test event that armed it
 
     @property
     def sgn(self) -> int:

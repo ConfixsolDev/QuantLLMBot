@@ -20,7 +20,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from . import available, load  # noqa: E402
-from . import outlook as outlook_mod  # noqa: E402
 from . import template  # noqa: E402
 from .runner import StrategyRunner  # noqa: E402
 
@@ -60,9 +59,13 @@ def main() -> None:
         step = runner.observe(events, engine.snapshot, engine.now)
         if not step.asks or (day is not None and not day <= bar.time < day + 86400):
             continue
-        ol = outlook_mod.build(engine.snapshot(), bar.close, engine._session_name(bar.time), s.prompt["max_levels"])
-        p = template.build(s, ol, step.asks, runner.evidence(step.asks, s.prompt["max_evidence"]))
-        print(f"--- prompt at {outlook_mod.iso(engine.now)}: {p.bytes} bytes of {s.prompt['max_bytes']} "
+        try:
+            p = template.build(s, engine, runner, step.asks, engine.now)
+        except template.NothingToAsk:
+            continue
+        for c in step.asks:
+            runner.refuse(c.key, "preview")
+        print(f"--- prompt at {time.strftime('%Y-%m-%d %H:%MZ', time.gmtime(engine.now))}: {p.bytes} bytes of {s.prompt['max_bytes']} "
               f"(trimmed {p.trimmed}) ---")
         print(p.system, "\n", p.user, "\n")
         if a.save and shown == 0:

@@ -1,23 +1,21 @@
-"""The prompt: strategy doctrine + outlook + candidates + evidence, as JSON, <= 6 KB.
+"""The prompt Qwen receives (template v2): system + user, <= strategy.prompt.max_bytes.
 
-Two messages:
-
-  system  the strategy's doctrine and the answer format. It is IDENTICAL for
+  system  STRATEGY line, doctrine, FIELDS legend, answer format. Identical for
           every call of one strategy version, so the model server can keep it
-          cached and only read the short user message each time.
-  user    compact JSON:
-            {"strategy": "<id@vN#hash>", "outlook": {...},
-             "candidates": [{"id": "C1", ...}],
-             "evidence": {"E1": "12:00 M15 BOS dn close beyond 3965.03", ...}}
+          cached (only the user message is new each time).
+  user    one JSON object:
+            {"market":     outlook.market(...)        — now, session, ATR, trend per TF, ranges,
+                                                         VWAPs, nearby levels,
+             "candidates": [outlook.candidate(...)]   — C1, C2: level + history, approach,
+                                                         rejection quality, exact trade, obstacles,
+             "evidence":   {"E1": "[3m ago] H1 CHOCH up close beyond 4080.81", ...}}
 
-Evidence ids E1, E2 ... are mapped back to engine event ids in
-``Prompt.evidence_map``; Qwen may only cite those ids (qwen/contract.py
-checks it), so every reason it gives points at a real, stored event.
+Evidence ids map back to engine event ids (``Prompt.evidence_map``); Qwen may
+only cite those (qwen/contract.py), so every reason points at a stored fact.
 
-Size budget (``strategy.prompt.max_bytes``, UTF-8 bytes of both messages):
-when over, the oldest market evidence is dropped first, then the farthest
-level of the outlook; candidate evidence is kept. If it still does not fit,
-PromptTooLarge is raised — the call is not made, nothing is silently cut.
+Budget: when over ``max_bytes``, the least important evidence goes first,
+then the farthest market levels; if it still does not fit, PromptTooLarge —
+nothing is silently cut and no call is made.
 """
 
 from __future__ import annotations
@@ -26,9 +24,16 @@ import hashlib
 import json
 from dataclasses import dataclass
 
+from . import candidates as cands
+from . import outlook
+
 
 class PromptTooLarge(ValueError):
     pass
+
+
+class NothingToAsk(ValueError):
+    """Every candidate dropped out (e.g. R:R no longer acceptable at the rejection)."""
 
 
 @dataclass(frozen=True)
@@ -39,45 +44,68 @@ class Prompt:
     sha: str                          # hash of both messages (journal: prompt identity)
     candidate_map: dict               # "C1" -> candidate key
     evidence_map: dict                # "E1" -> engine event id
-    trimmed: dict                     # what was dropped to fit: {"evidence": n, "levels": n}
+    trimmed: dict                     # what was dropped to fit
+    previews: dict                    # "C1" -> TradeIntent preview (exact prices) or None
 
 
 def system_message(strategy) -> str:
-    lines = [f"STRATEGY {strategy.id} v{strategy.version}: {strategy.name}", *strategy.doctrine,
-             "Reply with ONE JSON object and nothing else:",
-             json.dumps(strategy.answer, separators=(",", ":"))]
-    return "\n".join(lines)
+    return "\n".join([f"STRATEGY {strategy.id} v{strategy.version}: {strategy.name}", *strategy.doctrine,
+                      "FIELDS:", *strategy.legend,
+                      "Reply with ONE JSON object and nothing else:",
+                      json.dumps(strategy.answer, separators=(",", ":"))])
 
 
-def _user(strategy, outlook: dict, cands_view: list, evidence: dict) -> str:
-    return json.dumps({"strategy": strategy.ref, "outlook": outlook, "candidates": cands_view,
-                       "evidence": evidence}, separators=(",", ":"), ensure_ascii=False)
+def _avg_m1_volume(engine) -> float | None:
+    bars = [b for b, _ in engine.hist.get("M5", [])[-12:]]
+    vol = sum(b.volume for b in bars)
+    return vol / (5 * len(bars)) if bars and vol > 0 else None
 
 
-def build(strategy, outlook: dict, candidates: list, evidence: list[tuple[str, str]]) -> Prompt:
-    """``candidates``: Candidate objects; ``evidence``: (engine event id, text), most important first."""
-    limit = strategy.prompt["max_bytes"]
-    cands = candidates[: strategy.rules["max_candidates"]]
-    cmap = {f"C{i + 1}": c.key for i, c in enumerate(cands)}
-    view = [c.prompt_view(label) for label, c in zip(cmap, cands)]
-    n_cand_ev = len({eid for c in cands for eid in c.evidence})
+def build(strategy, engine, runner, asks: list, now: int) -> Prompt:
+    """Everything Qwen needs for the candidates in ``asks``, as of ``now``."""
+    snap = engine.snapshot()
+    price = engine._last_close
+    atr = snap["atr"].get("M15") or 1.0
+    views, cmap, previews = [], {}, {}
+    avg_vol = _avg_m1_volume(engine)
+    seen_trades = set()
+    for c in asks:
+        if len(cmap) >= strategy.rules["max_candidates"]:
+            break
+        intent = None
+        if c.rejection is not None:
+            intent, why = cands.trigger(strategy, c, c.rejection, now)
+            if intent is None:                         # R:R no longer acceptable: not offered
+                continue
+            same = (c.side, intent.stop, intent.target)
+            if same in seen_trades:                    # two levels, one candle, one identical trade
+                continue
+            seen_trades.add(same)
+        label = f"C{len(cmap) + 1}"
+        cmap[label], previews[label] = c.key, intent
+        views.append(outlook.candidate(c, label, runner.history(c.level["id"], c.test_no, now), intent,
+                                       snap, avg_vol))
+    if not cmap:
+        raise NothingToAsk("no candidate left to offer")
+    market = outlook.market(engine, snap, price, now, {c.level["id"] for c in asks}, strategy.prompt["max_levels"])
+    ev = runner.evidence(asks, price, atr, now, strategy.prompt["max_evidence"])
     system = system_message(strategy)
-    ev = list(evidence)
-    outlook = dict(outlook)
     trimmed = {"evidence": 0, "levels": 0}
     while True:
-        emap = {f"E{i + 1}": eid for i, (eid, _) in enumerate(ev)}
-        user = _user(strategy, outlook, view, {f"E{i + 1}": txt for i, (_, txt) in enumerate(ev)})
+        user = json.dumps({"market": market, "candidates": views,
+                           "evidence": {f"E{i + 1}": txt for i, (_, txt) in enumerate(ev)}},
+                          separators=(",", ":"), ensure_ascii=False)
         size = len(system.encode()) + len(user.encode())
-        if size <= limit:
+        if size <= strategy.prompt["max_bytes"]:
             break
-        if len(ev) > n_cand_ev:                      # drop the oldest market evidence
+        if len(ev) > 3:
             ev.pop()
             trimmed["evidence"] += 1
-        elif len(outlook.get("levels", [])) > 1:     # then the farthest outlook level
-            outlook["levels"] = outlook["levels"][:-1]
+        elif len(market.get("levels", [])) > 1:
+            market["levels"] = market["levels"][:-1]
             trimmed["levels"] += 1
         else:
-            raise PromptTooLarge(f"prompt is {size} bytes > {limit} even after trimming")
+            raise PromptTooLarge(f"prompt is {size} bytes > {strategy.prompt['max_bytes']} after trimming")
+    emap = {f"E{i + 1}": eid for i, (eid, _) in enumerate(ev)}
     sha = hashlib.sha1((system + "\n" + user).encode()).hexdigest()[:16]
-    return Prompt(system, user, size, sha, cmap, emap, trimmed)
+    return Prompt(system, user, size, sha, cmap, emap, trimmed, previews)

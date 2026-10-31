@@ -1,0 +1,71 @@
+{
+  "id": "htf_level_m1_rejection",
+  "version": 2,
+  "name": "Higher-timeframe level, M1 rejection",
+  "_readme": "Strategy Part A4 / F2 of the V3 document. v2 (2026-11-01) replaces v1 before any real decision was made with it: Qwen is now asked AT the M1 rejection (GPU latency allows it) and sees the rejection candle itself; fields are named, explained in the legend, and the evidence is curated. 'rules' is evaluated by code (strategy/candidates.py); 'doctrine' + 'legend' are what Qwen reads.",
+  "rules": {
+    "kind": "htf_level_rejection",
+    "decision_point": "rejection",
+    "sides": [
+      "buy",
+      "sell"
+    ],
+    "sessions": [
+      "ASIA",
+      "LONDON",
+      "NEW_YORK",
+      "OFF"
+    ],
+    "max_test_no": 6,
+    "approaches": [
+      "push",
+      "drift",
+      "squeeze",
+      "unknown"
+    ],
+    "rejection_within_bars": 10,
+    "entry_window_bars": 3,
+    "stop_buffer_atr": 0.1,
+    "min_stop_atr": 0.3,
+    "plan_stop_allowance_atr": 0.4,
+    "target": "next_htf_level",
+    "fallback_target_r": 2.0,
+    "min_target_atr": 0.5,
+    "min_rr": 1.0,
+    "min_confidence": 51,
+    "close_on_stalled_followthrough": true,
+    "max_candidates": 2
+  },
+  "prompt": {
+    "max_bytes": 6000,
+    "max_levels": 4,
+    "max_evidence": 12
+  },
+  "doctrine": [
+    "You are the trade judge for ONE gold (XAUUSD) setup: fade a higher-timeframe level (H1/H4 swing, session, day or week high/low) right after an M1 rejection of it.",
+    "The rejection has ALREADY happened: an M1 candle poked beyond the level and closed back inside. If you answer with a candidate id, code enters at once at market with the stop and target shown. You never change prices.",
+    "Code closes the trade early if price has not moved 0.5 ATR away within 3 M1 bars ('stalled'). Most losing trades are rejections that stall; a rejection that is followed by immediate movement away is the trade that works.",
+    "Weigh FOR: a clear rejection (long wick, close well back inside, high volume); earlier tests of the level held; confluence (several sources at one price); a fast push into the level; higher timeframes with you, or price at a range edge; room to the first obstacle.",
+    "Weigh AGAINST: the 1st test of a fresh level (stops rest beyond it - it breaks more often); a squeeze into the level; a shallow poke with a weak close; fresh BOS on M15/H1 against you; an obstacle within 1 ATR; a very fast market (m15_range_vs_atr high).",
+    "Answer 'wait' when the evidence is mixed. Waiting costs nothing; a bad trade costs a full stop.",
+    "Confidence 51-100 means the evidence is coherent; it is not a profit promise. Cite what you used: evidence ids (E1 ...) and/or candidate facts (C1.rejection, C1.level.history, C1.trade ...)."
+  ],
+  "legend": [
+    "Distances *_atr are in ATR(M15); ages in m(inutes), h(ours), d(ays).",
+    "trend.<tf>: dir from BOS/CHoCH on that timeframe; protected = the swing whose break flips it. The breaks are in evidence.",
+    "vwap.<anchor>: VWAP price; sd_away = standard deviations price is from it (+ above).",
+    "levels: other higher-timeframe levels near price (R/S, sources, tests so far, distance; beyond = price is past it but no M5 close has confirmed a break yet).",
+    "level.history: earlier tests of this level - rejected? moved or stalled? held or broke?",
+    "approach (last 20 M1 bars): push = fast one-way, squeeze = tight and pressing, drift; move_atr, eff = net/path (0-1), press = bars within 0.5 ATR of the level.",
+    "rejection: poke_atr beyond the level; wick = rejection wick / candle range; back_atr = close back inside; vol_x = volume / average M1 volume.",
+    "obstacles: prices between entry and target that may stop the move."
+  ],
+  "answer": {
+    "decision": "a candidate id (C1 ...) or \"wait\"",
+    "confidence": "integer 0-100",
+    "cites": [
+      "evidence ids used"
+    ],
+    "why": "one short sentence, at most 200 characters"
+  }
+}

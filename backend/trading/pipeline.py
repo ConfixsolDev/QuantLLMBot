@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import hashlib
 
-from strategy import outlook as outlook_mod
 from strategy import template
 from strategy.runner import StrategyRunner
 
@@ -49,10 +48,12 @@ class Pipeline:
 
     def _ask(self, asks, bar, now: int) -> list:
         s = self.s
-        snap = self.engine.snapshot()
-        ol = outlook_mod.build(snap, bar.close, self.engine._session_name(bar.time), s.prompt["max_levels"])
         try:
-            prompt = template.build(s, ol, asks, self.runner.evidence(asks, s.prompt["max_evidence"]))
+            prompt = template.build(s, self.engine, self.runner, asks, now)
+        except template.NothingToAsk:
+            for c in asks:
+                self.runner.refuse(c.key, "no-candidate")
+            return []
         except template.PromptTooLarge:
             self.stats["too_large"] += 1
             return []
@@ -72,7 +73,7 @@ class Pipeline:
             "engine_config_hash": self.engine.config_hash, "mode": self.mode})
         intents = []
         for c in asks:
-            if v.action == "take" and c.key == v.candidate_key:
+            if v.action == "take" and c.key == v.candidate_key and c.key in prompt.candidate_map.values():
                 it = self.runner.approve(c.key, did, now)
                 if it is not None:
                     intents.append(it)

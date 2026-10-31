@@ -599,7 +599,7 @@ Development: `cd web && npm run dev` with `NEXT_PUBLIC_API_BASE=http://127.0.0.1
 * Start: double-click `Start-QuantLLM.bat`. It checks the database variable,
   installs missing Python packages, builds the website once (needs Node.js),
   opens the browser and runs the service.
-* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests strategy/tests qwen/tests trading/tests -q` (76 tests).
+* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests strategy/tests qwen/tests trading/tests -q` (77 tests).
   The database tests use `QUANTLLM_TEST_DSN` (schema `quantllm_test`) or the
   `pgserver` package; they never touch the real schema.
 * Verified 2026-10-31 on 100,000 real XAUUSD M1 bars in PostgreSQL 16:
@@ -838,6 +838,47 @@ bars): 633 prompts, max 3,769 bytes (budget 6,000); 282 trades; win 22.7 %;
 At 10 % risk per trade a 26 R drawdown empties the account (paper balance
 10,000 -> 330): judge the strategy in R, and expect demo resets.
 This is the yardstick: Qwen (lane B) must beat it on the same days.
+
+### F3b. The template (v2) and the Qwen test dataset (2026-11-01)
+
+Template v1 was read "as Qwen" on real prompts before any use; problems found:
+positional arrays (["up", 4069.0]) a reader must guess; R:R 12–21 that looks
+irresistible but comes from a tiny planned stop; evidence that repeated the
+candidate and wasted space on session-VWAP touches; ages like "6157m"; and the
+decision taken at the level TOUCH, before the most informative fact (the M1
+rejection itself) existed. v2 (strategy file `htf_level_m1_rejection.v2.json`,
+v1 retired unused):
+
+* Qwen is asked AT the M1 rejection (`rules.decision_point = "rejection"`);
+  an approval enters at once (GPU latency is seconds).
+* Named fields with a FIELDS legend in the system message; `market` (now,
+  session + minutes in, ATR, M15 range vs ATR, day high/low, trend + protected
+  level per TF, ranges price is in, VWAPs in sd, nearby levels with
+  "beyond" when price is past one), `candidates` (level + history of earlier
+  tests, approach, stretch, rejection quality: poke / wick / close-back /
+  volume, the exact trade from code, obstacles between entry and target),
+  curated `evidence` with readable ages.
+* Two levels hit by one candle with the same trade are offered once.
+* Qwen may cite evidence ids AND candidate facts (C1.rejection ...).
+* Size: median 4.7 KB, max 4.9 KB of the 6 KB budget.
+
+`python -m strategy.dataset --m1 <bars> | --db --from D --to D --out <dir>`
+writes every prompt the live system would send (system.txt + prompts.jsonl,
+byte-exact) and a separate answer key labels.jsonl (result in R, exit, best /
+worst excursion, follow-through, level outcome). First dataset: 2026-05-01 →
+08-08, 331 prompts, `data/qwen_dataset/2026-05-01_2026-08-08/` (not in git).
+
+Blind check (Claude answering 12 random prompts as Qwen, labels hidden until
+after): the template was readable and decisions could be argued from it —
+4 takes, 8 waits — but **all 12 candidates lost or went flat, including the
+ones whose rejection moved and whose level HELD**. Over the whole set,
+"moved and held" candidates still hit the stop 72 % of the time: the stop
+(rejection extreme + 0.1 ATR, min 0.3 ATR) is inside normal re-test noise.
+Trade geometry, not only selection, decides results. A first scan of stop /
+target / management variants on these 3 months found no robust winner (the
+best, break-even at +1 R, averaged +0.16 R, inside the noise of 331 trades).
+Decision for the owner: freeze the trade geometry on the full year of data
+before collecting Qwen answers.
 
 ### F4. Running it
 

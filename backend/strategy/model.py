@@ -21,14 +21,14 @@ from pathlib import Path
 LIBRARY = Path(__file__).resolve().parent / "library"
 
 RULE_KEYS = {
-    "kind": str, "sides": list, "sessions": list, "max_test_no": int, "approaches": list,
+    "kind": str, "decision_point": str, "sides": list, "sessions": list, "max_test_no": int, "approaches": list,
     "rejection_within_bars": int, "entry_window_bars": int, "stop_buffer_atr": float,
     "min_stop_atr": float, "plan_stop_allowance_atr": float, "target": str,
     "fallback_target_r": float, "min_target_atr": float, "min_rr": float, "min_confidence": int,
     "close_on_stalled_followthrough": bool, "max_candidates": int,
 }
 PROMPT_KEYS = {"max_bytes": int, "max_levels": int, "max_evidence": int}
-TOP_KEYS = {"id", "version", "name", "rules", "prompt", "doctrine", "answer"}
+TOP_KEYS = {"id", "version", "name", "rules", "prompt", "doctrine", "legend", "answer"}
 KINDS = {"htf_level_rejection"}          # rule kinds candidates.py knows how to build
 SESSIONS = {"ASIA", "LONDON", "NEW_YORK", "OFF"}
 
@@ -45,6 +45,7 @@ class Strategy:
     rules: dict
     prompt: dict
     doctrine: tuple[str, ...]
+    legend: tuple[str, ...]
     answer: dict
     hash: str
 
@@ -75,17 +76,21 @@ def parse(raw: dict) -> Strategy:
     r = body["rules"]
     if r["kind"] not in KINDS:
         raise StrategyError(f"rules.kind {r['kind']!r} unknown; known {sorted(KINDS)}")
+    if r["decision_point"] not in ("test", "rejection"):
+        raise StrategyError("rules.decision_point: 'test' (ask when price reaches the level) or "
+                            "'rejection' (ask at the M1 rejection)")
     if not set(r["sides"]) <= {"buy", "sell"} or not r["sides"]:
         raise StrategyError("rules.sides: buy and/or sell")
     if not set(r["sessions"]) <= SESSIONS:
         raise StrategyError(f"rules.sessions: from {sorted(SESSIONS)}")
     if not 0 < r["min_confidence"] <= 100:
         raise StrategyError("rules.min_confidence: 1-100")
-    if not all(isinstance(x, str) and x for x in body["doctrine"]):
-        raise StrategyError("doctrine: list of non-empty strings")
+    for part in ("doctrine", "legend"):
+        if not isinstance(body[part], list) or not all(isinstance(x, str) and x for x in body[part]):
+            raise StrategyError(f"{part}: list of non-empty strings")
     canon = json.dumps(body, sort_keys=True, separators=(",", ":"))
     return Strategy(body["id"], int(body["version"]), body["name"], r, body["prompt"],
-                    tuple(body["doctrine"]), body["answer"],
+                    tuple(body["doctrine"]), tuple(body["legend"]), body["answer"],
                     hashlib.sha1(canon.encode()).hexdigest()[:10])
 
 

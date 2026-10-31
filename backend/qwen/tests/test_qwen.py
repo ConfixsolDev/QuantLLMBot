@@ -73,3 +73,9 @@ def test_decider_never_raises():
     d2 = QwenDecider(client)(P, S)
     assert d2.verdict.action == "take" and d2.verdict.candidate_key == "Vabc:2"
     assert take_all(P, S).verdict.candidate_key == "Vabc:2"
+
+
+def test_candidate_facts_are_citable():
+    v = check('{"decision":"C1","confidence":60,"cites":["C1.rejection","E2"],"why":"clean rejection"}', P, 51)
+    assert v.action == "take" and v.cites == ("C1.rejection", "E2") and v.cited_events == ("ev2",)
+    assert check('{"decision":"C1","confidence":60,"cites":["C7.rejection"]}', P, 51).action == "invalid"

@@ -11,8 +11,9 @@ exists in this prompt. Rules (V3 Part E2 companion controls):
 * the text must contain a JSON object (a ```json fence is tolerated);
 * ``decision`` is a candidate id of THIS prompt or "wait" — nothing else;
 * a trade needs confidence >= the strategy's min_confidence (51); missing = 0;
-* a trade needs at least one citation, and every citation must be an
-  evidence id of this prompt (no invented facts);
+* a trade needs at least one citation; every citation must be an evidence
+  id of this prompt (E3) or a fact of one of its candidates (C1.rejection,
+  C1.level.history ...) — nothing invented;
 * ``why`` is kept (max 300 characters) for the journal.
 
 Anything that breaks a rule is ``action == "invalid"`` with the reasons;
@@ -75,7 +76,8 @@ def check(text: str, prompt, min_confidence: int) -> Verdict:
         errors.append("cites is not a list")
         cites_raw = []
     cites = tuple(str(c).strip() for c in cites_raw)
-    unknown = [c for c in cites if c not in prompt.evidence_map]
+    unknown = [c for c in cites if c not in prompt.evidence_map
+               and c.split(".", 1)[0] not in prompt.candidate_map]
     if unknown:
         errors.append(f"cites unknown evidence {unknown}")
     why = str(obj.get("why", ""))[:300]
