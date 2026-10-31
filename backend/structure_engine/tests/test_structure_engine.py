@@ -424,3 +424,47 @@ def test_event_ids_are_unique():
     for bars in (random_walk_m1(21, 20000), zone_series(4, "M30", 30).m1, pattern_series(4).m1):
         ids = Counter(e.id for e in run(bars, CFG))
         assert max(ids.values()) == 1
+
+
+# ------------------------------------------------------------------ VWAP
+def test_vwap_matches_offline_formula_and_resets_at_17_new_york():
+    from structure_engine.clock import anchored_day
+    t0 = _utc("2026-07-14T19:00:00")                     # 15:00 New York (EDT)
+    bars = [Bar(t0 + 60 * i, 100 + i % 9, 101 + i % 9, 99 + i % 9, 100.5 + i % 9, 1 + i % 5) for i in range(240)]
+    e = StructureEngine(CFG)
+    for b in bars:
+        e.push(b)
+    a = CFG["vwap"]["day_anchor"]
+    start = anchored_day(bars[-1].time, a["timezone"], a["hour"])[0]
+    assert start == _utc("2026-07-14T21:00:00")          # 17:00 New York
+    day = [b for b in bars if b.time >= start]
+    v = sum(b.volume for b in day)
+    tp = [(b.high + b.low + b.close) / 3 for b in day]
+    vw = sum(t * b.volume for t, b in zip(tp, day)) / v
+    sd = (sum(t * t * b.volume for t, b in zip(tp, day)) / v - vw * vw) ** 0.5
+    got = e.snapshot()["vwap"]["day"]
+    assert got["vwap"] == pytest.approx(vw, abs=1e-3) and got["sd"] == pytest.approx(sd, abs=1e-3)
+    assert got["bars"] == len(day)
+
+
+def test_vwap_cross_and_band_reject_events():
+    # calm around 100 for the London session, then a push up through VWAP and
+    # a spike beyond the upper 2-sigma band that closes back inside
+    t0 = _utc("2026-07-14T08:00:00")
+    bars, p = [], 100.0
+    for i in range(240):
+        t = t0 + 60 * i
+        if i < 150:
+            p = 100 + (0.3 if i % 2 else -0.3)
+            bars.append(Bar(t, p, p + 0.2, p - 0.2, p, 10))
+        elif i == 200:
+            bars.append(Bar(t, p, p + 12, p - 0.1, p + 0.1, 10))     # wick far above, close back
+        else:
+            q = p + 0.05
+            bars.append(Bar(t, p, max(p, q) + 0.1, min(p, q) - 0.1, q, 10))
+            p = q
+    ev = run(bars, CFG)
+    kinds = {(x.kind, x.data["anchor"]) for x in ev if x.kind.startswith("vwap")}
+    assert ("vwap_cross", "session") in kinds
+    assert any(x.kind == "vwap_band_reject" and x.data["side"] == "upper" for x in ev)
+    assert invariants(ev, CFG) == []

@@ -97,3 +97,15 @@ def anchored_week(t: int, tz: str, weekday: int, hour: int) -> tuple[int, int]:
     end_local = start_local + 7 * DAY
     end_utc = end_local - offset_of(end_local - off) * HOUR
     return start_utc, end_utc
+
+
+def anchored_day(t: int, tz: str, hour: int) -> tuple[int, int]:
+    """(start_utc, end_utc) of the trading day containing ``t``, the day
+    starting at ``hour`` local time (gold: 17:00 New York)."""
+    offset_of = TIMEZONES[tz]
+    off = offset_of(t) * HOUR
+    local = t + off
+    start_local = (local - hour * HOUR) // DAY * DAY + hour * HOUR
+    start_utc = start_local - off
+    end_local = start_local + DAY
+    return start_utc, end_local - offset_of(end_local - off) * HOUR

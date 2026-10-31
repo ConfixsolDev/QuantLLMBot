@@ -37,6 +37,7 @@ DEFAULT_CONFIG = Path(__file__).resolve().parent / "config" / "xauusd_structure_
 #   ("tfmap", LEAF)      dict keyed by declared timeframe names
 #   ("map", LEAF)        dict with free string keys (e.g. session names)
 #   ("pair", LEAF)       two-element list
+#   ("list", LEAF)       non-empty list
 # --------------------------------------------------------------------------
 INT, NUM, STR, POS_INT, POS_NUM, TF_LIST, TF, INT_LIST, BOOL = (
     "int", "num", "str", "pos_int", "pos_num", "tf_list", "tf", "int_list", "bool")
@@ -90,6 +91,14 @@ SCHEMA: dict[str, Any] = {
         "timeframes": TF_LIST, "window_bars": POS_INT, "max_width_atr": POS_NUM,
         "touch_tolerance_atr": POS_NUM, "min_touches": POS_INT, "break_buffer_atr": NUM,
         "max_bars": POS_INT,
+    },
+    "vwap": {
+        "anchors": ("list", STR),
+        "day_anchor": {"timezone": STR, "hour": INT},
+        "bands": ("list", POS_NUM),
+        "detect_timeframe": TF,
+        "reject_band": POS_NUM,
+        "min_bars": POS_INT,
     },
     "sessions": {
         "week_anchor": {"timezone": STR, "weekday": INT, "hour": INT},
@@ -171,6 +180,12 @@ def _check(value: Any, schema: Any, path: str, tfs: set[str]) -> None:
                 if kind == "tfmap" and key not in tfs:
                     raise ConfigError(f"{path}: '{key}' is not a declared timeframe")
                 _check(item, leaf, f"{path}.{key}", tfs)
+            return
+        if kind == "list":
+            if not isinstance(value, list) or not value:
+                raise ConfigError(f"{path}: expected a non-empty list")
+            for i, item in enumerate(value):
+                _check(item, leaf, f"{path}[{i}]", tfs)
             return
         if kind == "pair":
             if not isinstance(value, list) or len(value) != 2:
@@ -254,6 +269,13 @@ def build_config(raw: dict) -> StructureConfig:
     wa = raw["sessions"]["week_anchor"]
     if wa["timezone"] not in TIMEZONES or not 0 <= wa["weekday"] <= 6 or not 0 <= wa["hour"] <= 23:
         raise ConfigError("sessions.week_anchor: timezone, weekday 0-6 (Monday=0), hour 0-23")
+    vw = raw["vwap"]
+    if not set(vw["anchors"]) <= {"day", "week", "session"} or len(set(vw["anchors"])) != len(vw["anchors"]):
+        raise ConfigError("vwap.anchors: unique values from day, week, session")
+    if vw["day_anchor"]["timezone"] not in TIMEZONES or not 0 <= vw["day_anchor"]["hour"] <= 23:
+        raise ConfigError("vwap.day_anchor: known timezone and hour 0-23")
+    if vw["reject_band"] not in vw["bands"]:
+        raise ConfigError("vwap.reject_band must be one of vwap.bands")
     cs = raw["close_spikes"]
     if any(h <= 0 for h in cs["horizons_minutes"]):
         raise ConfigError("close_spikes.horizons_minutes must be positive")

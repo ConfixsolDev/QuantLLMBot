@@ -40,6 +40,8 @@ class Settings:
     poll_seconds: float = 2.0
     keep_bars_per_tf: int = 3000         # closed candles kept in memory per timeframe
     keep_events: int = 80000             # recent events kept in memory for the chart
+    replay_warmup_days: int = 10         # Replay page: engine context before the replayed day
+    replay_after_hours: int = 6          # Replay page: candles shown after the day (shaded)
 
 
 def load_settings(path: Path | None = None) -> Settings:

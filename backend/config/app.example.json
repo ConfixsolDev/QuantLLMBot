@@ -7,5 +7,7 @@
   "replay_days": 60,
   "poll_seconds": 2.0,
   "keep_bars_per_tf": 3000,
-  "keep_events": 80000
+  "keep_events": 80000,
+  "replay_warmup_days": 10,
+  "replay_after_hours": 6
 }

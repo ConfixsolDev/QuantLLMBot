@@ -17,3 +17,7 @@ body {
 .badge {
   @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
 }
+
+.btn {
+  @apply rounded-md bg-panel px-2.5 py-1 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50;
+}

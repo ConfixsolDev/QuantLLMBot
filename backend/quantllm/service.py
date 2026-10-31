@@ -23,6 +23,18 @@ reads three endpoints (all JSON, CORS open for localhost):
     GET /api/health                      status, progress, last bar, counts
     GET /api/chart?tf=M15&bars=300       closed candles + forming candle + overlays
     GET /api/snapshot                    what the engine thinks right now
+
+Replay page (verify the engine day by day, see replay.py):
+
+    GET  /api/replay/days                    days that have M1 bars
+    GET  /api/replay/day?date=2026-10-01     the day's detections + your verdicts
+    GET  /api/replay/chart?date=&tf=&t=&bars= the chart as the engine knew it at t
+    GET  /api/replay/checks?date=            automatic checks (invariants, determinism,
+                                             no-repaint, independent audit)
+    GET  /api/reviews/summary?from=&to=      scorecard of your verdicts per kind
+    POST /api/reviews                        save a verdict {id, day, kind, tf, time,
+                                             verdict: correct|wrong|missed, note}
+    POST /api/reviews/delete                 {id}: remove a verdict
 """
 
 from __future__ import annotations
@@ -40,7 +52,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from structure_engine.config import load_config
 from structure_engine.engine import StructureEngine
 
-from . import mt5_connection, overlays
+from . import mt5_connection, overlays, replay as replay_mod
 from .database import Database
 from .market_feed import LivePoller, connect_mt5, mt5_history
 from .settings import Settings
@@ -67,6 +79,9 @@ class StructureService:
                        "symbol": self.symbol, "config_id": self.cfg["config_id"],
                        "config_hash": self.cfg.config_hash, "last_bar": None, "bars_processed": 0,
                        "events": 0, "started_at": int(time.time())}
+        self.vwap = {tf: deque(maxlen=settings.keep_bars_per_tf) for tf in TFS}   # (time, values)
+        self.replays = replay_mod.ReplayCache()
+        self.replay_lock = threading.Lock()
         self.mt5 = None
         self._stop = threading.Event()
 
@@ -75,7 +90,10 @@ class StructureService:
         with self.lock:
             evs = self.engine.push(bar)
             for tf, closed in self.engine.closed_now.items():
-                self.bars[tf].extend(closed)
+                if closed:
+                    v = self.engine.vwap.values()
+                    self.bars[tf].extend(closed)
+                    self.vwap[tf].extend((c.time, v) for c in closed)
             self.events.extend(e.as_dict() for e in evs)
             self.status["last_bar"] = bar.time
             self.status["bars_processed"] += 1
@@ -201,6 +219,7 @@ class StructureService:
                      + [{"kind": "fvg", "id": g.id, "tf": g.tf, "side": g.direction, "low": g.low, "high": g.high,
                          "time": g.time, "status": g.status} for g in self.engine.gaps.active])
             ov = overlays.build(evs, tf, t_from, self.engine.now, self.snap(tf), snap_dict, alive)
+            ov["curves"] = replay_mod.vwap_curves(list(self.vwap[tf]), t_from, self.engine.now)
             return {"tf": tf, "candles": [c.as_dict() for c in candles], "forming": forming,
                     "overlays": ov, "as_of": self.engine.now}
 
@@ -222,8 +241,28 @@ class StructureService:
                 "fair_value_gaps": s["fair_value_gaps"][:8], "ranges": s["ranges"],
                 "levels": s["levels"], "forming": {k: v for k, v in s["forming"].items() if k != "bars"},
                 "pending_patterns": s["pending_patterns"], "open_spikes": s["open_spikes"],
-                "event_counts": s["event_counts"],
+                "event_counts": s["event_counts"], "vwap": s["vwap"],
             }
+
+    # ---------------------------------------------------------------- replay
+    def replay_day(self, date: str) -> replay_mod.ReplayDay:
+        """Build (or reuse) the engine run for one UTC day from stored M1 bars."""
+        replay_mod.day_bounds(date)                       # validates the date
+        with self.replay_lock:                            # one build at a time
+            def build():
+                start, end = replay_mod.day_bounds(date)
+                bars = self.db.candles_between(self.symbol, start - self.s.replay_warmup_days * 86400,
+                                               end + self.s.replay_after_hours * 3600)
+                if not any(start <= b.time < end for b in bars):
+                    raise LookupError(f"no M1 bars stored for {date}")
+                return replay_mod.ReplayDay(bars, self.cfg, date, self.s.replay_warmup_days,
+                                            self.s.replay_after_hours)
+            return self.replays.get(date, build)
+
+    def replay_checks(self, date: str) -> dict:
+        if date not in self.replays.checks:
+            self.replays.checks[date] = self.replay_day(date).checks()
+        return self.replays.checks[date]
 
 
 def _iso(t: int) -> str:
@@ -280,9 +319,62 @@ def make_handler(service: StructureService):
                     self._send(200, service.chart(tf, n))
                 elif url.path == "/api/snapshot":
                     self._send(200, service.snapshot())
+                elif url.path == "/api/replay/days":
+                    self._send(200, {"days": service.db.days_with_data(service.symbol)})
+                elif url.path == "/api/replay/day":
+                    day = service.replay_day(q["date"])
+                    self._send(200, {"date": day.date, "start": day.day_start, "end": day.day_end,
+                                     "detections": day.detections(),
+                                     "reviews": service.db.reviews(service.symbol, day.date),
+                                     "checks": service.replays.checks.get(day.date)})
+                elif url.path == "/api/replay/chart":
+                    tf = q.get("tf", "M15")
+                    if tf not in TFS:
+                        return self._send(400, {"error": f"tf must be one of {TFS}"})
+                    day = service.replay_day(q["date"])
+                    t = int(q.get("t", day.day_end))
+                    self._send(200, day.chart(tf, t, max(20, min(int(q.get("bars", 300)), 2000))))
+                elif url.path == "/api/replay/checks":
+                    self._send(200, service.replay_checks(q["date"]))
+                elif url.path == "/api/reviews/summary":
+                    self._send(200, service.db.review_summary(service.symbol, q["from"], q["to"]))
                 else:
                     self._send(404, {"error": "unknown endpoint"})
+            except (KeyError, ValueError, LookupError) as exc:   # bad / missing parameter, no data
+                self._send(400, {"error": f"{type(exc).__name__}: {exc}"})
             except Exception as exc:                        # never take the API down
+                log.exception("API error")
+                self._send(500, {"error": str(exc)})
+
+        def do_OPTIONS(self) -> None:  # noqa: N802         # CORS preflight (npm run dev)
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
+
+        def do_POST(self) -> None:  # noqa: N802
+            url = urlparse(self.path)
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                if n > 100_000:
+                    return self._send(413, {"error": "body too large"})
+                body = json.loads(self.rfile.read(n) or b"{}")
+                if url.path == "/api/reviews":
+                    if body.get("verdict") not in ("correct", "wrong", "missed"):
+                        return self._send(400, {"error": "verdict must be correct, wrong or missed"})
+                    replay_mod.day_bounds(body["day"])
+                    body["note"] = str(body.get("note", ""))[:2000]
+                    service.db.save_review(service.symbol, body)
+                    self._send(200, {"ok": True})
+                elif url.path == "/api/reviews/delete":
+                    service.db.delete_review(body["id"])
+                    self._send(200, {"ok": True})
+                else:
+                    self._send(404, {"error": "unknown endpoint"})
+            except (KeyError, ValueError) as exc:
+                self._send(400, {"error": f"{type(exc).__name__}: {exc}"})
+            except Exception as exc:
                 log.exception("API error")
                 self._send(500, {"error": str(exc)})
 

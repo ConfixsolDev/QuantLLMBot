@@ -11,20 +11,27 @@ import {
 } from "lightweight-charts";
 import type { Chart, Overlays } from "@/lib/api";
 
-export type Layers = Record<"zones" | "ob" | "fvg" | "ranges" | "trend" | "liquidity" | "levels" | "swings" | "other", boolean>;
+export type Layers = Record<"zones" | "ob" | "fvg" | "ranges" | "trend" | "liquidity" | "levels" | "swings" | "other" | "vwap", boolean>;
+
+// VWAP colours per anchor; bands are drawn dashed and fainter
+const VWAP_COL: Record<string, string> = { day: "250,204,21", week: "232,121,249", session: "56,189,248" };
 
 const C = {
   demand: "34,197,94", supply: "239,68,68", fvgUp: "45,212,191", fvgDown: "251,146,60",
   range: "148,163,184", bos: "#e2e8f0", choch: "#fb923c", level: "#60a5fa", liq: "#22d3ee",
-  spike: "#c084fc", pattern: "#facc15", swing: "#94a3b8",
+  spike: "#c084fc", pattern: "#facc15", swing: "#94a3b8", vwap: "#fde047",
 };
 
-export default function StructureChart({ chart, layers, fitKey }: { chart: Chart | null; layers: Layers; fitKey: string }) {
+// `cursor` (replay): the moment the engine is at; candles after it are the
+// shaded future. `focus`: a time to scroll into view (clicked detection).
+export default function StructureChart({ chart, layers, fitKey, cursor, focus }: {
+  chart: Chart | null; layers: Layers; fitKey: string; cursor?: number; focus?: number;
+}) {
   const boxRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
-  const dataRef = useRef<{ ov: Overlays | null; layers: Layers }>({ ov: null, layers });
+  const dataRef = useRef<{ ov: Overlays | null; layers: Layers; cursor?: number; futureFrom?: number }>({ ov: null, layers });
   const fittedRef = useRef<string>("");
 
   // ----- draw boxes, lines and levels on the canvas
@@ -39,7 +46,7 @@ export default function StructureChart({ chart, layers, fitKey }: { chart: Chart
     if (!g) return;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, w, h);
-    const { ov, layers: L } = dataRef.current;
+    const { ov, layers: L, cursor: cur, futureFrom } = dataRef.current;
     if (!ov) return;
     const ts = ch.timeScale();
     const right = w - ch.priceScale("right").width();
@@ -48,6 +55,47 @@ export default function StructureChart({ chart, layers, fitKey }: { chart: Chart
     g.font = "10px ui-sans-serif, system-ui";
     g.save();
     g.beginPath(); g.rect(0, 0, right, h); g.clip();
+
+    if (futureFrom !== undefined) {                     // replay: shade the future
+      const xf = X(futureFrom);
+      if (xf !== null) {
+        g.fillStyle = "rgba(15,23,42,0.55)"; g.fillRect(xf - 3, 0, right - xf + 3, h);
+        g.strokeStyle = "#fbbf24"; g.setLineDash([4, 3]);
+        g.beginPath(); g.moveTo(xf - 3, 0); g.lineTo(xf - 3, h); g.stroke(); g.setLineDash([]);
+        g.fillStyle = "#fbbf24";
+        g.fillText(cur ? `engine @ ${new Date(cur * 1000).toISOString().slice(11, 16)} UTC` : "now", xf + 2, 12);
+      }
+    }
+    if (L.vwap && ov.curves) {                         // VWAP lines and ±σ bands
+      for (const [anchor, pts] of Object.entries(ov.curves)) {
+        const rgb = VWAP_COL[anchor] ?? "203,213,225";
+        const path = (val: (p: (typeof pts)[number]) => number | null | undefined, style: string, dash: number[]) => {
+          g.strokeStyle = style; g.setLineDash(dash); g.beginPath();
+          let pen = false, lastStart: number | undefined;
+          for (const p of pts) {
+            const v = val(p), x = X(p.time);
+            if (p.start !== lastStart) pen = false;     // a new period starts: no joining line
+            lastStart = p.start;
+            if (v === null || v === undefined || x === null) { pen = false; continue; }
+            const y = Y(v);
+            if (y === null) { pen = false; continue; }
+            if (pen) g.lineTo(x, y); else g.moveTo(x, y);
+            pen = true;
+          }
+          g.stroke(); g.setLineDash([]);
+        };
+        path((p) => p.vwap, `rgba(${rgb},0.95)`, []);
+        for (const k of ["1.0", "2.0"]) {
+          path((p) => p.bands?.[k]?.[0], `rgba(${rgb},${k === "1.0" ? 0.3 : 0.55})`, [2, 3]);
+          path((p) => p.bands?.[k]?.[1], `rgba(${rgb},${k === "1.0" ? 0.3 : 0.55})`, [2, 3]);
+        }
+        const last = [...pts].reverse().find((p) => p.vwap !== null);
+        if (last && last.vwap !== null) {
+          const y = Y(last.vwap), x = X(last.time);
+          if (y !== null && x !== null) { g.fillStyle = `rgba(${rgb},1)`; g.fillText(`VWAP ${anchor}`, x + 4, y - 3); }
+        }
+      }
+    }
 
     for (const b of ov.boxes) {
       const on = { zone: L.zones, ob: L.ob, fvg: L.fvg, range: L.ranges }[b.kind];
@@ -134,7 +182,13 @@ export default function StructureChart({ chart, layers, fitKey }: { chart: Chart
     if (!s || !ch || !chart) return;
     const rows = [...chart.candles];
     if (chart.forming && (!rows.length || chart.forming.time > rows[rows.length - 1].time)) rows.push(chart.forming);
-    s.setData(rows.map((c) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close })));
+    const future = chart.future ?? [];
+    s.setData([
+      ...rows.map((c) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close })),
+      ...future.map((c) => ({ time: c.time as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close,
+        color: c.close >= c.open ? "rgba(34,197,94,0.28)" : "rgba(239,68,68,0.28)",
+        wickColor: "rgba(148,163,184,0.3)" })),
+    ]);
     const ov = chart.overlays;
     const markers: SeriesMarker<Time>[] = [];
     if (ov) {
@@ -144,24 +198,40 @@ export default function StructureChart({ chart, layers, fitKey }: { chart: Chart
             color: C.swing, shape: sw.kind === "high" ? "arrowDown" : "arrowUp", text: sw.label, size: 0.6 });
       for (const m of ov.markers) {
         const isLiq = m.level !== undefined;
-        if ((isLiq && !layers.liquidity) || (!isLiq && !layers.other)) continue;
+        const isVwap = m.kind.startsWith("vwap");
+        if ((isLiq && !layers.liquidity) || (isVwap && !layers.vwap) || (!isLiq && !isVwap && !layers.other)) continue;
         markers.push({ time: m.time as UTCTimestamp, position: m.position === "above" ? "aboveBar" : "belowBar",
-          color: isLiq ? C.liq : m.kind === "close_spike" ? C.spike : C.pattern, shape: "circle", text: m.text, size: 0.5 });
+          color: isVwap ? C.vwap : isLiq ? C.liq : m.kind === "close_spike" ? C.spike : C.pattern,
+          shape: isVwap ? "square" : "circle", text: m.text, size: isVwap ? 0.4 : 0.7 });
       }
     }
     markers.sort((a, b) => (a.time as number) - (b.time as number));
     s.setMarkers(markers);
-    dataRef.current = { ov, layers };
+    dataRef.current = { ov, layers, cursor, futureFrom: future.length ? future[0].time : undefined };
     // Zoom to the last ~160 candles when the timeframe changes, and again while
     // history is still arriving (the first refresh may hold only a few bars).
     const fitTag = `${fitKey}:${rows.length < 160 ? rows.length : "full"}`;
     if (fittedRef.current !== fitTag && rows.length) {
-      ch.timeScale().setVisibleLogicalRange({ from: Math.max(0, rows.length - 160), to: rows.length + 5 });
+      const extra = Math.min(future.length, 40);
+      ch.timeScale().setVisibleLogicalRange({ from: Math.max(0, rows.length - 160), to: rows.length + extra + 5 });
       fittedRef.current = fitTag;
     }
     requestAnimationFrame(draw);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chart, layers, fitKey]);
+  }, [chart, layers, fitKey, cursor]);
+
+  // ----- scroll a clicked detection into view
+  useEffect(() => {
+    const ch = chartRef.current;
+    if (!ch || !focus || !chart) return;
+    const all = [...chart.candles, ...(chart.future ?? [])];
+    let i = all.findIndex((c) => c.time >= focus);
+    if (i < 0) i = all.length - 1;
+    const r = ch.timeScale().getVisibleLogicalRange();
+    const half = r ? Math.max(30, (r.to - r.from) / 2) : 80;
+    ch.timeScale().setVisibleLogicalRange({ from: i - half, to: i + half });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus]);
 
   return (
     <div className="relative h-full w-full">

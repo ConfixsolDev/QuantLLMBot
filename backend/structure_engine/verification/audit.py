@@ -75,7 +75,15 @@ def build_candles(m1) -> dict[str, dict[int, dict]]:
 
 
 def audit(m1_paths, events_path, show: int = 10) -> dict:
-    candles = build_candles(RecordedFeed(m1_paths))
+    """Audit a back-test output folder's events.jsonl against M1 files."""
+    with open(events_path, encoding="utf-8") as fh:
+        events = [json.loads(line) for line in fh]
+    return audit_events(RecordedFeed(m1_paths), events, show)
+
+
+def audit_events(m1_bars, events: list[dict], show: int = 10) -> dict:
+    """Audit in-memory events (Event.as_dict) against in-memory M1 bars."""
+    candles = build_candles(m1_bars)
     sorted_times = {tf: sorted(c) for tf, c in candles.items()}
     checks, fails, info = Counter(), defaultdict(list), Counter()
     strength = load_config()["swings"]["strength"]
@@ -86,76 +94,74 @@ def audit(m1_paths, events_path, show: int = 10) -> dict:
     def fail(kind: str, msg: str) -> None:
         fails[kind].append(msg)
 
-    with open(events_path, encoding="utf-8") as fh:
-        for line in fh:
-            e = json.loads(line)
-            k, tf, d = e["kind"], e["tf"], e["data"]
-            if tf not in candles or not candles[tf]:
+    for e in events:
+        k, tf, d = e["kind"], e["tf"], e["data"]
+        if tf not in candles or not candles[tf]:
+            continue
+        cs = candles[tf]
+        if k in ("bos", "choch"):
+            checks[k] += 1
+            brk = cs.get(d["break_time"])
+            up = d["direction"] == "up"
+            if brk is None or abs(brk["close"] - d["break_close"]) > 1e-9:
+                fail(k, f"{e['id']}: breaking candle not found / close differs")
                 continue
-            cs = candles[tf]
-            if k in ("bos", "choch"):
-                checks[k] += 1
-                brk = cs.get(d["break_time"])
-                up = d["direction"] == "up"
-                if brk is None or abs(brk["close"] - d["break_close"]) > 1e-9:
-                    fail(k, f"{e['id']}: breaking candle not found / close differs")
-                    continue
-                if not ((brk["close"] > d["level"]) if up else (brk["close"] < d["level"])):
-                    fail(k, f"{e['id']}: close not beyond level")
-                lv = cs.get(d["level_time"])
-                swing_side = "high" if up else "low"
-                if lv is None or abs(lv[swing_side] - d["level"]) > 1e-9:
-                    fail(k, f"{e['id']}: level {d['level']} is not the {swing_side} of the swing candle")
-                # informational: did an earlier candle already close beyond it
-                # after the swing was confirmed? (allowed by the trend rules,
-                # e.g. while the trend pointed the other way)
-                known = d["level_time"] + (strength[tf] + 1) * TF_MIN[tf] * 60
-                for t in sorted_times[tf]:
-                    if known <= t < d["break_time"]:
-                        cc = cs[t]["close"]
-                        if (cc > d["level"]) if up else (cc < d["level"]):
-                            info[k] += 1
-                            break
-            elif k in ("liquidity_sweep", "false_break", "liquidity_taken", "sweep_failed"):
-                checks[k] += 1
-                c = cs.get(d["candle"]["time"])
-                if not same(c, d["candle"]):
-                    fail(k, f"{e['id']}: candle differs from raw data")
-                    continue
-                for lv in d["levels"]:
-                    p, hi = lv["price"], d["side"] == "high"
-                    if k == "liquidity_sweep" and not ((c["high"] > p and c["close"] < p) if hi
-                                                       else (c["low"] < p and c["close"] > p)):
-                        fail(k, f"{e['id']}: not a sweep of {p}")
-                    if k == "sweep_failed" and not ((c["close"] > p) if hi else (c["close"] < p)):
-                        fail(k, f"{e['id']}: close not beyond {p}")
-                    if k == "false_break" and not ((c["close"] < p) if hi else (c["close"] > p)):
-                        fail(k, f"{e['id']}: reclaim close not back inside {p}")
-                    if k == "liquidity_taken" and not ((c["close"] > p) if hi else (c["close"] < p)):
-                        fail(k, f"{e['id']}: accepted-break candle not beyond {p}")
-            elif k == "fvg_created":
-                checks[k] += 1
-                c1 = cs.get(d["time"])
-                if c1 is None:
-                    fail(k, f"{e['id']}: c1 missing")
-                    continue
-                step = TF_MIN[tf] * 60
-                c3 = cs.get(d["time"] + 2 * step)
-                if c3 is None or cs.get(d["time"] + step) is None:
-                    fail(k, f"{e['id']}: candles not consecutive")
-                    continue
-                lo, hi = (c1["high"], c3["low"]) if d["direction"] == "up" else (c3["high"], c1["low"])
-                if abs(lo - d["low"]) > 1e-9 or abs(hi - d["high"]) > 1e-9 or not lo < hi:
-                    fail(k, f"{e['id']}: gap bounds differ")
-            elif k == "order_block_created":
-                checks[k] += 1
-                c = cs.get(d["time"])
-                if c is None or abs(c["low"] - d["low"]) > 1e-9 or abs(c["high"] - d["high"]) > 1e-9:
-                    fail(k, f"{e['id']}: order-block candle range differs")
-                    continue
-                if (d["direction"] == "up" and not c["close"] < c["open"]) or \
-                   (d["direction"] == "down" and not c["close"] > c["open"]):
-                    fail(k, f"{e['id']}: order-block candle has the wrong colour")
+            if not ((brk["close"] > d["level"]) if up else (brk["close"] < d["level"])):
+                fail(k, f"{e['id']}: close not beyond level")
+            lv = cs.get(d["level_time"])
+            swing_side = "high" if up else "low"
+            if lv is None or abs(lv[swing_side] - d["level"]) > 1e-9:
+                fail(k, f"{e['id']}: level {d['level']} is not the {swing_side} of the swing candle")
+            # informational: did an earlier candle already close beyond it
+            # after the swing was confirmed? (allowed by the trend rules,
+            # e.g. while the trend pointed the other way)
+            known = d["level_time"] + (strength[tf] + 1) * TF_MIN[tf] * 60
+            for t in sorted_times[tf]:
+                if known <= t < d["break_time"]:
+                    cc = cs[t]["close"]
+                    if (cc > d["level"]) if up else (cc < d["level"]):
+                        info[k] += 1
+                        break
+        elif k in ("liquidity_sweep", "false_break", "liquidity_taken", "sweep_failed"):
+            checks[k] += 1
+            c = cs.get(d["candle"]["time"])
+            if not same(c, d["candle"]):
+                fail(k, f"{e['id']}: candle differs from raw data")
+                continue
+            for lv in d["levels"]:
+                p, hi = lv["price"], d["side"] == "high"
+                if k == "liquidity_sweep" and not ((c["high"] > p and c["close"] < p) if hi
+                                                   else (c["low"] < p and c["close"] > p)):
+                    fail(k, f"{e['id']}: not a sweep of {p}")
+                if k == "sweep_failed" and not ((c["close"] > p) if hi else (c["close"] < p)):
+                    fail(k, f"{e['id']}: close not beyond {p}")
+                if k == "false_break" and not ((c["close"] < p) if hi else (c["close"] > p)):
+                    fail(k, f"{e['id']}: reclaim close not back inside {p}")
+                if k == "liquidity_taken" and not ((c["close"] > p) if hi else (c["close"] < p)):
+                    fail(k, f"{e['id']}: accepted-break candle not beyond {p}")
+        elif k == "fvg_created":
+            checks[k] += 1
+            c1 = cs.get(d["time"])
+            if c1 is None:
+                fail(k, f"{e['id']}: c1 missing")
+                continue
+            step = TF_MIN[tf] * 60
+            c3 = cs.get(d["time"] + 2 * step)
+            if c3 is None or cs.get(d["time"] + step) is None:
+                fail(k, f"{e['id']}: candles not consecutive")
+                continue
+            lo, hi = (c1["high"], c3["low"]) if d["direction"] == "up" else (c3["high"], c1["low"])
+            if abs(lo - d["low"]) > 1e-9 or abs(hi - d["high"]) > 1e-9 or not lo < hi:
+                fail(k, f"{e['id']}: gap bounds differ")
+        elif k == "order_block_created":
+            checks[k] += 1
+            c = cs.get(d["time"])
+            if c is None or abs(c["low"] - d["low"]) > 1e-9 or abs(c["high"] - d["high"]) > 1e-9:
+                fail(k, f"{e['id']}: order-block candle range differs")
+                continue
+            if (d["direction"] == "up" and not c["close"] < c["open"]) or \
+               (d["direction"] == "down" and not c["close"] > c["open"]):
+                fail(k, f"{e['id']}: order-block candle has the wrong colour")
     report = {"checks": dict(checks), "failures": {k: len(v) for k, v in fails.items()},
               "earlier_close_beyond": dict(info),
               "examples": {k: v[:show] for k, v in fails.items()},

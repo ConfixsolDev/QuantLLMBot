@@ -12,13 +12,13 @@ import { fetchChart, fetchHealth, fetchSnapshot, fmtTime, type Chart, type Healt
 const TFS = ["M1", "M5", "M15", "M30", "H1", "H4"];
 const LAYER_NAMES: [keyof Layers, string][] = [
   ["trend", "BOS / CHoCH"], ["liquidity", "Liquidity"], ["zones", "Zones"], ["ob", "Order blocks"],
-  ["fvg", "FVG"], ["ranges", "Ranges"], ["levels", "Session levels"], ["swings", "Swings"], ["other", "Spikes & patterns"],
+  ["fvg", "FVG"], ["ranges", "Ranges"], ["levels", "Session levels"], ["swings", "Swings"], ["other", "Spikes & patterns"], ["vwap", "VWAP"],
 ];
 
 export default function Page() {
   const [tf, setTf] = useState("M15");
   const [layers, setLayers] = useState<Layers>({
-    trend: true, liquidity: true, zones: true, ob: true, fvg: false, ranges: true, levels: true, swings: true, other: true,
+    trend: true, liquidity: true, zones: true, ob: true, fvg: false, ranges: true, levels: true, swings: true, other: true, vwap: true,
   });
   const [chart, setChart] = useState<Chart | null>(null);
   const [snap, setSnap] = useState<Snapshot | null>(null);
@@ -53,6 +53,7 @@ export default function Page() {
         <span className="text-xs text-slate-500">last bar {fmtTime(health?.last_bar)} · MT5 {health?.mt5} · {health?.database ?? ""}</span>
         {health?.message && <span className="text-xs text-slate-400">{health.message}</span>}
         {error && <span className="text-xs text-rose-400">backend not reachable: {error}</span>}
+        <a href="/replay/" className="ml-auto rounded-md bg-panel px-3 py-1 text-sm text-gold hover:bg-slate-800">Replay &amp; verify a day →</a>
       </header>
 
       <div className="flex flex-wrap items-center gap-2">

@@ -29,7 +29,7 @@ What happens inside one push(bar)
                         ATR, swings, then the structure layer (_structure):
                         displacement, FVG, BOS/CHoCH + order blocks, liquidity
                         pools with sweeps / false / accepted breaks (on M5),
-                        ranges; then close-spike detection on H1/H4, and on
+                        VWAP crosses / band rejections (on M5), ranges; then close-spike detection on H1/H4, and on
                         zone timeframes: age + new zones
     return the events produced by this bar
 
@@ -57,6 +57,7 @@ from .liquidity import LiquidityBook
 from .order_blocks import OrderBlockBook
 from .ranges import RangeTracker
 from .trend import TrendTracker
+from .vwap import VwapTracker
 from .patterns import PatternDetector
 from .scoring import score_zones
 from .sessions import SessionTracker
@@ -100,6 +101,7 @@ class StructureEngine:
         self.obs = OrderBlockBook(cfg, lambda *k: "O" + self._id("ob", *k))
         self.ranges = {tf: RangeTracker(tf, cfg, lambda *k: "R" + self._id("range", *k))
                        for tf in cfg["ranges"]["timeframes"]}
+        self.vwap = VwapTracker(cfg)
         # recent closed candles (+ displacement info) per timeframe, for order blocks / FVGs
         self.hist: dict[str, list[tuple[Bar, dict | None]]] = {tf: [] for tf in self.tfs}
         self.last_time: int | None = None      # open time of the last M1 bar
@@ -170,6 +172,7 @@ class StructureEngine:
         for kind, pat in self.patterns.on_bar(bar, self.m1_index, m1_atr_before, m1_swings, self.now):
             events.append(self._ev(kind, "M1", pat.peaks[0].time, pat.as_dict(), key=f"{pat.id}:{pat.status}"))
         self.atr["M1"].update(bar)
+        self.vwap.on_m1(bar)                      # VWAPs include this closed minute
 
         # 4. higher timeframes that closed with this minute
         zone_tfs = set(self.cfg["zones"]["timeframes"])
@@ -239,6 +242,9 @@ class StructureEngine:
         if tf == cfg["liquidity"]["detect_timeframe"]:
             for kind, side, data in self.liquidity.on_detect_bar(bar, atr, self.now):
                 ev.append(self._ev(kind, tf, bar.time, data, key=side))
+        if tf == cfg["vwap"]["detect_timeframe"]:
+            for kind, data in self.vwap.on_detect_bar(bar):
+                ev.append(self._ev(kind, tf, bar.time, data, key=f"{data['anchor']}:{kind}"))
         if tf in self.ranges:
             for kind, data in self.ranges[tf].on_bar(bar, atr, self.now):
                 ev.append(self._ev(kind, tf, data["start"], data, key=f"{kind}:{bar.time}"))
@@ -282,6 +288,7 @@ class StructureEngine:
                        for tf in self.tfs},
             "levels": list(self.sessions.levels)[-levels:],
             "trend": {tf: t.state_dict() for tf, t in self.trend.items()},
+            "vwap": self.vwap.values(),
             "liquidity_pools": self.liquidity.nearest(self._last_close, 10) if self._last_close else [],
             "recent_liquidity_events": self.liquidity.history[-10:],
             "fair_value_gaps": [g.as_dict() for g in sorted(

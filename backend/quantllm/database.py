@@ -9,6 +9,8 @@ events         every structure event of the current engine run: id, symbol,
                kind, tf, time, available_at, config_hash, data (jsonb).
                Rebuilt on every start from the replayed history, so it always
                matches the running engine and config.
+reviews        your verdicts from the Replay page: event id (or 'missed-…'),
+               day, kind, timeframe, verdict (correct / wrong / missed), note.
 service_state  small key/value facts (last start, config hash, ...).
 
 Only CLOSED M1 bars are ever written. Higher timeframes are not stored: the
@@ -66,6 +68,12 @@ class Database:
             config_hash TEXT NOT NULL, data JSONB NOT NULL)""")
         c.execute("CREATE INDEX IF NOT EXISTS events_symbol_available ON events (symbol, available_at)")
         c.execute("CREATE INDEX IF NOT EXISTS events_symbol_kind ON events (symbol, kind)")
+        c.execute("""CREATE TABLE IF NOT EXISTS reviews (
+            id TEXT PRIMARY KEY, symbol TEXT NOT NULL, day DATE NOT NULL, kind TEXT NOT NULL,
+            tf TEXT NOT NULL, time TIMESTAMPTZ, verdict TEXT NOT NULL
+                CHECK (verdict IN ('correct', 'wrong', 'missed')),
+            note TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
+        c.execute("CREATE INDEX IF NOT EXISTS reviews_day ON reviews (symbol, day)")
         c.execute("""CREATE TABLE IF NOT EXISTS service_state (
             key TEXT PRIMARY KEY, value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
 
@@ -141,6 +149,55 @@ class Database:
 
     def event_count(self, symbol: str) -> int:
         return self.conn.execute("SELECT count(*) FROM events WHERE symbol = %s", (symbol,)).fetchone()[0]
+
+    # ------------------------------------------------------------------ reviews
+    def save_review(self, symbol: str, r: dict) -> None:
+        """Upsert one verdict. ``id`` is the event id, or 'missed-…' for something
+        the engine did not detect."""
+        self.conn.execute(
+            "INSERT INTO reviews (id, symbol, day, kind, tf, time, verdict, note, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now()) ON CONFLICT (id) DO UPDATE SET "
+            "verdict = EXCLUDED.verdict, note = EXCLUDED.note, updated_at = now()",
+            (r["id"], symbol, r["day"], r["kind"], r["tf"], _ts(r["time"]) if r.get("time") else None,
+             r["verdict"], r.get("note", "")))
+
+    def delete_review(self, review_id: str) -> None:
+        self.conn.execute("DELETE FROM reviews WHERE id = %s", (review_id,))
+
+    def reviews(self, symbol: str, day: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT id, kind, tf, time, verdict, note FROM reviews WHERE symbol = %s AND day = %s ORDER BY time",
+            (symbol, day)).fetchall()
+        return [{"id": r[0], "kind": r[1], "tf": r[2], "time": int(r[3].timestamp()) if r[3] else None,
+                 "verdict": r[4], "note": r[5]} for r in rows]
+
+    def review_summary(self, symbol: str, start: str, end: str) -> dict:
+        rows = self.conn.execute(
+            "SELECT kind, verdict, count(*) FROM reviews WHERE symbol = %s AND day >= %s AND day <= %s "
+            "GROUP BY kind, verdict ORDER BY kind", (symbol, start, end)).fetchall()
+        by: dict[str, dict] = {}
+        for kind, verdict, n in rows:
+            by.setdefault(kind, {"kind": kind, "correct": 0, "wrong": 0, "missed": 0})[verdict] = n
+        for v in by.values():
+            judged = v["correct"] + v["wrong"]
+            v["precision"] = round(v["correct"] / judged, 3) if judged else None
+            found = v["correct"] + v["missed"]
+            v["recall"] = round(v["correct"] / found, 3) if found else None
+        days = self.conn.execute("SELECT count(DISTINCT day) FROM reviews WHERE symbol = %s AND day >= %s AND day <= %s",
+                                 (symbol, start, end)).fetchone()[0]
+        return {"days_reviewed": days, "kinds": list(by.values())}
+
+    def candles_between(self, symbol: str, start: int, end: int) -> list[Bar]:
+        rows = self.conn.execute(
+            "SELECT time, open, high, low, close, tick_volume FROM m1_candles "
+            "WHERE symbol = %s AND time >= %s AND time < %s ORDER BY time", (symbol, _ts(start), _ts(end))).fetchall()
+        return [Bar(int(t.timestamp()), o, h, l, c, v) for t, o, h, l, c, v in rows]
+
+    def days_with_data(self, symbol: str, limit: int = 120) -> list[str]:
+        rows = self.conn.execute(
+            "SELECT DISTINCT (time AT TIME ZONE 'UTC')::date AS d FROM m1_candles WHERE symbol = %s "
+            "ORDER BY d DESC LIMIT %s", (symbol, limit)).fetchall()
+        return [r[0].isoformat() for r in rows]
 
     # ------------------------------------------------------------------ state
     def set_state(self, key: str, value) -> None:

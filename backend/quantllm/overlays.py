@@ -12,7 +12,9 @@ Output (all prices raw, all times UTC epoch seconds)::
              until it ended (filled / broken / expired) or until now if alive
     markers  liquidity sweep / failed sweep / false break / accepted break
              (SW, SW✗, FB, TK), close spikes, confirmed double/triple tops &
-             bottoms (DT, TT, DB, TB); ``detail`` holds the long description
+             bottoms (DT, TT, DB, TB), VWAP band rejects on M1-M30 (VD / VW / VS
+             = day / week / session); ``detail`` holds the long description
+    curves   (added by the caller) VWAP + bands per anchor at each candle
     levels   confirmed Asia / London / New York / day / week highs and lows
              (last 48 h) and the forming session / day range
     swings   confirmed swing highs/lows of this timeframe with HH/HL/LH/LL labels
@@ -83,6 +85,13 @@ def build(events: list[dict], tf: str, t_from: int, now: int, snap, snapshot: di
                             "price": d["peaks"][-1]["price"],
                             "position": "above" if d["kind"].endswith("top") else "below",
                             "text": PATTERN_SHORT.get(d["kind"], d["kind"]), "detail": d["kind"].replace("_", " ")})
+        elif k == "vwap_band_reject" and tf in ("M1", "M5", "M15", "M30"):
+            c = d["candle"]
+            markers.append({"kind": "vwap_band_reject", "time": snap(c["time"]),
+                            "price": c["high"] if d["side"] == "upper" else c["low"],
+                            "position": "above" if d["side"] == "upper" else "below",
+                            "text": f"V{d['anchor'][0].upper()}", "detail":
+                            f"VWAP {d['anchor']} {d['band']}σ {d['side']} band reject at {d['level']:.2f}"})
         elif k == "swing" and etf == tf:
             swings.append({"time": snap(d["time"]), "price": d["price"], "kind": d["kind"],
                            "label": d["label"] or ""})

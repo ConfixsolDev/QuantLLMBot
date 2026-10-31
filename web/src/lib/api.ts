@@ -17,9 +17,17 @@ export type Marker = {
 };
 export type Level = { name: string; side: "high" | "low"; price: number; t1: number; confirmed: boolean };
 export type Swing = { time: number; price: number; kind: "high" | "low"; label: string };
-export type Overlays = { lines: Line[]; boxes: Box[]; markers: Marker[]; levels: Level[]; swings: Swing[] };
+export type VwapPoint = { time: number; vwap: number | null; bands?: Record<string, [number, number]>; start?: number };
+export type Overlays = {
+  lines: Line[]; boxes: Box[]; markers: Marker[]; levels: Level[]; swings: Swing[];
+  curves?: Record<string, VwapPoint[]>;          // VWAP per anchor: day / week / session
+};
 
-export type Chart = { tf: string; candles: Candle[]; forming: Candle | null; overlays: Overlays | null; as_of: number | null };
+export type Chart = {
+  tf: string; candles: Candle[]; forming?: Candle | null; overlays: Overlays | null; as_of: number | null;
+  future?: Candle[];                             // replay only: what happened next (shaded)
+  trend?: Record<string, Trend>; price?: number;
+};
 
 export type Health = {
   state: string; message: string; progress: number; mt5: string; symbol: string; database?: string;
@@ -42,6 +50,25 @@ export type Snapshot = {
   forming?: { session: { name: string; high: number; low: number } | null; day: { high: number; low: number } | null };
   pending_patterns?: { kind: string; neckline: number }[];
   event_counts?: Record<string, number>;
+  vwap?: Record<string, { vwap: number; sd: number; name: string; bands: Record<string, [number, number]> } | null>;
+};
+
+// ---------------------------------------------------------------- replay
+export type Detection = { id: string; kind: string; tf: string; time: number; available_at: number; text: string };
+export type Verdict = "correct" | "wrong" | "missed";
+export type Review = { id: string; kind: string; tf: string; time: number | null; verdict: Verdict; note: string };
+export type Check = { ok: boolean; [k: string]: unknown };
+export type DayChecks = {
+  date: string; events: number; invariants: Check & { violations: string[] }; determinism: Check;
+  no_repaint: Check & { cuts: number[]; failed_cuts: number[] };
+  audit: Check & { checked: number; failed: number; examples: Record<string, string[]> };
+};
+export type ReplayDay = {
+  date: string; start: number; end: number; detections: Detection[]; reviews: Review[]; checks: DayChecks | null;
+};
+export type Scorecard = {
+  days_reviewed: number;
+  kinds: { kind: string; correct: number; wrong: number; missed: number; precision: number | null; recall: number | null }[];
 };
 
 async function get<T>(path: string): Promise<T> {
@@ -53,6 +80,22 @@ async function get<T>(path: string): Promise<T> {
 export const fetchHealth = () => get<Health>("/api/health");
 export const fetchChart = (tf: string, bars: number) => get<Chart>(`/api/chart?tf=${tf}&bars=${bars}`);
 export const fetchSnapshot = () => get<Snapshot>("/api/snapshot");
+
+export const fetchDays = () => get<{ days: string[] }>("/api/replay/days");
+export const fetchReplayDay = (date: string) => get<ReplayDay>(`/api/replay/day?date=${date}`);
+export const fetchReplayChart = (date: string, tf: string, t: number, bars: number) =>
+  get<Chart>(`/api/replay/chart?date=${date}&tf=${tf}&t=${t}&bars=${bars}`);
+export const fetchChecks = (date: string) => get<DayChecks>(`/api/replay/checks?date=${date}`);
+export const fetchScorecard = (from: string, to: string) => get<Scorecard>(`/api/reviews/summary?from=${from}&to=${to}`);
+
+async function post(path: string, body: unknown): Promise<void> {
+  const r = await fetch(`${API_BASE}${path}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+}
+export const saveReview = (r: Review & { day: string }) => post("/api/reviews", r);
+export const deleteReview = (id: string) => post("/api/reviews/delete", { id });
 
 export const fmtTime = (t: number | null | undefined) =>
   t ? new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "–";

@@ -137,6 +137,8 @@ file's header comment.
 | Range | M15, H1 | last 20 candles within 3 ATR, top and bottom each touched ≥ 3 times; edges become liquidity pools; ends with a close beyond an edge | `ranges.py` |
 | Close spikes | H1, H4 closes | the larger M1 move in the last 10 minutes before the close is ≥ 0.75 × H1 ATR (optional dollar floor); context: held vs rejected close, previous-candle sweep, session/prior-day levels swept (last 24 h), zone hit, H4 swing trend, volume ratio, session; outcome after 15/60/240 min: reversal (back beyond the spike start), continuation (beyond the extreme) or partial | `spikes.py` |
 
+| VWAP + bands | from M1; events judged on M5 | volume-weighted typical price (h+l+c)/3 with MT5 tick volume, ±1σ / ±2σ bands; anchors: **day** (resets 17:00 New York), **week** (Sunday 17:00 NY), **session** (Asia / London / New York windows); `vwap_cross` = M5 close on the other side of VWAP than the previous close; `vwap_band_reject` = M5 candle trades beyond the 2σ band and closes back inside; events only after 30 M1 bars of the period | `vwap.py` |
+
 Every threshold above is a key in `config/xauusd_structure_v1.json`; the
 numbers here are the shipped values, not code constants.
 
@@ -312,6 +314,7 @@ backend/structure_engine/
   sessions.py      session / day / week levels (forming vs confirmed)
   patterns.py      M1 double/triple tops & bottoms
   spikes.py        close spikes into H1/H4 closes + outcome labels
+  vwap.py          day / week / session VWAP with bands; crosses and band rejects
   engine.py        the single streaming engine (live == test)
   feeds.py         RecordedFeed (files / folders of M1 bars)
   runner.py        back-test CLI
@@ -341,7 +344,8 @@ About 22,000 M1 bars per second with the full structure layer: ten years
    through new config versions (`xauusd_structure_v2.json`), never in code.
 3. Done 2026-10-31: BOS/CHoCH, equal highs/lows, liquidity sweeps, false and
    accepted breaks, FVG, order blocks, displacement, ranges, previous-week
-   levels. Still open: head and shoulders, candle patterns, VWAP, channels.
+   levels, VWAP (day / week / session). Still open: head and shoulders,
+   candle patterns, channels.
    External libraries (smartmoneyconcepts, TA-Lib, SciPy) only as reference
    checks, and only after passing the no-repaint test.
 4. Rebuild Qwen (Module 2) from scratch on top of the structure snapshot,
@@ -354,8 +358,9 @@ before anything else is built on it.**
 
 1. **Data:** load the full XAUUSD M1 history into the database
    (`python -m quantllm import-mt5 --from 2016-01-01`).
-2. **Review on the website:** check every structure family on real charts
-   (timeframes M1–H4, one layer at a time); note what is wrong or missed.
+2. **Review on the website — Replay page (C4b):** one month, day by day:
+   play the day, mark every detection ✓ / ✗, add what was missed, run the
+   automatic checks; the monthly scorecard gives precision and recall per kind.
 3. **Tune by config only:** a new `xauusd_structure_v2.json`; rerun the tests,
    the audit and the review; repeat until the gate passes.
 4. **Gate:** the owner accepts the structure; no-repaint, determinism and the
@@ -388,12 +393,14 @@ backend/
     database.py             tables, idempotent candle import, event store
     market_feed.py          MT5 history, MT5 live polling (closed bars only), CSV files
     overlays.py             engine events -> chart drawings
+    replay.py               Replay page: one day's engine run, point-in-time chart, automatic checks
     service.py              the running service + HTTP API + website files
     __main__.py             CLI: serve | check | import-csv | import-mt5
     tests/                  database, fake-MT5 polling, service + API tests
   config/                   mt5_connection.example.json, app.example.json
 web/                        Next.js website (static export, built once)
   src/app/page.tsx          status bar, timeframe + layer switches, chart, side panel
+  src/app/replay/page.tsx   Replay & verify: day player, check sheet, day checks, month scorecard
   src/components/StructureChart.tsx   candles + every marking
   src/components/SidePanel.tsx        what the engine thinks right now
   src/lib/api.ts            API client and types
@@ -409,6 +416,7 @@ existing `QWEN_TIMESCALE_DSN` also works). Schema `structure` (change with
 |---|---|
 | `m1_candles` | every CLOSED M1 bar: symbol, time (UTC open), OHLC, tick volume; primary key (symbol, time); a hypertable when TimescaleDB is installed |
 | `events` | every structure event of the current engine run (id, kind, timeframe, time, available_at, config hash, data as JSONB); rebuilt at each start so it always matches the running engine |
+| `reviews` | your verdicts from the Replay page: event id (or `missed-…`), day, kind, timeframe, time, verdict `correct` / `wrong` / `missed`, note — never rebuilt (event ids are deterministic, so verdicts stay attached while the config is unchanged) |
 | `service_state` | small facts such as the last replay window and config hash |
 
 Higher timeframes are never stored: the engine rebuilds them from M1 the
@@ -438,7 +446,15 @@ API (JSON): `GET /api/health` (state, progress, last bar, counts),
 BOS/CHoCH lines, zone/OB/FVG/range boxes with life spans, liquidity / spike /
 pattern markers, session levels, swings), `GET /api/snapshot` (trend per
 timeframe, liquidity pools and recent liquidity events, zones, order blocks,
-gaps, sessions, pending patterns).
+gaps, sessions, pending patterns, VWAPs). Chart overlays also carry
+`curves` (VWAP + bands per anchor for each candle).
+
+Replay API: `GET /api/replay/days`, `GET /api/replay/day?date=YYYY-MM-DD`
+(detections + verdicts), `GET /api/replay/chart?date=&tf=&t=&bars=` (the chart
+as the engine knew it at time t, plus `future` candles),
+`GET /api/replay/checks?date=` (automatic checks),
+`GET /api/reviews/summary?from=&to=` (scorecard), `POST /api/reviews`,
+`POST /api/reviews/delete`.
 
 ### C4. The website
 
@@ -450,6 +466,27 @@ trend per timeframe with the protected level, what just happened at
 liquidity, nearest pools, ranked zones, order blocks and gaps near price,
 session ranges. It refreshes every 5 seconds. Everything drawn comes from
 `/api/chart`, so the page can never show something the engine did not say.
+Layer "VWAP" draws the day (yellow), week (magenta) and session (blue) VWAP
+with dashed ±1σ / ±2σ bands; band rejects show as small squares (VD / VW / VS).
+
+### C4b. Replay & verify (http://127.0.0.1:8765/replay/)
+
+For checking the deterministic code day by day before trusting it.
+
+* **Day player:** pick a UTC day (any day with stored M1 bars); the engine
+  runs from 10 days before (warm-up) to 6 h after. Step ◀ ▶ one chart candle
+  (arrow keys), play/pause (space, 0.5–8×), or drag the slider. The chart
+  shows only what the engine knew at the cursor (`available_at` ≤ cursor);
+  later candles are faded behind the amber line — what happened next.
+* **Check sheet:** every detection of the day in plain words, filterable by
+  family. Click = jump to it. ✓ / ✗ stores a verdict (click again to clear),
+  with a note. "Missed" adds what the engine should have marked at the cursor.
+* **Day checks:** invariants, determinism (second run identical),
+  no-repaint (runs stopped at 25 / 50 / 75 % of the day reproduce the full
+  run up to that point), independent audit — about 2 s per day.
+* **Month:** runs the day checks for every day of the month and shows the
+  scorecard of your verdicts: precision = ✓ / (✓ + ✗), recall = ✓ / (✓ + missed).
+
 Development: `cd web && npm run dev` with `NEXT_PUBLIC_API_BASE=http://127.0.0.1:8765`.
 
 ### C5. Start and test
@@ -660,4 +697,7 @@ detection · P21 closed response missed by stale playbook.
   `pre-clean-2026-10-31`); added the `quantllm` application — database
   (schema `structure`), MT5 history + live feed, service with HTTP API, the
   website rebuilt as a live structure chart, and `Start-QuantLLM.bat`.
+- **VWAP and Replay (2026-10-31, night):** day / week / session VWAP with
+  bands, crosses and band rejects (B2); Replay & verify page with check sheet,
+  automatic day checks and monthly scorecard; `reviews` table (C2, C4b).
 

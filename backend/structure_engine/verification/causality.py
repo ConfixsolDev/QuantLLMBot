@@ -98,6 +98,16 @@ def invariants(events: list[Event], cfg: StructureConfig) -> list[str]:
                     bad.append(f"{e.id}: high sweep geometry")
                 if d["side"] == "low" and not (d["extreme"] < lv["price"] and d["candle"]["close"] > lv["price"]):
                     bad.append(f"{e.id}: low sweep geometry")
+        if e.kind == "vwap_cross":
+            c = d["candle"]["close"]
+            if (d["direction"] == "up" and c < d["vwap"]) or (d["direction"] == "down" and c > d["vwap"]):
+                bad.append(f"{e.id}: vwap_cross close on the wrong side")
+        if e.kind == "vwap_band_reject":
+            cd = d["candle"]
+            if d["side"] == "upper" and not (cd["high"] > d["level"] > cd["close"]):
+                bad.append(f"{e.id}: upper band reject geometry")
+            if d["side"] == "lower" and not (cd["low"] < d["level"] < cd["close"]):
+                bad.append(f"{e.id}: lower band reject geometry")
         if e.kind == "sweep_failed":
             for lv in d["levels"]:
                 c = d["candle"]["close"]
