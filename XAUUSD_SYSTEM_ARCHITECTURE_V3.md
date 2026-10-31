@@ -204,7 +204,12 @@ bar that produced it (asserted in code).
 Event kinds: `swing`, `zone_created`, `zone_tested`, `zone_broken`,
 `zone_expired`, `session_level`, `prior_day_level`, `pattern_pending`,
 `pattern_confirmed`, `pattern_invalidated`, `pattern_superseded`,
-`close_spike`, `close_spike_outcome`. Each carries
+`close_spike`, `close_spike_outcome`, `prior_week_level`, `displacement`,
+`bos`, `choch`, `equal_highs`, `equal_lows`, `liquidity_sweep`,
+`false_break`, `liquidity_taken`, `fvg_created`, `fvg_mitigated`,
+`fvg_filled`, `fvg_expired`, `order_block_created`, `order_block_tested`,
+`order_block_broken`, `order_block_expired`, `range_formed`, `range_break`,
+`range_expired`. Each carries
 `id` (deterministic), `kind`, `tf`, `time` (the structure's own anchor),
 `available_at`, `config_hash`, `data`.
 
@@ -222,6 +227,15 @@ file's header comment.
 | Session & prior-day high/low | M1 | Asia 00–07, London 07–13, New York 13–21 UTC; running = forming, finished = confirmed event | `sessions.py` |
 | Double/triple tops & bottoms | M1 (measured in M5 ATR) | peaks within 0.35 ATR, 5–120 bars apart, nothing pokes above them, neckline depth ≥ 1.5 ATR **and** ≥ 30 % of the prior move, prior move ≥ 4 ATR in 30 bars; confirmed by a close beyond the neckline within 60 bars; tags: sweep, volume spike, exhaustion | `patterns.py` |
 
+| Displacement | M5–H4 | body ≥ 1.2 × ATR and ≥ 60 % of the candle range (ATR as of before the candle) | `displacement.py` |
+| BOS / CHoCH + trend state | M5–H4 | candle **close** beyond the latest unbroken swing in the trend direction = BOS; close beyond the **protected** swing (the pull-back low/high that launched the last BOS) = CHoCH, trend flips; wicks never count | `trend.py` |
+| Liquidity pools | swings M15/H1/H4, equal highs/lows M15/H1, Asia/London/NY, prior day, **prior week** (Sunday 17:00 NY), range edges | a pool is active once known, for 72 h, and is used up by its first interaction | `liquidity.py`, `sessions.py` |
+| Liquidity sweep | judged on M5 | wick beyond the level by ≥ 0.05 ATR, candle closes back inside | `liquidity.py` |
+| False break / accepted break | judged on M5 | close beyond the level; a close back inside within 3 candles = false break, otherwise liquidity taken | `liquidity.py` |
+| Equal highs / lows | M15, H1 | two or more swings within 0.15 ATR with nothing sticking out between them; pool at the most extreme | `liquidity.py` |
+| Fair value gap | M5–H4 | 3-candle gap ≥ 0.25 ATR; OPEN → MITIGATED (touched) → FILLED / EXPIRED | `fvg.py` |
+| Order block | M15–H4 | on BOS/CHoCH: last opposite candle at or before the leg origin, leg must contain displacement; FRESH → TESTED → BROKEN / EXPIRED | `order_blocks.py` |
+| Range | M15, H1 | last 20 candles within 3 ATR, top and bottom each touched ≥ 3 times; edges become liquidity pools; ends with a close beyond an edge | `ranges.py` |
 | Close spikes | H1, H4 closes | the larger M1 move in the last 10 minutes before the close is ≥ 0.75 × H1 ATR (optional dollar floor); context: held vs rejected close, previous-candle sweep, session/prior-day levels swept (last 24 h), zone hit, H4 swing trend, volume ratio, session; outcome after 15/60/240 min: reversal (back beyond the spike start), continuation (beyond the extreme) or partial | `spikes.py`, `studies/close_spikes.py` |
 
 Every threshold above is a key in `config/xauusd_structure_v1.json`; the
@@ -247,7 +261,12 @@ measure the New York H4 closes traders watch.
 | Double/triple tops & bottoms | 100 % | 100 % | 139 planted; 101/101 shallow-neckline and mismatched-peak look-alikes rejected |
 | No-repaint, determinism, invariants | PASS | | prefix replays reproduce the full run exactly |
 | Zone ranking | — | — | built, **not yet validated** (needs forward usefulness on real data) |
-| New York H4 grid, close spikes | tests | | EDT/EST boundaries, H4 = its four H1 candles exactly, spike detection, labels and no-repaint (32 tests in total) |
+| New York H4 grid, close spikes | tests | | EDT/EST boundaries, H4 = its four H1 candles exactly, spike detection, labels and no-repaint |
+| BOS/CHoCH, order blocks, displacement, FVG lifecycle | hand-built scenario | | exact expected events: BOS up 105 (with displacement, protected 101.9) → BOS up 109 → CHoCH down 106.9; bullish OB 101.9–102.6 and bearish OB 108.1–109.8; FVG 104.6–106.8 created → mitigated → filled |
+| Sweep / false break / accepted break | hand-built scenario | | sweep of 103.0, false break of 105.6, 107.8 taken; one fate per pool |
+| Equal highs, ranges, trading week | scenarios | | EQH 103.0/103.05; range 99–101 formed then broken up; week starts Sunday 21:00 UTC (summer) / 22:00 UTC (winter) |
+| FVG | offline reference | 100 % | streaming gaps identical to an independent offline scan, all five timeframes |
+| Whole structure layer | no-repaint + invariants | PASS | on scenarios and random walks (40 tests in total) |
 
 **Read these numbers honestly.** They prove the code implements its
 definitions, including the hard near-miss cases. They do not prove the
@@ -266,9 +285,29 @@ Data: `model_training/datasets/raw/candles/XAUUSDr/M1` — 100,000 MT5 M1 bars
 The export stopped at exactly 100,000 bars, which is MT5's "Max bars in
 chart" limit; raise it to Unlimited before exporting more history.
 
-* Runs in about 3 seconds (~33,000 bars/s).
-* On this real data: **no-repaint PASS** (8 random cut points over 40,000
-  bars), **deterministic PASS**, **0 invariant violations** over all events.
+* Runs in about 4.5 seconds with the full structure layer (~22,000 bars/s).
+* On this real data: **no-repaint PASS**, **deterministic PASS**, **0
+  invariant violations** over all 48,812 events (re-checked after the
+  structure layer was added).
+* Structure layer on the same 3.3 months:
+
+  | | M5 | M15 | M30 | H1 | H4 |
+  |---|---|---|---|---|---|
+  | BOS | 1862 | 677 | 307 | 170 | 33 |
+  | CHoCH | 480 | 141 | 78 | 43 | 9 |
+  | Displacement | 1233 | 427 | 202 | 111 | 34 |
+  | FVG | 2104 | 720 | 370 | 190 | 59 |
+  | Order blocks | – | 271 | 141 | 84 | 19 |
+  | Equal highs / lows | – | 154 / 120 | – | 35 / 25 | – |
+  | Ranges | – | 44 | – | 5 | – |
+
+  Liquidity (judged on M5): 765 sweeps, 339 false breaks, 360 accepted breaks;
+  14 prior-week levels.
+* Claude's first look at the per-layer review charts: BOS/CHoCH lines, order
+  blocks (last opposite candle before the impulse), FVG lifecycles and
+  sweep / false-break / taken labels matched the candles in every sampled
+  chart; M5 trend events are frequent (strength-2 swings) — the review
+  decides whether M5 should use strength 3.
 * Events: 27,770 swings, 40 zones created (99 tests, 16 broken, 22 expired),
   71 confirmed patterns out of 259 pending, 219 session levels, 87 prior-day
   levels, 89 close spikes.
@@ -366,13 +405,19 @@ structure_engine/
   scoring.py       zone ranking (top N)
   clock.py         candle grids: UTC, and the New York H4 grid (US DST built in)
   spikes.py        close spikes into H1/H4 closes + outcome labels
+  displacement.py  strong-candle test (building block)
+  trend.py         trend state, BOS, CHoCH
+  liquidity.py     liquidity pools; sweeps, false breaks, accepted breaks; equal highs/lows
+  fvg.py           fair value gaps + lifecycle
+  order_blocks.py  order blocks + lifecycle
+  ranges.py        consolidation ranges
   engine.py        the single streaming engine (live == test)
   feeds.py         RecordedFeed, MT5Feed, MT5 history export
   runner.py        CLI: backtest | live | export (files or whole folders)
   review.py        point-in-time review charts (HTML/SVG) + review template
   studies/         close_spikes.py: base rates from a back-test's events
   verification/    synthetic.py, reference.py, matching.py, causality.py, synthetic_accuracy.py
-  tests/           pytest suite (32 tests)
+  tests/           pytest suite (40 tests)
 ```
 
 ### B7. Run it
@@ -390,6 +435,8 @@ python -m structure_engine.runner live     --out runs/live                # same
 python -m structure_engine.runner backtest --m1 ../../../model_training/datasets/raw/candles/XAUUSDr/M1 --out runs/real
 python -m structure_engine.studies.close_spikes runs/real/events.jsonl --json runs/real/spikes.json --csv runs/real/spikes.csv
 python -m structure_engine.review --m1 ../../../model_training/datasets/raw/candles/XAUUSDr/M1 --out runs/review --samples 16 --tf M15
+python -m structure_engine.review --m1 <M1 folder> --out runs/review_trend --tf M15 --layers swings,trend,ob   # one structure family at a time
+#   layers: swings, levels, zones, patterns, spikes, trend, liquidity, eq, fvg, ob, ranges
 ```
 
 Back-test output folder: `events.jsonl`, `snapshots.jsonl`, `final_snapshot.json`,
@@ -404,15 +451,32 @@ add `--broker-time`.
    history (`runner export`) and rerun the back-test, spike study and review.
 2. Point-in-time review on real data (B4 steps 4–5); tune thresholds only
    through new config versions (`xauusd_structure_v2.json`), never in code.
-3. Add BOS/CHoCH, equal highs/lows, standalone liquidity sweeps, FVG, order
-   blocks, head and shoulders, candle patterns, VWAP, previous-week levels,
-   trend and channels, each with the same three test layers. External
-   libraries (smartmoneyconcepts, TA-Lib, SciPy) only as reference checks, and
-   only after passing the no-repaint test.
+3. Done 2026-10-31: BOS/CHoCH, equal highs/lows, liquidity sweeps, false and
+   accepted breaks, FVG, order blocks, displacement, ranges, previous-week
+   levels. Still open: head and shoulders, candle patterns, VWAP, channels.
+   External libraries (smartmoneyconcepts, TA-Lib, SciPy) only as reference
+   checks, and only after passing the no-repaint test.
 4. Experiment B: Kronos forecasts on M1, M30, H1 and H4 on the same
    back-test data, compared against A (B5).
 5. Modules 2 and 3 consume Module 1 events; old `goldflow/structure`
    detectors are retired one by one after a back-test comparison.
+
+### B9. Roadmap — Module 1 first
+
+Owner's rule (2026-10-31): **market structure must be right and trusted
+before anything else is built on it.** Kronos (B5), Qwen decisions (Module 2)
+and risk (Module 3) wait for the gate below.
+
+1. **Data:** export the full XAUUSD M1 history (MT5 max bars = unlimited).
+2. **Review on real gold:** per-layer review packs (trend, liquidity, FVG,
+   order blocks, ranges/equal levels, zones, patterns); Claude marks every
+   detection correct / wrong / missed; the owner re-checks 10–20 %.
+3. **Tune by config only:** a new `xauusd_structure_v2.json`; rerun the tests
+   and the review; repeat until the gate passes.
+4. **Gate:** the owner accepts the reviewed precision/recall per structure;
+   no-repaint, determinism and invariants pass on the full history.
+5. Then: Kronos experiment B → Module 2 (Qwen reads the structure snapshot)
+   → Module 3 (simulated broker for tests, MT5 demo live) → demo soak (A6).
 
 ---
 
@@ -669,3 +733,8 @@ detection · P21 closed response missed by stale playbook.
 - Same day, later: H4 on the New York grid (built from H1), close-spike
   detector and study, point-in-time review charts, and the first end-to-end
   run on real XAUUSD M1 (B3b). Kronos experiment B designed (B5).
+- Later the same day: the market-structure layer — displacement, BOS/CHoCH,
+  liquidity pools with sweeps / false breaks / accepted breaks, equal
+  highs/lows, FVG, order blocks, ranges, prior-week levels — with scenario
+  tests, an FVG reference and real-data checks; per-layer review charts;
+  roadmap B9 (Module 1 first).

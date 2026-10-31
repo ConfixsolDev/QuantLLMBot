@@ -33,12 +33,13 @@ DEFAULT_CONFIG = Path(__file__).resolve().parent / "config" / "xauusd_structure_
 #   TF                   one timeframe name declared in "timeframes"
 #   TF_LIST              list of timeframe names declared in "timeframes"
 #   INT_LIST             non-empty list of ints
+#   BOOL                 true / false
 #   ("tfmap", LEAF)      dict keyed by declared timeframe names
 #   ("map", LEAF)        dict with free string keys (e.g. session names)
 #   ("pair", LEAF)       two-element list
 # --------------------------------------------------------------------------
-INT, NUM, STR, POS_INT, POS_NUM, TF_LIST, TF, INT_LIST = (
-    "int", "num", "str", "pos_int", "pos_num", "tf_list", "tf", "int_list")
+INT, NUM, STR, POS_INT, POS_NUM, TF_LIST, TF, INT_LIST, BOOL = (
+    "int", "num", "str", "pos_int", "pos_num", "tf_list", "tf", "int_list", "bool")
 
 SCHEMA: dict[str, Any] = {
     "config_id": STR,
@@ -72,7 +73,26 @@ SCHEMA: dict[str, Any] = {
         "room_cap_atr": POS_NUM,
         "liquidity_proximity_atr": POS_NUM,
     },
+    "displacement": {"timeframes": TF_LIST, "min_body_atr": POS_NUM, "min_body_ratio": POS_NUM},
+    "trend": {"timeframes": TF_LIST, "break_buffer_atr": NUM, "history": POS_INT},
+    "fvg": {"timeframes": TF_LIST, "min_gap_atr": POS_NUM, "max_age_bars": POS_INT},
+    "order_blocks": {
+        "timeframes": TF_LIST, "lookback_bars": POS_INT, "require_displacement": BOOL,
+        "break_buffer_atr": NUM, "max_age_bars": POS_INT, "max_tests": POS_INT,
+    },
+    "liquidity": {
+        "detect_timeframe": TF, "swing_timeframes": TF_LIST, "equal_timeframes": TF_LIST,
+        "equal_tolerance_atr": POS_NUM, "equal_lookback_swings": POS_INT,
+        "min_pierce_atr": NUM, "break_buffer_atr": NUM, "reclaim_buffer_atr": NUM,
+        "false_break_bars": POS_INT, "max_age_hours": POS_INT,
+    },
+    "ranges": {
+        "timeframes": TF_LIST, "window_bars": POS_INT, "max_width_atr": POS_NUM,
+        "touch_tolerance_atr": POS_NUM, "min_touches": POS_INT, "break_buffer_atr": NUM,
+        "max_bars": POS_INT,
+    },
     "sessions": {
+        "week_anchor": {"timezone": STR, "weekday": INT, "hour": INT},
         "day_start_utc_hour": INT,
         "windows_utc": ("map", ("pair", INT)),
         "history": POS_INT,
@@ -167,6 +187,7 @@ def _check(value: Any, schema: Any, path: str, tfs: set[str]) -> None:
         NUM: is_num, POS_NUM: is_num and value > 0,
         STR: isinstance(value, str) and bool(value),
         TF: isinstance(value, str) and value in tfs,
+        BOOL: isinstance(value, bool),
         INT_LIST: isinstance(value, list) and bool(value) and all(
             isinstance(v, int) and not isinstance(v, bool) for v in value),
         TF_LIST: isinstance(value, list) and bool(value) and all(v in tfs for v in value),
@@ -226,6 +247,13 @@ def build_config(raw: dict) -> StructureConfig:
     for name, (start, end) in raw["sessions"]["windows_utc"].items():
         if not (0 <= start < end <= 24):
             raise ConfigError(f"sessions.windows_utc.{name} must satisfy 0 <= start < end <= 24")
+    if not set(raw["order_blocks"]["timeframes"]) <= set(raw["trend"]["timeframes"]):
+        raise ConfigError("order_blocks.timeframes must be a subset of trend.timeframes")
+    if not set(raw["order_blocks"]["timeframes"]) <= set(raw["displacement"]["timeframes"]):
+        raise ConfigError("order_blocks.timeframes must be a subset of displacement.timeframes")
+    wa = raw["sessions"]["week_anchor"]
+    if wa["timezone"] not in TIMEZONES or not 0 <= wa["weekday"] <= 6 or not 0 <= wa["hour"] <= 23:
+        raise ConfigError("sessions.week_anchor: timezone, weekday 0-6 (Monday=0), hour 0-23")
     cs = raw["close_spikes"]
     if any(h <= 0 for h in cs["horizons_minutes"]):
         raise ConfigError("close_spikes.horizons_minutes must be positive")

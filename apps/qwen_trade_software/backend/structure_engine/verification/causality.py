@@ -81,6 +81,24 @@ def invariants(events: list[Event], cfg: StructureConfig) -> list[str]:
             times = [p["time"] for p in d["peaks"]]
             if times != sorted(times):
                 bad.append(f"{e.id}: peaks out of order")
-        if e.kind in ("session_level", "prior_day_level") and not d["low"] <= d["high"]:
+        if e.kind in ("session_level", "prior_day_level", "prior_week_level") and not d["low"] <= d["high"]:
             bad.append(f"{e.id}: level low > high")
+        if e.kind in ("bos", "choch"):
+            up = d["direction"] == "up"
+            if (up and not d["break_close"] > d["level"]) or (not up and not d["break_close"] < d["level"]):
+                bad.append(f"{e.id}: {e.kind} close not beyond the broken level")
+            if e.available_at < d["break_time"] + tfmin[e.tf] * 60:
+                bad.append(f"{e.id}: {e.kind} known before the breaking candle closed")
+        if e.kind.startswith("fvg_") or e.kind.startswith("order_block_"):
+            if not d["low"] < d["high"]:
+                bad.append(f"{e.id}: {e.kind} low >= high")
+        if e.kind == "liquidity_sweep":
+            for lv in d["levels"]:
+                if d["side"] == "high" and not (d["extreme"] > lv["price"] and d["candle"]["close"] < lv["price"]):
+                    bad.append(f"{e.id}: high sweep geometry")
+                if d["side"] == "low" and not (d["extreme"] < lv["price"] and d["candle"]["close"] > lv["price"]):
+                    bad.append(f"{e.id}: low sweep geometry")
+        if e.kind in ("liquidity_sweep", "false_break", "liquidity_taken"):
+            if any(lv["active_from"] > d["candle"]["time"] + tfmin[e.tf] * 60 for lv in d["levels"]):
+                bad.append(f"{e.id}: level used before it was known")
     return bad

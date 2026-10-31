@@ -22,6 +22,11 @@ green / red boxes   active demand / supply zones at the moment (top-N ranked;
                     label = timeframe, rank, score, tests)
 triangles           confirmed swing highs / lows of the chart timeframe
 dashed lines        confirmed session / prior-day highs and lows (last 24 h)
+BOS / CHoCH         line from the broken swing to the breaking candle
+FVG / OB boxes      fair value gaps (light) and order blocks (outlined)
+EQH / EQL           equal highs / lows (dotted teal)
+x sweep / false brk / taken   what price did at a liquidity level (teal)
+dashed box          a detected range
 orange polyline     double/triple tops & bottoms: peaks -> neckline
                     (solid = confirmed before the moment, dotted = pending)
 purple diamond      close spikes (H1/H4) up to the moment
@@ -47,12 +52,24 @@ from .engine import StructureEngine
 
 W, H, PAD_L, PAD_R, PAD_T, PAD_B = 1100, 430, 10, 70, 22, 26
 
+LIQ_KINDS = ("liquidity_sweep", "false_break", "liquidity_taken")
+DRAWN_KINDS = ("bos", "choch", "fvg_created", "order_block_created", "range_formed",
+               "equal_highs", "equal_lows") + LIQ_KINDS
+END_KINDS = ("fvg_filled", "fvg_expired", "order_block_broken", "order_block_expired")
+STRUCTURE_KINDS = ("pattern_confirmed", "pattern_pending", "close_spike", "swing") + DRAWN_KINDS + END_KINDS
+ALL_LAYERS = ("swings", "levels", "zones", "patterns", "spikes", "trend", "liquidity", "eq", "fvg", "ob", "ranges")
+DEFAULT_LAYERS = ("swings", "levels", "trend", "liquidity", "eq", "ob", "ranges")
+LAYER_OF = {"bos": "trend", "choch": "trend", "fvg_created": "fvg", "order_block_created": "ob",
+            "range_formed": "ranges", "equal_highs": "eq", "equal_lows": "eq",
+            "liquidity_sweep": "liquidity", "false_break": "liquidity", "liquidity_taken": "liquidity"}
+
 
 def _iso(t: int) -> str:
     return datetime.fromtimestamp(t, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-def collect(m1_bars, cfg, sample_times: set[int], tf: str, before: int, after: int) -> list[dict]:
+def collect(m1_bars, cfg, sample_times: set[int], tf: str, before: int, after: int,
+            layers=DEFAULT_LAYERS) -> list[dict]:
     """Replay everything once; freeze snapshot + context at each sample time."""
     engine = StructureEngine(cfg)
     tf_bars: list[Bar] = []
@@ -60,8 +77,7 @@ def collect(m1_bars, cfg, sample_times: set[int], tf: str, before: int, after: i
     moments, waiting = [], []
     for bar in m1_bars:
         evs = engine.push(bar)
-        events_so_far.extend(e for e in evs if e.kind in (
-            "pattern_confirmed", "pattern_pending", "close_spike", "swing"))
+        events_so_far.extend(e for e in evs if e.kind in STRUCTURE_KINDS)
         new = engine.closed_now.get(tf, [])
         tf_bars.extend(new)
         for m in waiting:                          # fill the "after" candles
@@ -80,6 +96,15 @@ def collect(m1_bars, cfg, sample_times: set[int], tf: str, before: int, after: i
                              if e.kind == "pattern_confirmed" and e.data["peaks"][0]["time"] >= start],
                 "spikes": [{"tf": e.tf, **e.data} for e in events_so_far
                            if e.kind == "close_spike" and e.data["close_time"] >= start],
+                # structure events of the chart timeframe (liquidity: detect tf) in the window
+                "structure": [{"kind": e.kind, "tf": e.tf, "available_at": e.available_at, **e.data}
+                              for e in events_so_far
+                              if e.available_at >= start and e.kind in DRAWN_KINDS
+                              and LAYER_OF[e.kind] in layers
+                              and (e.tf == tf or e.kind in LIQ_KINDS)],
+                # when gaps / order blocks ended (filled, broken, expired) before the moment
+                "ended": {e.data["id"]: e.available_at for e in events_so_far if e.kind in END_KINDS},
+                "layers": list(layers),
             }
             moments.append(m)
             waiting.append(m)
@@ -121,8 +146,9 @@ def _svg(m: dict) -> str:
     xf = x(m["t"])
     out.append(f'<rect x="{xf:.1f}" y="0" width="{W - PAD_R - xf:.1f}" height="{H}" fill="var(--future)"/>')
     out.append(f'<text x="{xf + 4:.1f}" y="12" fill="var(--muted)">after (not known)</text>')
+    layers = set(m.get("layers", ALL_LAYERS))
     # zones
-    for rank, z in enumerate(m["snapshot"]["top_zones"], 1):
+    for rank, z in enumerate(m["snapshot"]["top_zones"] if "zones" in layers else [], 1):
         zz = z["zone"]
         if zz["high"] < lo or zz["low"] > hi:       # off-chart: note it at the edge
             col = "var(--demand)" if zz["side"] == "demand" else "var(--supply)"
@@ -137,7 +163,7 @@ def _svg(m: dict) -> str:
         out.append(f'<text x="{W - PAD_R + 3}" y="{y((zz["high"] + zz["low"]) / 2) + 3:.1f}" fill="{col}">'
                    f'{zz["tf"]} #{rank} {z["score"]:.2f} t{zz["tests"]}</text>')
     # session / day levels (last 24h before the moment)
-    for lv in m["snapshot"]["levels"]:
+    for lv in m["snapshot"]["levels"] if "levels" in layers else []:
         if lv["end"] < m["t"] - 86400:
             continue
         for side in ("high", "low"):
@@ -147,6 +173,57 @@ def _svg(m: dict) -> str:
                            f'stroke="var(--level)" stroke-dasharray="4 3" stroke-width="0.8"/>')
                 out.append(f'<text x="{max(PAD_L, x(lv["start"])) + 2:.1f}" y="{y(p) - 2:.1f}" fill="var(--level)">'
                            f'{lv["name"][:3]} {side[0].upper()}</text>')
+    # ---- market structure (drawn under the candles)
+    xf_now = xf
+    for st in m.get("structure", []):
+        k = st["kind"]
+        if k in ("fvg_created", "order_block_created"):
+            if st["high"] < lo or st["low"] > hi:
+                continue
+            col = "var(--demand)" if st["direction"] == "up" else "var(--supply)"
+            x1 = max(PAD_L, x(st["time"]))
+            end = m.get("ended", {}).get(st["id"])
+            xe = x(end) if end and end <= m["t"] else xf_now
+            # box runs until it was filled/broken, or until the moment if still alive
+            op = "0.14" if k == "fvg_created" else "0.30"
+            out.append(f'<rect x="{x1:.1f}" y="{y(st["high"]):.1f}" width="{max(2, xe - x1):.1f}" '
+                       f'height="{max(1.2, y(st["low"]) - y(st["high"])):.1f}" fill="{col}" opacity="{op}"'
+                       f'{" stroke=" + chr(34) + col + chr(34) if k == "order_block_created" else ""}/>')
+            out.append(f'<text x="{x1 + 2:.1f}" y="{y(st["high"]) - 2:.1f}" fill="{col}" font-size="9">'
+                       f'{"FVG" if k == "fvg_created" else "OB"}</text>')
+        elif k == "range_formed":
+            x1 = max(PAD_L, x(st["start"]))
+            out.append(f'<rect x="{x1:.1f}" y="{y(st["top"]):.1f}" width="{max(2, xf_now - x1):.1f}" '
+                       f'height="{y(st["bottom"]) - y(st["top"]):.1f}" fill="none" stroke="var(--muted)" '
+                       f'stroke-dasharray="2 2"/>')
+            out.append(f'<text x="{x1 + 2:.1f}" y="{y(st["bottom"]) + 10:.1f}" fill="var(--muted)">range</text>')
+        elif k in ("bos", "choch"):
+            if not lo <= st["level"] <= hi:
+                continue
+            col = "var(--text)" if k == "bos" else "var(--choch)"
+            x1, x2 = max(PAD_L, x(st["level_time"])), x(st["break_time"]) + cw
+            out.append(f'<line x1="{x1:.1f}" x2="{x2:.1f}" y1="{y(st["level"]):.1f}" y2="{y(st["level"]):.1f}" '
+                       f'stroke="{col}" stroke-width="1.3"/>')
+            out.append(f'<text x="{(x1 + x2) / 2 - 12:.1f}" y="{y(st["level"]) + (-3 if st["direction"] == "up" else 11):.1f}" '
+                       f'fill="{col}" font-weight="600">{"BOS" if k == "bos" else "CHoCH"}</text>')
+        elif k in ("equal_highs", "equal_lows"):
+            p = st["pool"]["price"]
+            if lo <= p <= hi:
+                x1 = max(PAD_L, x(st["times"][0]))
+                out.append(f'<line x1="{x1:.1f}" x2="{x(st["times"][-1]) + cw:.1f}" y1="{y(p):.1f}" y2="{y(p):.1f}" '
+                           f'stroke="var(--liq)" stroke-width="2" stroke-dasharray="1 2"/>')
+                out.append(f'<text x="{x1:.1f}" y="{y(p) + (-4 if k == "equal_highs" else 11):.1f}" fill="var(--liq)">'
+                           f'{"EQH" if k == "equal_highs" else "EQL"}</text>')
+        elif k in LIQ_KINDS:
+            cx = x(st["candle"]["time"]) + cw / 2
+            tag = {"liquidity_sweep": "sweep", "false_break": "false brk", "liquidity_taken": "taken"}[k]
+            for lv in st["levels"][:1]:
+                if not lo <= lv["price"] <= hi:
+                    continue
+                out.append(f'<line x1="{max(PAD_L, x(lv["time"])):.1f}" x2="{cx + 6:.1f}" y1="{y(lv["price"]):.1f}" '
+                           f'y2="{y(lv["price"]):.1f}" stroke="var(--liq)" stroke-width="0.9"/>')
+                yy = y(st["extreme"]) + (-6 if st["side"] == "high" else 14)
+                out.append(f'<text x="{cx - 14:.1f}" y="{yy:.1f}" fill="var(--liq)" font-size="9">x {tag}</text>')
     # candles
     for i, b in enumerate(bars):
         cx = PAD_L + (i + 0.5) * cw
@@ -155,7 +232,7 @@ def _svg(m: dict) -> str:
         top, bot = y(max(b["open"], b["close"])), y(min(b["open"], b["close"]))
         out.append(f'<rect x="{cx - cw * 0.35:.1f}" y="{top:.1f}" width="{cw * 0.7:.1f}" height="{max(0.8, bot - top):.1f}" fill="{col}"/>')
     # swings of the chart timeframe
-    for s in m["snapshot"]["swings"].get(m["tf"], []):
+    for s in m["snapshot"]["swings"].get(m["tf"], []) if "swings" in layers else []:
         if s["time"] < t0:
             continue
         cx = x(s["time"]) + cw / 2
@@ -168,8 +245,9 @@ def _svg(m: dict) -> str:
             out.append(f'<path d="M{cx - 3:.1f},{py + 5:.1f} L{cx + 3:.1f},{py + 5:.1f} L{cx:.1f},{py:.1f} Z" fill="var(--swing)"/>')
             out.append(f'<text x="{cx - 6:.1f}" y="{py + 15:.1f}" fill="var(--swing)">{s["label"] or ""}</text>')
     # patterns (confirmed in window) and pending at the moment
-    for pat, dash in [(p, "") for p in m["patterns"]] + [(p, ' stroke-dasharray="3 3"')
-                                                          for p in m["snapshot"]["pending_patterns"]]:
+    pats = ([(p, "") for p in m["patterns"]] + [(p, ' stroke-dasharray="3 3"')
+                                               for p in m["snapshot"]["pending_patterns"]]) if "patterns" in layers else []
+    for pat, dash in pats:
         pts = [(x(pk["time"]) + cw / 2, y(pk["price"])) for pk in pat["peaks"]]
         if not pts or pts[0][0] < PAD_L:
             continue
@@ -179,7 +257,7 @@ def _svg(m: dict) -> str:
                    f'y2="{y(pat["neckline"]):.1f}" stroke="var(--pattern)"{dash}/>')
         out.append(f'<text x="{pts[-1][0] + 4:.1f}" y="{y(pat["neckline"]) - 3:.1f}" fill="var(--pattern)">{pat["kind"]}</text>')
     # close spikes
-    for sp in m["spikes"]:
+    for sp in m["spikes"] if "spikes" in layers else []:
         cx, cy = x(sp["close_time"]), y(sp["extreme"])
         out.append(f'<path d="M{cx:.1f},{cy - 6:.1f} L{cx + 5:.1f},{cy:.1f} L{cx:.1f},{cy + 6:.1f} L{cx - 5:.1f},{cy:.1f} Z" '
                    f'fill="var(--spike)"/>')
@@ -197,10 +275,10 @@ def _svg(m: dict) -> str:
 CSS = """
 :root{--bg:#fafaf8;--text:#1d1d1b;--muted:#77756f;--chart-bg:#ffffff;--future:#ececea;--up:#2f7d4f;
 --down:#b8433a;--demand:#2f9e5c;--supply:#d0473c;--level:#4a6fb3;--swing:#5b5b5b;--pattern:#d98200;
---spike:#8b46c6;--line:#e2e1dc}
+--spike:#8b46c6;--line:#e2e1dc;--choch:#c2410c;--liq:#0e7490}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#161615;--text:#ecebe7;--muted:#9a988f;
 --chart-bg:#1e1e1c;--future:#2a2a27;--up:#4fb57b;--down:#e0675d;--demand:#4fc27f;--supply:#ef6a5e;
---level:#7c9be0;--swing:#c9c7c0;--pattern:#f2a640;--spike:#b67ef0;--line:#33332f}}
+--level:#7c9be0;--swing:#c9c7c0;--pattern:#f2a640;--spike:#b67ef0;--line:#33332f;--choch:#fb8c4a;--liq:#38bdd8}}
 body{background:var(--bg);color:var(--text);font:14px/1.45 system-ui,sans-serif;margin:0;padding:16px;max-width:1180px;margin:auto}
 h2{font-size:15px;margin:28px 0 6px}table{border-collapse:collapse;font-size:12px;margin:6px 0 4px;width:100%}
 td,th{border-bottom:1px solid var(--line);padding:3px 6px;text-align:left}p.small{color:var(--muted);font-size:12px}
@@ -226,6 +304,20 @@ def write_html(moments: list[dict], out: Path, cfg) -> None:
             d = f"{p['kind']} {p['status']} peaks {[round(x['price'], 2) for x in p['peaks']]} neck {p['neckline']:.2f} tags {p['tags']}"
             tbl.append(f"<tr><td>{p['id']}</td><td>pattern</td><td>{html.escape(d)}</td></tr>")
             rows.append([i, _iso(m["t"]), p["id"], "pattern", d, "", ""])
+        for st in m.get("structure", []):
+            if st["kind"] in ("bos", "choch"):
+                d = f"{st['tf']} {st['kind'].upper()} {st['direction']} level {st['level']:.2f} displacement={st['displacement']}"
+            elif st["kind"] in LIQ_KINDS:
+                d = f"{st['kind']} {st['side']} levels {[(lv['kind'], round(lv['price'], 2)) for lv in st['levels']]}"
+            elif st["kind"] in ("fvg_created", "order_block_created"):
+                d = f"{st['tf']} {st['kind'][:-8]} {st['direction']} {st['low']:.2f}-{st['high']:.2f}"
+            elif st["kind"] == "range_formed":
+                d = f"{st['tf']} range {st['bottom']:.2f}-{st['top']:.2f}"
+            else:
+                d = f"{st['kind']} {st.get('prices')}"
+            sid = st.get("id") or st.get("pool", {}).get("id") or f"{st['kind']}@{st['available_at']}"
+            tbl.append(f"<tr><td>{html.escape(str(sid))}</td><td>{st['kind']}</td><td>{html.escape(d)}</td></tr>")
+            rows.append([i, _iso(m["t"]), sid, st["kind"], d, "", ""])
         for sp in m["spikes"]:
             d = (f"{sp['tf']} {sp['direction']} {sp['move']:.2f} ({sp['move_atr']} ATR) held={sp['held']} "
                  f"swept_prev={sp['swept_prev']} trend={sp['htf_trend']} session={sp['session']}")
@@ -250,7 +342,13 @@ def main() -> None:
     ap.add_argument("--after", type=int, default=24, help="candles shown after the moment")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--config", default=None)
+    ap.add_argument("--layers", default=",".join(DEFAULT_LAYERS),
+                    help=f"comma list to draw (review one structure at a time): {','.join(ALL_LAYERS)}")
     args = ap.parse_args()
+    layers = tuple(x.strip() for x in args.layers.split(",") if x.strip())
+    unknown = set(layers) - set(ALL_LAYERS)
+    if unknown:
+        raise SystemExit(f"unknown layers {sorted(unknown)}; choose from {ALL_LAYERS}")
     from .feeds import RecordedFeed
     cfg = load_config(args.config)
     bars = list(RecordedFeed(args.m1))
@@ -260,7 +358,7 @@ def main() -> None:
     hi = bars[-1].time - args.after * minutes * 60 * 2
     candidates = [b.close_time for b in bars if lo <= b.time <= hi and b.close_time % (minutes * 60) == 0]
     picks = set(random.Random(args.seed).sample(candidates, min(args.samples, len(candidates))))
-    moments = collect(bars, cfg, picks, args.tf, args.before, args.after)
+    moments = collect(bars, cfg, picks, args.tf, args.before, args.after, layers)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "moments.json").write_text(json.dumps(moments), encoding="utf-8")

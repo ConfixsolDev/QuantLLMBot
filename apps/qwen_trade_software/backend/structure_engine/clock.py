@@ -77,3 +77,23 @@ def utc_bucket(t: int, minutes: int) -> tuple[int, int]:
     sec = minutes * 60
     start = t - t % sec
     return start, start + sec
+
+
+def anchored_week(t: int, tz: str, weekday: int, hour: int) -> tuple[int, int]:
+    """(start_utc, end_utc) of the trading week containing ``t``.
+
+    Gold's week opens Sunday 17:00/18:00 New York; with weekday=6 (Sunday,
+    Monday=0) and hour=17 the week runs Sunday 17:00 NY -> next Sunday 17:00 NY.
+    """
+    offset_of = TIMEZONES[tz]
+    off = offset_of(t) * HOUR
+    local = t + off
+    day = local // DAY
+    wd = (day + 3) % 7                      # 1970-01-01 was a Thursday (3)
+    start_local = day * DAY + hour * HOUR - ((wd - weekday) % 7) * DAY
+    if start_local > local:
+        start_local -= 7 * DAY
+    start_utc = start_local - off
+    end_local = start_local + 7 * DAY
+    end_utc = end_local - offset_of(end_local - off) * HOUR
+    return start_utc, end_utc

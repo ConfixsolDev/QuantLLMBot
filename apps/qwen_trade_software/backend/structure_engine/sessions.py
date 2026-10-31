@@ -10,7 +10,9 @@ FORMING vs CONFIRMED (Rule 5)
   change, so it is only exposed in ``snapshot()['forming']``.
 * The moment the session's last minute closes, its high/low becomes a
   CONFIRMED level and is emitted once as a ``session_level`` event.
-The same applies to the trading day (``prior_day_level`` at day close).
+The same applies to the trading day (``prior_day_level`` at day close) and the
+trading week (``prior_week_level``; week = Sunday 17:00 New York to the next,
+config ``sessions.week_anchor``).
 
 Windows come from config ``sessions.windows_utc`` as [start_hour, end_hour)
 in UTC, within one day starting at ``day_start_utc_hour``. Default:
@@ -27,6 +29,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from .bars import Bar
+from .clock import anchored_week
 
 DAY = 86_400
 
@@ -65,6 +68,8 @@ class SessionTracker:
         self.windows = sorted(((v[0] * 3600, v[1] * 3600, k) for k, v in s["windows_utc"].items()))
         self.session: _Range | None = None     # forming session
         self.day: _Range | None = None         # forming day
+        self.week: _Range | None = None        # forming week
+        self.week_anchor = s["week_anchor"]
         self.levels: deque[dict] = deque(maxlen=s["history"] * (len(self.windows) + 1))
 
     def _day_start(self, t: int) -> int:
@@ -85,7 +90,15 @@ class SessionTracker:
             out.append(("session_level", self._confirm_session()))
         if self.day and bar.time >= self.day.end:
             out.append(("prior_day_level", self._confirm_day()))
-        # 2) Add the bar to the forming day and session.
+        if self.week and bar.time >= self.week.end:
+            out.append(("prior_week_level", self._confirm_week()))
+        # 2) Add the bar to the forming week, day and session.
+        if self.week is None:
+            a = self.week_anchor
+            w0, w1 = anchored_week(bar.time, a["timezone"], a["weekday"], a["hour"])
+            self.week = _Range("WEEK", w0, w1, bar.high, bar.low, bar.time, bar.time)
+        else:
+            self.week.add(bar)
         if self.day is None:
             d0 = self._day_start(bar.time)
             self.day = _Range("DAY", d0, d0 + DAY, bar.high, bar.low, bar.time, bar.time)
@@ -102,7 +115,16 @@ class SessionTracker:
             out.append(("session_level", self._confirm_session()))
         if self.day and now >= self.day.end:
             out.append(("prior_day_level", self._confirm_day()))
+        if self.week and now >= self.week.end:
+            out.append(("prior_week_level", self._confirm_week()))
         return out
+
+    def _confirm_week(self) -> dict:
+        level = self.week.as_dict()
+        level["complete"] = True          # a trading week is never "full" minutes
+        self.week = None
+        self.levels.append(level)
+        return level
 
     def _confirm_session(self) -> dict:
         level = self.session.as_dict()
@@ -122,4 +144,5 @@ class SessionTracker:
 
     def forming(self) -> dict:
         return {"session": self.session.as_dict() if self.session else None,
-                "day": self.day.as_dict() if self.day else None}
+                "day": self.day.as_dict() if self.day else None,
+                "week": self.week.as_dict() if self.week else None}

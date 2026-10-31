@@ -76,7 +76,89 @@
     "room_cap_atr": 8.0,
     "liquidity_proximity_atr": 0.5
   },
+  "displacement": {
+    "timeframes": [
+      "M5",
+      "M15",
+      "M30",
+      "H1",
+      "H4"
+    ],
+    "min_body_atr": 1.2,
+    "min_body_ratio": 0.6
+  },
+  "trend": {
+    "timeframes": [
+      "M5",
+      "M15",
+      "M30",
+      "H1",
+      "H4"
+    ],
+    "break_buffer_atr": 0.0,
+    "history": 30
+  },
+  "fvg": {
+    "timeframes": [
+      "M5",
+      "M15",
+      "M30",
+      "H1",
+      "H4"
+    ],
+    "min_gap_atr": 0.25,
+    "max_age_bars": 200
+  },
+  "order_blocks": {
+    "timeframes": [
+      "M15",
+      "M30",
+      "H1",
+      "H4"
+    ],
+    "lookback_bars": 10,
+    "require_displacement": true,
+    "break_buffer_atr": 0.1,
+    "max_age_bars": 300,
+    "max_tests": 3
+  },
+  "liquidity": {
+    "detect_timeframe": "M5",
+    "swing_timeframes": [
+      "M15",
+      "H1",
+      "H4"
+    ],
+    "equal_timeframes": [
+      "M15",
+      "H1"
+    ],
+    "equal_tolerance_atr": 0.15,
+    "equal_lookback_swings": 6,
+    "min_pierce_atr": 0.05,
+    "break_buffer_atr": 0.05,
+    "reclaim_buffer_atr": 0.0,
+    "false_break_bars": 3,
+    "max_age_hours": 72
+  },
+  "ranges": {
+    "timeframes": [
+      "M15",
+      "H1"
+    ],
+    "window_bars": 20,
+    "max_width_atr": 3.0,
+    "touch_tolerance_atr": 0.25,
+    "min_touches": 3,
+    "break_buffer_atr": 0.1,
+    "max_bars": 200
+  },
   "sessions": {
+    "week_anchor": {
+      "timezone": "America/New_York",
+      "weekday": 6,
+      "hour": 17
+    },
     "day_start_utc_hour": 0,
     "windows_utc": {
       "ASIA": [

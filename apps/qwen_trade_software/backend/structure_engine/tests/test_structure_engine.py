@@ -278,3 +278,131 @@ def test_spike_study_and_review_run_end_to_end(tmp_path):
     out.mkdir()
     write_html(moments, out, CFG)
     assert "<svg" in (out / "index.html").read_text() and (out / "review_template.csv").exists()
+
+
+# ------------------------------------------------------------------ market structure layer
+# Hand-built M5 candles (expanded to M1) with exactly known structure. Each
+# scenario asserts the specific events a trader would mark on that chart.
+
+def _m5(seq, t0="2026-07-13T08:00:00"):
+    from structure_engine.verification.synthetic import expand_to_m1
+    start = _utc(t0)
+    tf_bars = [Bar(start + 300 * i, o, h, l, c, 100.0, minutes=5, m1_count=5, tf="M5")
+               for i, (o, h, l, c) in enumerate(seq)]
+    return expand_to_m1(tf_bars, 5), start
+
+
+def _flat(p, n):
+    return [(p, p + 0.5, p - 0.5, p)] * n
+
+
+def _peak(top):
+    b = top - 2.0
+    return [(b, b + 0.8, b - 0.2, b + 0.7), (b + 0.7, top - 0.5, b + 0.6, top - 0.6),
+            (top - 0.6, top, top - 0.9, top - 0.7), (top - 0.7, top - 0.6, top - 1.5, top - 1.4),
+            (top - 1.4, top - 1.3, b - 0.1, b)]
+
+
+TREND_SCENARIO = _flat(100, 20) + [
+    (100, 101.2, 99.8, 101), (101, 102.5, 100.8, 102.3), (102.3, 104, 102, 103.8), (103.8, 105, 103.5, 104.6),
+    (104.6, 104.8, 103.2, 103.4), (103.4, 103.6, 102.2, 102.4), (102.4, 102.6, 101.9, 102.2),
+    (102.2, 103.5, 102.1, 103.4), (103.4, 104.6, 103.3, 104.5), (104.5, 107.6, 104.4, 107.5),
+    (107.5, 108.5, 106.8, 108.2), (108.2, 109, 107.9, 108.8), (108.8, 108.9, 107.6, 107.8),
+    (107.8, 108, 106.9, 107.1), (107.1, 107.6, 107.0, 107.5), (107.5, 108.3, 107.4, 108.2),
+    (108.2, 109.8, 108.1, 109.6), (109.6, 109.7, 107.5, 107.6), (107.6, 107.7, 106.0, 106.2),
+    (106.2, 106.4, 103.9, 104.1)] + [(104.1, 104.6, 103.6, 104.1)] * 12
+
+
+def test_bos_choch_order_blocks_displacement_and_fvg_lifecycle():
+    cfg = load_config(overrides={"order_blocks": {"timeframes": ["M5", "M15", "M30", "H1", "H4"]}})
+    m1, _ = _m5(TREND_SCENARIO)
+    ev = [e for e in run(m1, cfg) if e.tf == "M5"]
+    breaks = [(e.kind, e.data["direction"], e.data["level"]) for e in ev if e.kind in ("bos", "choch")]
+    assert breaks[-3:] == [("bos", "up", 105.0), ("bos", "up", 109.0), ("choch", "down", 106.9)]
+    first = next(e for e in ev if e.kind == "bos" and e.data["level"] == 105.0)
+    assert first.data["displacement"] is True and first.data["protected"] == 101.9
+    choch = next(e for e in ev if e.kind == "choch")
+    assert choch.data["trend_before"] == "up" and choch.data["trend_after"] == "down"
+    obs = {(e.data["direction"], e.data["low"], e.data["high"]) for e in ev if e.kind == "order_block_created"}
+    assert ("up", 101.9, 102.6) in obs and ("down", 108.1, 109.8) in obs
+    gap = [e for e in ev if e.kind.startswith("fvg_") and (e.data["low"], e.data["high"]) == (104.6, 106.8)]
+    assert [e.kind for e in gap] == ["fvg_created", "fvg_mitigated", "fvg_filled"]
+
+
+LIQUIDITY_SCENARIO = (
+    _flat(100, 20) + _peak(103) + _flat(101, 4)
+    + [(101, 103.4, 100.9, 102.5)]                                     # sweep of 103
+    + _flat(102.5, 3) + [(102.5, 103.8, 102.4, 103.7)] + _peak(105.6)[1:] + _flat(103.6, 3)
+    + [(103.6, 106.2, 103.5, 106.0), (106.0, 106.1, 104.9, 105.0)]     # false break of 105.6
+    + _flat(105, 3) + _peak(107.8)[1:] + _flat(105.8, 3)
+    + [(105.8, 108.4, 105.7, 108.3)] + [(108.3, 108.8, 108.0, 108.5)] * 4)   # 107.8 taken
+
+
+def test_liquidity_sweep_false_break_and_accepted_break():
+    cfg = load_config(overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]}})
+    m1, _ = _m5(LIQUIDITY_SCENARIO)
+    ev = run(m1, cfg)
+    got = {(e.kind, lv["price"]) for e in ev if e.kind in ("liquidity_sweep", "false_break", "liquidity_taken")
+           for lv in e.data["levels"]}
+    assert ("liquidity_sweep", 103.0) in got
+    assert ("false_break", 105.6) in got
+    assert ("liquidity_taken", 107.8) in got
+    assert not any(lv == 105.6 for k, lv in got if k != "false_break")   # one fate per pool
+    assert invariants(ev, cfg) == []
+
+
+def test_equal_highs_and_ranges():
+    cfg = load_config(overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]},
+                                 "ranges": {"timeframes": ["M5"]}})
+    m1, _ = _m5(_flat(100, 20) + _peak(103) + _flat(101, 3) + _peak(103.05) + _flat(101, 6))
+    eq = [e for e in run(m1, cfg) if e.kind == "equal_highs"]
+    assert len(eq) == 1 and eq[0].data["prices"] == [103.0, 103.05] and eq[0].data["pool"]["price"] == 103.05
+    osc = [(100, 101, 99.6, 100.8) if i % 2 == 0 else (100.8, 101.0, 99.0, 99.4) for i in range(24)]
+    m1, _ = _m5(_flat(100, 20) + osc + [(99.4, 102.6, 99.3, 102.5)] + _flat(102.5, 3))
+    rng = [e for e in run(m1, cfg) if e.kind.startswith("range") and e.tf == "M5"]
+    formed = [e for e in rng if e.kind == "range_formed" and e.data["top"] == 101.0]
+    assert formed and formed[0].data["bottom"] == 99.0
+    assert any(e.kind == "range_break" and e.data["direction"] == "up" and e.data["top"] == 101.0 for e in rng)
+
+
+@pytest.mark.parametrize("moment,start", [
+    ("2026-07-15T12:00:00", "2026-07-12T21:00:00"),    # summer: Sunday 17:00 NY = 21:00 UTC
+    ("2026-07-12T20:59:00", "2026-07-05T21:00:00"),
+    ("2026-01-14T12:00:00", "2026-01-11T22:00:00"),    # winter: 22:00 UTC
+])
+def test_trading_week_starts_sunday_17_new_york(moment, start):
+    from structure_engine.clock import anchored_week
+    a = CFG["sessions"]["week_anchor"]
+    assert anchored_week(_utc(moment), a["timezone"], a["weekday"], a["hour"])[0] == _utc(start)
+
+
+def test_fvg_stream_equals_offline_reference():
+    from structure_engine.atr import WilderATR
+    from structure_engine.engine import closed_bars_by_timeframe
+    from structure_engine.fvg import find_gap
+    bars = random_walk_m1(11, 8000)
+    for tf in CFG["fvg"]["timeframes"]:
+        tfb = closed_bars_by_timeframe(bars, CFG)[tf]
+        atr, prev, ref = WilderATR(CFG["atr"]["period"]), [], set()
+        for i, b in enumerate(tfb):
+            prev.append(atr.value)
+            atr.update(b)
+            if i >= 2:
+                g = find_gap(tfb[i - 2], tfb[i - 1], b, prev[i], CFG["fvg"]["min_gap_atr"])
+                if g:
+                    ref.add((tfb[i - 2].time, g[0], g[1], g[2]))
+        got = {(e.time, e.data["direction"], e.data["low"], e.data["high"])
+               for e in run(bars, CFG) if e.kind == "fvg_created" and e.tf == tf}
+        assert got == ref, tf
+
+
+def test_structure_layer_no_repaint_and_invariants():
+    cfg = load_config(overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]},
+                                 "order_blocks": {"timeframes": ["M5", "M15", "M30", "H1", "H4"]}})
+    for scenario in (TREND_SCENARIO, LIQUIDITY_SCENARIO):
+        m1, _ = _m5(scenario)
+        assert no_repaint(m1, cfg, cuts=6, seed=5) == []
+        assert invariants(run(m1, cfg), cfg) == []
+    walk = random_walk_m1(13, 5000)
+    assert no_repaint(walk, CFG, cuts=4, seed=9) == []
+    assert invariants(run(walk, CFG), CFG) == []
