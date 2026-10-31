@@ -31,18 +31,39 @@ from .bars import Bar, load_m1
 
 
 class RecordedFeed:
-    """Replay a recorded M1 file. ``time_shift`` converts broker clock if needed."""
+    """Replay recorded M1 files in time order. ``broker_time`` converts MT5
+    server-clock timestamps to UTC (files from our exporter are already UTC).
 
-    def __init__(self, path: str | Path, *, broker_time: bool = False,
+    ``paths`` may be files and/or folders; a folder contributes every
+    ``*.csv`` / ``*.jsonl`` inside it. Files are read in name order (monthly
+    files named YYYY-MM sort correctly) and any bar not newer than the last
+    one is skipped, so overlapping exports cannot break the stream.
+    """
+
+    def __init__(self, paths, *, broker_time: bool = False,
                  start: int | None = None, end: int | None = None) -> None:
-        self.path, self.start, self.end = Path(path), start, end
+        if isinstance(paths, (str, Path)):
+            paths = [paths]
+        files: list[Path] = []
+        for p in map(Path, paths):
+            if p.is_dir():
+                files += sorted(x for x in p.iterdir() if x.suffix.lower() in (".csv", ".jsonl", ".tsv"))
+            else:
+                files.append(p)
+        self.files, self.start, self.end = files, start, end
         self.time_shift = None
         if broker_time:
             from goldflow.core import mt5_connection
             self.time_shift = mt5_connection.server_to_utc_epoch
 
     def __iter__(self) -> Iterator[Bar]:
-        return load_m1(self.path, time_shift=self.time_shift, start=self.start, end=self.end)
+        last = None
+        for f in self.files:
+            for bar in load_m1(f, time_shift=self.time_shift, start=self.start, end=self.end):
+                if last is not None and bar.time <= last:
+                    continue
+                last = bar.time
+                yield bar
 
 
 def _mt5():

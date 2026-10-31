@@ -64,7 +64,7 @@ Where the code is today and where it is going:
 | Module | Today (`backend/goldflow/...` live code) | Target |
 |---|---|---|
 | core | `core/` (runtime_config, instrument_config, paths, mt5_connection, logging, TimescaleDB, build manifest, tick archive, candle clock) | same |
-| 1 structure | `market/`, `structure/`, `regime/`, `intelligence/` (live, not causality-tested) **and** the new `backend/structure_engine/` (deterministic, tested, shadow) | `structure_engine` replaces the old detectors one at a time, each only after it passes Part B's tests and a shadow comparison |
+| 1 structure | `market/`, `structure/`, `regime/`, `intelligence/` (live, not causality-tested) **and** the new `backend/structure_engine/` (deterministic, tested, runs on recorded data) | `structure_engine` replaces the old detectors one at a time, each only after it passes Part B's tests and a back-test comparison on the same data |
 | 2 decision | `decision/` (Qwen reviewer, prompts, entry gates), `planning/` (session planner) | consumes Module 1 events/snapshot only |
 | 3 risk | `execution/` (paper runner + MT5 executor), `management/` (trade manager, profit protection) | unchanged behaviour; broker behind one interface |
 | runner | `runtime/software_runtime.py` (supervisor) + `structure_engine/runner.py` (backtest/live/export) | one runner, two feeds |
@@ -152,7 +152,7 @@ or exit counts change, it is strategy work, not a repair.
 
 **Strategy gate** (a behaviour change), with a human checkpoint at each step:
 evidence approval → one falsifiable hypothesis with one independent variable →
-offline replay and untouched walk-forward → frozen shadow/demo test → promote,
+offline replay and untouched walk-forward → frozen demo-account test → promote,
 retain or reject. Duration gates: one session = plumbing only; one 40-event
 block = may generate a hypothesis; three non-overlapping 40-event blocks with
 the frozen version = confirmation; ≥20 trading days and ≥200 decisions = paper
@@ -169,9 +169,11 @@ baseline and revert if worse.
 ## Part B — Module 1: the Market Structure Engine
 
 Package: `apps/qwen_trade_software/backend/structure_engine/` — standard
-library only, Python 3.10+. Status: **built and verified on synthetic ground
-truth; running on real XAUUSD history is the next step.** It is not yet wired
-into live decisions (shadow only, per A2).
+library only, Python 3.10+. Status: **built, verified on synthetic ground
+truth, and run end to end on real XAUUSD M1 history (B3b).** It is not yet
+wired into the Qwen decision path. The system trades only an MT5 demo
+account, so no shadow lane is needed: experiments run on recorded data, and
+`live` mode simply runs the same engine on MT5 bars and writes events.
 
 ### B1. What it does
 
@@ -192,14 +194,17 @@ state = engine.snapshot()
 
 Inside one `push`: (1) existing zones meet the new bar (tested/broken);
 (2) session and day levels update, finished ones are confirmed; (3) M1 swings,
-then M1 patterns; (4) M1 is aggregated to M5…H4 and, for every higher-timeframe
-candle that closed with this minute: ATR, swings, and on zone timeframes,
-zone ageing and new zones. Every event's `available_at` is the close of the M1
+then M1 patterns; close-spike outcomes whose horizon has passed are labelled;
+(4) M1 is aggregated to M5…H1 on the UTC grid, and closed H1 candles to H4
+on the **New York grid** (B2a); for every higher-timeframe candle that
+closed with this minute: ATR, swings, close-spike detection (H1/H4), and on
+zone timeframes, zone ageing and new zones. Every event's `available_at` is the close of the M1
 bar that produced it (asserted in code).
 
 Event kinds: `swing`, `zone_created`, `zone_tested`, `zone_broken`,
 `zone_expired`, `session_level`, `prior_day_level`, `pattern_pending`,
-`pattern_confirmed`, `pattern_invalidated`, `pattern_superseded`. Each carries
+`pattern_confirmed`, `pattern_invalidated`, `pattern_superseded`,
+`close_spike`, `close_spike_outcome`. Each carries
 `id` (deterministic), `kind`, `tf`, `time` (the structure's own anchor),
 `available_at`, `config_hash`, `data`.
 
@@ -217,8 +222,21 @@ file's header comment.
 | Session & prior-day high/low | M1 | Asia 00–07, London 07–13, New York 13–21 UTC; running = forming, finished = confirmed event | `sessions.py` |
 | Double/triple tops & bottoms | M1 (measured in M5 ATR) | peaks within 0.35 ATR, 5–120 bars apart, nothing pokes above them, neckline depth ≥ 1.5 ATR **and** ≥ 30 % of the prior move, prior move ≥ 4 ATR in 30 bars; confirmed by a close beyond the neckline within 60 bars; tags: sweep, volume spike, exhaustion | `patterns.py` |
 
+| Close spikes | H1, H4 closes | the larger M1 move in the last 10 minutes before the close is ≥ 0.75 × H1 ATR (optional dollar floor); context: held vs rejected close, previous-candle sweep, session/prior-day levels swept (last 24 h), zone hit, H4 swing trend, volume ratio, session; outcome after 15/60/240 min: reversal (back beyond the spike start), continuation (beyond the extreme) or partial | `spikes.py`, `studies/close_spikes.py` |
+
 Every threshold above is a key in `config/xauusd_structure_v1.json`; the
 numbers here are the shipped values, not code constants.
+
+#### B2a. Candle grid: H4 is New York time
+
+M1, M5, M15, M30 and H1 candles use the UTC grid; brokers' whole-hour
+offsets do not move them. **H4 is built from closed H1 candles and opens at
+02, 06, 10, 14, 18 and 22 New York time**, the grid that starts at the 18:00 NY
+gold session open (config `alignment`, `clock.py`). In UTC that is
+22/02/06/10/14/18 in US summer and 23/03/07/11/15/19 in winter; the US
+daylight-saving rule is built in (standard library only), and the switch
+happens on Sunday 02:00 NY while gold is closed. Close spikes on H4 therefore
+measure the New York H4 closes traders watch.
 
 ### B3. Measured accuracy (synthetic ground truth, 20 seeds, 2026-10-31)
 
@@ -229,6 +247,7 @@ numbers here are the shipped values, not code constants.
 | Double/triple tops & bottoms | 100 % | 100 % | 139 planted; 101/101 shallow-neckline and mismatched-peak look-alikes rejected |
 | No-repaint, determinism, invariants | PASS | | prefix replays reproduce the full run exactly |
 | Zone ranking | — | — | built, **not yet validated** (needs forward usefulness on real data) |
+| New York H4 grid, close spikes | tests | | EDT/EST boundaries, H4 = its four H1 candles exactly, spike detection, labels and no-repaint (32 tests in total) |
 
 **Read these numbers honestly.** They prove the code implements its
 definitions, including the hard near-miss cases. They do not prove the
@@ -239,6 +258,43 @@ instead of M1 ATR — plus a triple-trough rule and a supersede fix. All were
 then confirmed on 15 seeds not used while making them, but the synthetic
 generator was written by the same author, so real-data review (B4 steps 4–5)
 is the real test.
+
+### B3b. First run on real XAUUSD (2026-10-31)
+
+Data: `model_training/datasets/raw/candles/XAUUSDr/M1` — 100,000 MT5 M1 bars
+(true UTC, with tick volume) from 2026-04-28 19:45 to 2026-08-07 20:44 UTC.
+The export stopped at exactly 100,000 bars, which is MT5's "Max bars in
+chart" limit; raise it to Unlimited before exporting more history.
+
+* Runs in about 3 seconds (~33,000 bars/s).
+* On this real data: **no-repaint PASS** (8 random cut points over 40,000
+  bars), **deterministic PASS**, **0 invariant violations** over all events.
+* Events: 27,770 swings, 40 zones created (99 tests, 16 broken, 22 expired),
+  71 confirmed patterns out of 259 pending, 219 session levels, 87 prior-day
+  levels, 89 close spikes.
+* Close spikes: median size $16.1 (range $10.1–40.1), the size you described.
+  After 60 minutes: 16 % reversal, 37 % continuation, 47 % partial; after 240
+  minutes: 24 / 38 / 38. Spikes whose candle closed **held** reversed within
+  60 min only 7 % of the time; spikes that left a **rejection** wick reversed
+  36 % (n = 28, still an anecdote). Most groups are under 30 events — the
+  10-year export is needed before any of these are rates.
+* First visual review (M5/M15 charts from `review.py`, judged by Claude, not
+  yet spot-checked by the owner):
+  - swings and HH/HL/LH/LL labels match the charts; on M5, strength 2 marks
+    every minor wiggle (consider 3 in a v2 config);
+  - session levels (Asia/London/New York, day) are drawn where they should be;
+  - confirmed double tops/bottoms in the sampled charts were visually valid;
+  - **zones are sparse**: 40 in 3.3 months, usually far from price, almost
+    never retested in the samples. The base/departure thresholds are probably
+    too strict for real gold; candidate for v2 after a proper review.
+* The older files in `candles/XAUUSDr/H4/*_H4_NY.csv` are labelled New York
+  but their candles start at 00/04/08 UTC — they are UTC-aligned, not the NY
+  grid above. Do not use them as H4 truth.
+
+Artifacts of this run (not committed, git-ignored): `_archive/structure_runs/real_2026-04_08/`
+— `events.jsonl`, `summary.json`, `close_spike_study.txt/json`,
+`close_spikes.csv`, and `review_m15/` + `review_m5/` (open `index.html`, judge
+rows in `review_template.csv`).
 
 ### B4. How accuracy is verified
 
@@ -270,10 +326,29 @@ detection time, completion and invalidation rates, multi-timeframe consistency.
 | Detectors | rule-based, closed candles | the same detectors, unchanged |
 | Extra | — | Kronos forecasts 2–3 candles (M1/M5/M15); detectors run on the forecast paths |
 | Output | confirmed and forming structure | plus *scenario frequency* (% of paths), emitted under its own `scenario_*` event kinds, never mixed with confirmed events |
-| Status | **testing now** | after A is verified on real data |
+| Timeframes | M1–H4 | Kronos generates **M1, M30, H1 and H4** candles, each from its own history (the relationships between them are what we study) |
+| Status | **running on real data now** | designed, not built yet |
 
 Kronos enhances detection, never replaces the definitions. Scenario frequency
 is not a probability until calibrated on out-of-sample data.
+
+Design for B (agreed 2026-10-31):
+
+* Kronos (`NeoQuasar/Kronos-small` / `-base`, context 512, PyTorch, GPU) runs
+  in its own package and Python environment; Module 1 stays standard-library.
+  Distinct paths come from `predict_batch` on N copies of the context with
+  `sample_count=1` (the `sample_count` argument averages, it does not return paths).
+* Forecasts per timeframe: M1, M30, H1, H4, each 2–3 candles ahead from its
+  own closed-candle history. Independent forecasts will not add up
+  (three M1 hours ≠ the forecast H1); that disagreement is measured, not forced.
+* Scored against what actually happened: direction hit rate, interval
+  coverage, sample-based CRPS, level-touch Brier score, cross-timeframe
+  agreement, and — for close spikes — P(reversal) Brier score against the
+  running base rate from the spike study. Kronos earns a place only by beating
+  a no-skill bootstrap forecaster and those base rates.
+* Higher timeframe drives, lower timeframe signals or manipulates: measured
+  through close spikes (B2) and, next, lower-timeframe breaks that come before
+  the higher-timeframe confirmation (lead time in minutes).
 
 ### B6. Layout
 
@@ -289,11 +364,15 @@ structure_engine/
   sessions.py      session / prior-day levels (forming vs confirmed)
   patterns.py      M1 double/triple tops & bottoms
   scoring.py       zone ranking (top N)
+  clock.py         candle grids: UTC, and the New York H4 grid (US DST built in)
+  spikes.py        close spikes into H1/H4 closes + outcome labels
   engine.py        the single streaming engine (live == test)
   feeds.py         RecordedFeed, MT5Feed, MT5 history export
-  runner.py        CLI: backtest | live | export
+  runner.py        CLI: backtest | live | export (files or whole folders)
+  review.py        point-in-time review charts (HTML/SVG) + review template
+  studies/         close_spikes.py: base rates from a back-test's events
   verification/    synthetic.py, reference.py, matching.py, causality.py, synthetic_accuracy.py
-  tests/           pytest suite (21 tests)
+  tests/           pytest suite (32 tests)
 ```
 
 ### B7. Run it
@@ -307,7 +386,10 @@ python -m pytest structure_engine/tests -q                                # test
 python -m structure_engine.runner export   --from 2016-01-01 --out data/XAUUSD_M1.csv   # needs MT5 (Part D)
 python -m structure_engine.runner backtest --m1 data/XAUUSD_M1.csv --out runs/bt
 python -m structure_engine.runner backtest --m1 data/XAUUSD_M1.csv --from 2024-01-01 --to 2024-02-01 --snapshot-every 60
-python -m structure_engine.runner live     --out runs/live                # shadow: writes events, trades nothing
+python -m structure_engine.runner live     --out runs/live                # same engine on MT5 bars; writes events, places no orders
+python -m structure_engine.runner backtest --m1 ../../../model_training/datasets/raw/candles/XAUUSDr/M1 --out runs/real
+python -m structure_engine.studies.close_spikes runs/real/events.jsonl --json runs/real/spikes.json --csv runs/real/spikes.csv
+python -m structure_engine.review --m1 ../../../model_training/datasets/raw/candles/XAUUSDr/M1 --out runs/review --samples 16 --tf M15
 ```
 
 Back-test output folder: `events.jsonl`, `snapshots.jsonl`, `final_snapshot.json`,
@@ -318,8 +400,8 @@ add `--broker-time`.
 
 ### B8. Next steps
 
-1. Export the 10-year XAUUSD M1 history on the trading PC and run the
-   back-test end to end.
+1. Raise MT5 "Max bars in chart" to Unlimited, export the full XAUUSD M1
+   history (`runner export`) and rerun the back-test, spike study and review.
 2. Point-in-time review on real data (B4 steps 4–5); tune thresholds only
    through new config versions (`xauusd_structure_v2.json`), never in code.
 3. Add BOS/CHoCH, equal highs/lows, standalone liquidity sweeps, FVG, order
@@ -327,9 +409,10 @@ add `--broker-time`.
    trend and channels, each with the same three test layers. External
    libraries (smartmoneyconcepts, TA-Lib, SciPy) only as reference checks, and
    only after passing the no-repaint test.
-4. Experiment B: Kronos adapter in shadow mode, then compare A against B.
+4. Experiment B: Kronos forecasts on M1, M30, H1 and H4 on the same
+   back-test data, compared against A (B5).
 5. Modules 2 and 3 consume Module 1 events; old `goldflow/structure`
-   detectors are retired one by one after a shadow comparison.
+   detectors are retired one by one after a back-test comparison.
 
 ---
 
@@ -583,3 +666,6 @@ detection · P21 closed response missed by stale playbook.
   previously hard-coded in 14 places.
 - Module 1 deterministic Market Structure Engine added with its verification
   suite (Part B).
+- Same day, later: H4 on the New York grid (built from H1), close-spike
+  detector and study, point-in-time review charts, and the first end-to-end
+  run on real XAUUSD M1 (B3b). Kronos experiment B designed (B5).

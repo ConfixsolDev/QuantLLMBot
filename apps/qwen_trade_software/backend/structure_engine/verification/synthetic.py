@@ -30,7 +30,11 @@ from dataclasses import dataclass, field
 from ..atr import WilderATR
 from ..bars import Bar
 
-START = 1_767_225_600          # 2026-01-01 00:00 UTC (aligned to every timeframe)
+START = 1_767_225_600          # 2026-01-01 00:00 UTC (aligned to every UTC-grid timeframe)
+# 2026-04-06 06:00 UTC = Monday 02:00 New York (EDT): a New York H4 boundary
+# that is also on every UTC grid. Zone series start here and end before the
+# November DST switch, so planted H4 candles line up with the engine's H4.
+ZONE_START = 1_775_455_200
 
 
 @dataclass
@@ -120,14 +124,14 @@ def random_walk_m1(seed: int, n: int = 6000, start: int = START) -> list[Bar]:
 
 # ------------------------------------------------------------------ zones
 def zone_series(seed: int, tf: str, minutes: int, plants: int = 10, gap: int = 40,
-                weak_share: float = 0.4) -> Synthetic:
+                weak_share: float = 0.4, start: int = ZONE_START) -> Synthetic:
     """Plant demand/supply zones on timeframe ``tf`` (``minutes`` long)."""
     r = random.Random(seed)
     sec = minutes * 60
     noise = _Noise(r, 2000.0, 0.12)
     tf_bars: list[Bar] = []
     truth, negatives = [], []
-    t = START
+    t = start
 
     def calm(k: int) -> None:
         nonlocal t

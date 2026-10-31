@@ -103,3 +103,6 @@ remove/
 
 # Per-machine MT5 connection settings (template: mt5_connection.example.json)
 apps/qwen_trade_software/backend/config/mt5_connection.json
+
+# Structure-engine back-test / review output (regenerate with structure_engine.runner)
+runs/

@@ -5,14 +5,16 @@ H4) are built here by aggregation, never fetched separately, so that live
 trading and back-testing see exactly the same higher-timeframe candles:
 
     M1 bar --> Aggregator("M5")  --> closed M5 bar (when its last minute closes)
-          \-> Aggregator("H1")  --> closed H1 bar
+          \-> Aggregator("H1")  --> closed H1 bar --> Aggregator("H4", New York grid)
           \-> ...
 
 Time convention (used everywhere in this package)
 -------------------------------------------------
 * ``bar.time`` is the bar's OPEN time as an integer UTC epoch in seconds.
 * ``bar.close_time`` = open + duration. A bar is knowable only at close_time.
-* Buckets are aligned to UTC midnight (an H4 bar opens at 00, 04, 08 ... UTC).
+* M1 ... H1 buckets are aligned to UTC (whole-hour broker offsets do not
+  move them). H4 is built from closed H1 bars on the New York grid
+  02/06/10/14/18/22 NY (config ``alignment``; see clock.py).
 
 When does a higher-timeframe bar close?
 ---------------------------------------
@@ -28,10 +30,12 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
+
+from .clock import utc_bucket
 
 SECONDS_PER_MINUTE = 60
 
@@ -92,46 +96,56 @@ def validate_m1(bar: Bar, previous_time: int | None) -> None:
 
 @dataclass
 class Aggregator:
-    """Streams M1 bars into one higher timeframe. See module docstring."""
+    """Streams closed bars of a smaller timeframe into one larger timeframe.
+
+    ``bucket(t) -> (start_utc, end_utc)`` says which candle a moment belongs
+    to. Default: the plain UTC grid (see clock.utc_bucket). H4 uses the New
+    York grid (clock.anchored_bucket) and is fed closed H1 bars instead of M1.
+    See the module docstring for when a candle counts as closed.
+    """
 
     tf: str
     minutes: int
+    bucket: Callable[[int], tuple[int, int]] | None = None
     current: Bar | None = None      # the FORMING bar (never treat as closed)
-    _seconds: int = field(init=False)
+    _end: int = 0                   # close time of the forming bar
 
-    def __post_init__(self) -> None:
-        self._seconds = self.minutes * SECONDS_PER_MINUTE
+    def _span(self, t: int) -> tuple[int, int]:
+        return self.bucket(t) if self.bucket else utc_bucket(t, self.minutes)
 
-    def update(self, m1: Bar) -> list[Bar]:
-        """Feed one closed M1 bar; return 0, 1 or 2 newly CLOSED bars, oldest first."""
+    def update(self, src: Bar) -> list[Bar]:
+        """Feed one CLOSED source bar; return 0, 1 or 2 newly CLOSED bars, oldest first."""
         closed: list[Bar] = []
-        start = m1.time - m1.time % self._seconds
-        # 1) A gap: this minute belongs to a later bucket -> close the old one.
+        start, end = self._span(src.time)
+        # 1) A gap: this source bar belongs to a later bucket -> close the old one.
         if self.current is not None and self.current.time != start:
             closed.append(self.current)
             self.current = None
-        # 2) Merge the minute into the forming bucket.
+        # 2) Merge the source bar into the forming bucket.
         if self.current is None:
-            self.current = Bar(start, m1.open, m1.high, m1.low, m1.close, m1.volume,
-                               minutes=self.minutes, m1_count=1, tf=self.tf)
+            self.current = Bar(start, src.open, src.high, src.low, src.close, src.volume,
+                               minutes=self.minutes, m1_count=src.m1_count, tf=self.tf)
+            self._end = end
         else:
             c = self.current
-            c.high = max(c.high, m1.high)
-            c.low = min(c.low, m1.low)
-            c.close = m1.close
-            c.volume += m1.volume
-            c.m1_count += 1
-        # 3) This minute was the bucket's last one -> the bucket is complete.
-        if m1.close_time == start + self._seconds:
+            c.high = max(c.high, src.high)
+            c.low = min(c.low, src.low)
+            c.close = src.close
+            c.volume += src.volume
+            c.m1_count += src.m1_count
+        # 3) The source bar ended at the bucket's end -> the bucket is complete.
+        if src.close_time >= self._end:
             closed.append(self.current)
             self.current = None
         return closed
 
 
 def aggregate(m1_bars: Iterable[Bar], tf: str, minutes: int) -> list[Bar]:
-    """Offline helper: all closed bars of one timeframe (tests, references).
+    """Offline helper: closed bars of one UTC-grid timeframe from M1 bars.
 
-    The final, still-forming bucket is NOT returned — same as live.
+    The final, still-forming bucket is NOT returned — same as live. For the
+    exact timeframes the engine uses (including the New York H4) use
+    ``engine.closed_bars_by_timeframe`` instead.
     """
     agg = Aggregator(tf, minutes)
     out: list[Bar] = []
@@ -165,6 +179,11 @@ def _row_to_bar(row: dict, time_shift: Callable[[int], int] | None) -> Bar:
     lower = {k.strip().lower().lstrip("<").rstrip(">"): v for k, v in row.items() if k}
     if "date" in lower:                                     # MT5 "Export Bars": <DATE> <TIME>
         lower["time"] = f"{lower['date']} {lower.get('time', '')}".strip()
+    elif "time" not in lower:                               # our MT5 exporter: time_utc
+        for alias in ("time_utc", "timestamp", "datetime"):
+            if alias in lower:
+                lower["time"] = lower[alias]
+                break
     t = parse_time(str(lower["time"]))
     if time_shift:
         t = time_shift(t)
@@ -177,7 +196,8 @@ def load_m1(path: str | Path, *, time_shift: Callable[[int], int] | None = None,
             start: int | None = None, end: int | None = None) -> Iterator[Bar]:
     """Stream M1 bars from CSV/TSV (header row) or JSONL (one object per line).
 
-    Required columns: time, open, high, low, close; optional tick_volume.
+    Required columns: time (or time_utc / timestamp / datetime), open, high,
+    low, close; optional tick_volume (or volume). Extra columns are ignored.
     ``start``/``end`` (UTC epoch, end exclusive) filter by bar open time.
     Rows are yielded in file order; the engine rejects out-of-order data.
     """

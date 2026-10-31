@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from ..bars import aggregate
+from ..engine import closed_bars_by_timeframe
 from ..config import StructureConfig, load_config
 from .causality import determinism, invariants, no_repaint, run
 from .matching import Score, match
@@ -37,9 +37,10 @@ from .synthetic import pattern_series, random_walk_m1, zone_series
 def evaluate_swings(cfg: StructureConfig, seed: int) -> dict[str, Score]:
     bars = random_walk_m1(seed)
     events = [e for e in run(bars, cfg) if e.kind == "swing"]
+    by_tf = closed_bars_by_timeframe(bars, cfg)      # incl. the New York H4 grid
     out = {}
-    for tf, minutes in cfg.tf_minutes.items():
-        tf_bars = bars if tf == "M1" else aggregate(bars, tf, minutes)
+    for tf in cfg.tf_minutes:
+        tf_bars = by_tf[tf]
         truth = [{"kind": k, "time": t, "price": p}
                  for k, t, p in reference_swings(tf_bars, cfg["swings"]["strength"][tf])]
         det = [{"kind": e.data["kind"], "time": e.time, "price": e.data["price"]}

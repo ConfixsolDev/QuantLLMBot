@@ -32,16 +32,19 @@ DEFAULT_CONFIG = Path(__file__).resolve().parent / "config" / "xauusd_structure_
 #   POS_INT / POS_NUM    strictly positive int / number
 #   TF                   one timeframe name declared in "timeframes"
 #   TF_LIST              list of timeframe names declared in "timeframes"
+#   INT_LIST             non-empty list of ints
 #   ("tfmap", LEAF)      dict keyed by declared timeframe names
 #   ("map", LEAF)        dict with free string keys (e.g. session names)
 #   ("pair", LEAF)       two-element list
 # --------------------------------------------------------------------------
-INT, NUM, STR, POS_INT, POS_NUM, TF_LIST, TF = "int", "num", "str", "pos_int", "pos_num", "tf_list", "tf"
+INT, NUM, STR, POS_INT, POS_NUM, TF_LIST, TF, INT_LIST = (
+    "int", "num", "str", "pos_int", "pos_num", "tf_list", "tf", "int_list")
 
 SCHEMA: dict[str, Any] = {
     "config_id": STR,
     "symbol": STR,
     "timeframes": ("map", POS_INT),           # name -> minutes; must include M1 = 1
+    "alignment": ("tfmap", {"source": TF, "timezone": STR, "open_hours_local": INT_LIST}),
     "atr": {"period": POS_INT},
     "swings": {"strength": ("tfmap", POS_INT), "history": POS_INT},
     "zones": {
@@ -73,6 +76,18 @@ SCHEMA: dict[str, Any] = {
         "day_start_utc_hour": INT,
         "windows_utc": ("map", ("pair", INT)),
         "history": POS_INT,
+    },
+    "close_spikes": {
+        "timeframes": TF_LIST,
+        "window_minutes": POS_INT,
+        "atr_timeframe": TF,
+        "min_move_atr": POS_NUM,
+        "min_move_price": NUM,
+        "held_close_fraction": POS_NUM,
+        "horizons_minutes": INT_LIST,
+        "reversal_retrace": POS_NUM,
+        "volume_lookback": POS_INT,
+        "level_lookback_hours": POS_INT,
     },
     "patterns": {
         "atr_timeframe": TF,
@@ -152,6 +167,8 @@ def _check(value: Any, schema: Any, path: str, tfs: set[str]) -> None:
         NUM: is_num, POS_NUM: is_num and value > 0,
         STR: isinstance(value, str) and bool(value),
         TF: isinstance(value, str) and value in tfs,
+        INT_LIST: isinstance(value, list) and bool(value) and all(
+            isinstance(v, int) and not isinstance(v, bool) for v in value),
         TF_LIST: isinstance(value, list) and bool(value) and all(v in tfs for v in value),
     }[schema]
     if not ok:
@@ -188,6 +205,20 @@ def build_config(raw: dict) -> StructureConfig:
     for tf, minutes in raw["timeframes"].items():
         if 1440 % minutes != 0:
             raise ConfigError(f"timeframe {tf}={minutes} must divide a day evenly")
+    from .clock import TIMEZONES
+    for tf, rule in raw["alignment"].items():
+        src, minutes = rule["source"], raw["timeframes"][tf]
+        if tf == "M1" or raw["timeframes"][src] >= minutes or minutes % raw["timeframes"][src]:
+            raise ConfigError(f"alignment.{tf}: source {src} must be a smaller timeframe that divides it")
+        if src in raw["alignment"]:
+            raise ConfigError(f"alignment.{tf}: source {src} may not itself be anchored")
+        if rule["timezone"] not in TIMEZONES:
+            raise ConfigError(f"alignment.{tf}: timezone must be one of {sorted(TIMEZONES)}")
+        hours = sorted(rule["open_hours_local"])
+        step = minutes // 60
+        if minutes % 60 or len(hours) * minutes != 1440 or any(
+                b - a != step for a, b in zip(hours, hours[1:])) or not all(0 <= h < 24 for h in hours):
+            raise ConfigError(f"alignment.{tf}: open_hours_local must be every {step}h covering the day")
     if set(raw["swings"]["strength"]) != tfs:
         raise ConfigError("swings.strength must list every declared timeframe")
     if set(raw["scoring"]["timeframe_weight"]) != set(raw["zones"]["timeframes"]):
@@ -195,6 +226,11 @@ def build_config(raw: dict) -> StructureConfig:
     for name, (start, end) in raw["sessions"]["windows_utc"].items():
         if not (0 <= start < end <= 24):
             raise ConfigError(f"sessions.windows_utc.{name} must satisfy 0 <= start < end <= 24")
+    cs = raw["close_spikes"]
+    if any(h <= 0 for h in cs["horizons_minutes"]):
+        raise ConfigError("close_spikes.horizons_minutes must be positive")
+    if any(raw["timeframes"][tf] <= cs["window_minutes"] for tf in cs["timeframes"]):
+        raise ConfigError("close_spikes.window_minutes must be shorter than every spike timeframe")
     p = raw["patterns"]
     if p["min_bars_between_peaks"] >= p["max_bars_between_peaks"]:
         raise ConfigError("patterns: min_bars_between_peaks must be < max_bars_between_peaks")

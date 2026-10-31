@@ -8,6 +8,7 @@ Run from ``apps/qwen_trade_software/backend``::
     # 2. Back-test: replay the file through the SAME engine used live
     python -m structure_engine.runner backtest --m1 data/XAUUSD_M1.csv --out runs/bt_2016_2026
     python -m structure_engine.runner backtest --m1 data/XAUUSD_M1.csv --from 2024-01-01 --to 2024-02-01 --snapshot-every 60
+    python -m structure_engine.runner backtest --m1 ../../../model_training/datasets/raw/candles/XAUUSDr/M1 --out runs/real
 
     # 3. Live shadow: same engine on MT5 bars; writes events/snapshot, trades nothing
     python -m structure_engine.runner live --out runs/live
@@ -81,7 +82,8 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     bt = sub.add_parser("backtest", help="replay a recorded M1 file")
-    bt.add_argument("--m1", required=True, help="CSV/TSV/JSONL with time,open,high,low,close[,tick_volume]")
+    bt.add_argument("--m1", required=True, nargs="+",
+                    help="M1 file(s) and/or folder(s): CSV/TSV/JSONL with time,open,high,low,close[,tick_volume]")
     bt.add_argument("--out", default="runs/backtest")
     bt.add_argument("--from", dest="start", help="first bar (UTC), e.g. 2024-01-01")
     bt.add_argument("--to", dest="end", help="stop before this time (UTC)")

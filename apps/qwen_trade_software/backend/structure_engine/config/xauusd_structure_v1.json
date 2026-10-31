@@ -9,6 +9,20 @@
     "H1": 60,
     "H4": 240
   },
+  "alignment": {
+    "H4": {
+      "source": "H1",
+      "timezone": "America/New_York",
+      "open_hours_local": [
+        2,
+        6,
+        10,
+        14,
+        18,
+        22
+      ]
+    }
+  },
   "atr": {
     "period": 14
   },
@@ -79,6 +93,25 @@
       ]
     },
     "history": 30
+  },
+  "close_spikes": {
+    "timeframes": [
+      "H1",
+      "H4"
+    ],
+    "window_minutes": 10,
+    "atr_timeframe": "H1",
+    "min_move_atr": 0.75,
+    "min_move_price": 0.0,
+    "held_close_fraction": 0.25,
+    "horizons_minutes": [
+      15,
+      60,
+      240
+    ],
+    "reversal_retrace": 1.0,
+    "volume_lookback": 60,
+    "level_lookback_hours": 24
   },
   "patterns": {
     "atr_timeframe": "M5",

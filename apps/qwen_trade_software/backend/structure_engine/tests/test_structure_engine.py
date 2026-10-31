@@ -171,3 +171,110 @@ def test_backtest_run_writes_outputs_and_matches_direct_run(tmp_path):
     assert fingerprint(direct) == fingerprint(run(list(load_m1(csv_path)), CFG))
     snap = json.loads((tmp_path / "out" / "final_snapshot.json").read_text())
     assert len(snap["top_zones"]) <= CFG["scoring"]["top_n"]
+
+
+# ------------------------------------------------------------------ New York H4
+def _utc(text: str) -> int:
+    from structure_engine.bars import parse_time
+    return parse_time(text)
+
+
+@pytest.mark.parametrize("moment,start,end", [
+    # summer (EDT, UTC-4): NY 02/06/10/14/18/22 = UTC 06/10/14/18/22/02
+    ("2026-07-15T07:30:00", "2026-07-15T06:00:00", "2026-07-15T10:00:00"),
+    ("2026-07-15T23:10:00", "2026-07-15T22:00:00", "2026-07-16T02:00:00"),
+    # winter (EST, UTC-5): UTC 07/11/15/19/23/03
+    ("2026-01-15T07:30:00", "2026-01-15T07:00:00", "2026-01-15T11:00:00"),
+    ("2026-01-15T02:59:00", "2026-01-14T23:00:00", "2026-01-15T03:00:00"),
+])
+def test_new_york_h4_grid(moment, start, end):
+    from structure_engine.clock import anchored_bucket
+    rule = CFG["alignment"]["H4"]
+    assert anchored_bucket(_utc(moment), 240, rule["open_hours_local"], rule["timezone"]) == (_utc(start), _utc(end))
+
+
+def test_h4_is_built_from_h1_on_the_new_york_grid():
+    from structure_engine.engine import closed_bars_by_timeframe
+    # Sunday 2026-08-02 22:00 UTC = 18:00 NY (EDT) session open; 12 hours of M1
+    t0 = _utc("2026-08-02T22:00:00")
+    m1 = [Bar(t0 + 60 * i, 100 + i % 7, 101 + i % 7, 99 + i % 7, 100.5 + i % 7, 1) for i in range(12 * 60)]
+    by_tf = closed_bars_by_timeframe(m1, CFG)
+    h4 = by_tf["H4"]
+    assert [b.time for b in h4] == [t0, t0 + 4 * 3600, t0 + 8 * 3600]
+    h1 = by_tf["H1"]
+    for i, b in enumerate(h4):                     # each H4 = exactly its four H1 candles
+        part = h1[4 * i:4 * i + 4]
+        assert (b.open, b.close) == (part[0].open, part[-1].close)
+        assert b.high == max(x.high for x in part) and b.low == min(x.low for x in part)
+        assert b.m1_count == 240
+
+
+def test_alignment_config_is_validated():
+    with pytest.raises(ConfigError, match="every 4h"):
+        load_config(overrides={"alignment": {"H4": {"source": "H1", "timezone": "America/New_York",
+                                                    "open_hours_local": [2, 6, 10, 14, 18]}}})
+    with pytest.raises(ConfigError, match="timezone"):
+        load_config(overrides={"alignment": {"H4": {"source": "H1", "timezone": "Europe/London",
+                                                    "open_hours_local": [2, 6, 10, 14, 18, 22]}}})
+
+
+# ------------------------------------------------------------------ close spikes
+def _spike_series(direction: int, then: str) -> list[Bar]:
+    """3 calm days of M1 bars, then a 10-minute burst into the 14:00 UTC H1
+    close, then ``then`` = 'reverse' or 'continue' for 4 hours."""
+    t0 = _utc("2026-07-13T00:00:00")
+    bars, p = [], 2000.0
+    spike_end = _utc("2026-07-16T14:00:00")
+    t = t0
+    while t < spike_end + 5 * 3600:
+        o = p
+        if spike_end - 600 <= t < spike_end:
+            p += direction * 1.5                      # 15.0 in the last 10 minutes
+        elif t >= spike_end and then == "reverse" and t < spike_end + 1200:
+            p -= direction * 1.0                      # back 20.0 within 20 minutes
+        elif t >= spike_end and then == "continue" and t < spike_end + 600:
+            p += direction * 1.0
+        else:
+            p += 0.05 if (t // 60) % 2 else -0.05
+        bars.append(Bar(t, o, max(o, p) + 0.2, min(o, p) - 0.2, p, 100.0))
+        t += 60
+    return bars
+
+
+@pytest.mark.parametrize("direction,then,label", [(1, "reverse", "reversal"), (-1, "reverse", "reversal"),
+                                                  (1, "continue", "continuation")])
+def test_close_spike_detected_and_labelled(direction, then, label):
+    events = run(_spike_series(direction, then), CFG)
+    spikes = [e for e in events if e.kind == "close_spike" and e.tf == "H1"]
+    assert len(spikes) == 1
+    sp = spikes[0].data
+    assert sp["direction"] == ("up" if direction > 0 else "down") and sp["held"]
+    assert spikes[0].available_at == _utc("2026-07-16T14:00:00")
+    outs = {e.data["horizon_minutes"]: e for e in events
+            if e.kind == "close_spike_outcome" and e.data["spike_id"] == sp["spike_id"]}
+    assert sorted(outs) == [15, 60, 240]
+    assert outs[60].data["label"] == label
+    assert outs[60].available_at == spikes[0].available_at + 3600
+
+
+def test_close_spike_no_repaint():
+    bars = _spike_series(1, "reverse")
+    assert no_repaint(bars, CFG, cuts=6, seed=3) == []
+
+
+# ------------------------------------------------------------------ tools
+def test_spike_study_and_review_run_end_to_end(tmp_path):
+    from structure_engine.review import collect, write_html
+    from structure_engine.studies.close_spikes import load, report
+    bars = _spike_series(1, "reverse")
+    run_stream(iter(bars), tmp_path / "bt")
+    rows, outcomes, horizons = load(tmp_path / "bt" / "events.jsonl")
+    table = report(rows, outcomes, horizons)
+    assert table["all=all"]["n"] >= 1 and table["all=all"]["60"]["reversal_pct"] == 100.0
+    moments = collect(bars, CFG, {_utc("2026-07-16T15:00:00")}, "M5", before=60, after=12)
+    assert len(moments) == 1 and len(moments[0]["after"]) == 12
+    assert all(b["time"] < moments[0]["t"] for b in moments[0]["before"])      # nothing from the future
+    out = tmp_path / "rev"
+    out.mkdir()
+    write_html(moments, out, CFG)
+    assert "<svg" in (out / "index.html").read_text() and (out / "review_template.csv").exists()
