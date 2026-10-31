@@ -166,7 +166,7 @@ export default function StructureChart({ chart, layers, fitKey }: { chart: Chart
   return (
     <div className="relative h-full w-full">
       <div ref={boxRef} className="absolute inset-0" />
-      <canvas ref={canvasRef} className="pointer-events-none absolute inset-0" />
+      <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 z-10" />
     </div>
   );
 }
