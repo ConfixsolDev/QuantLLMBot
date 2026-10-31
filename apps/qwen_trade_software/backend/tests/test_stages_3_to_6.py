@@ -116,6 +116,27 @@ def test_expected_risk_tracks_the_budget():
     assert bracket.expected_risk == pytest.approx(150.0, abs=20)
 
 
+def test_atr_expands_stop_floor_without_replacing_structure():
+    bracket = tg.build_bracket(
+        side="sell", entry_price=100.0,
+        invalidation_price=102.0, target_price=85.0, frame="M15",
+        atr=8.0,
+    )
+    assert bracket.ok
+    assert bracket.stop_loss > 102.0
+    assert bracket.stop_distance >= 8.0
+
+
+def test_atr_target_floor_rejects_insufficient_room():
+    bracket = tg.build_bracket(
+        side="buy", entry_price=100.0,
+        invalidation_price=95.0, target_price=106.0, frame="M15",
+        atr=5.0,
+    )
+    assert not bracket.ok
+    assert bracket.reason_code == tg.GeometryReason.REWARD_RISK_TOO_LOW
+
+
 def test_lot_rounding_never_rounds_risk_up():
     assert tg.round_lot(0.239) <= 0.24
     assert tg.round_lot(0.0) == 0.0

@@ -110,7 +110,7 @@ LIVENESS = DecisionLivenessMonitor()
 from pathlib import Path as _Path
 
 LIFECYCLE_STATE_FILE = _Path(__file__).resolve().parent / "lifecycle-state.json"
-INTELLIGENCE_DB = _Path(__file__).resolve().parent / "cache" / "market-intelligence.sqlite3"
+INTELLIGENCE_DB = None  # Compatibility argument; IntelligenceStore uses TimescaleDB.
 _MARKET_RUNTIMES = MarketRuntimeRegistry()
 
 
@@ -2231,12 +2231,13 @@ def normalize_execution_plan(
     bias: str | None = None,
     confidence=None,
     zone_edge_context: dict | None = None,
+    atr_context: dict | None = None,
 ) -> dict:
-    """Ready gate = confidence + named S/R entry zone; broker SL/TP = $3/$5.
+    """Normalize a ready zone; the executor later builds the ATR/structure bracket.
 
-    Qwen names support/resistance zones and side. Runtime places a fixed $3
-    stop and $5 target from the zone. Next structure S/R prices are kept only
-    as management references for trade_management to improve after fill.
+    Qwen supplies the side and named levels.  This function preserves the
+    plan-level entry gate and structural references; broker SL/TP geometry is
+    finalized from the live fill price, ATR, and structure in the executor.
     """
     def wait(reason):
         return {"status": "wait", "reason": reason}
@@ -2444,6 +2445,12 @@ def normalize_execution_plan(
             supplied, entry_low, entry_high, optimal_entry,
         )
 
+    atr_context = atr_context or {}
+    try:
+        atr_reference = float(atr_context.get("atr_m1_51") or 0.0)
+    except (TypeError, ValueError):
+        atr_reference = 0.0
+
     return {
         "status": "ready",
         "side": side,
@@ -2471,6 +2478,7 @@ def normalize_execution_plan(
         "cache_evidence_ids": list(snapshot.get("qwen_evidence_ids", [])),
         "cache_decision_time_utc": entry_cache.get("decision_time_utc"),
         "geometry_source": geometry_source,
+        "atr_reference": atr_reference or None,
         "reason": normalize_text(value.get("reason"), "Validated named-level setup."),
     }
 
@@ -3044,12 +3052,13 @@ def generate_dashboard_deal_sheet() -> dict:
             }
         else:
             review["execution_plan"] = normalize_execution_plan(
-                review.get("execution_plan"),
+            review.get("execution_plan"),
                 snapshot,
                 entry_cache,
                 bias=review.get("bias"),
                 confidence=review.get("confidence"),
                 zone_edge_context=facts.get("zone_edge_context"),
+                atr_context=facts.get("regime_context"),
             )
             plan_failures = validate_entry_against_plan(
                 review["execution_plan"], planner_context

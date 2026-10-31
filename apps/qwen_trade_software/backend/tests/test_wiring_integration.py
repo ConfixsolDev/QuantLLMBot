@@ -310,12 +310,13 @@ def test_submit_single_position_always_returns_a_four_tuple():
     assert "GeometryRejection" in caught, "_run must convert the rejection to a skip"
 
 
-def test_order_uses_planned_invalidation_as_live_broker_stop():
-    """A crossed invalidation exits on the first broker quote, not M1/M5 close."""
+def test_order_keeps_planned_invalidation_as_entry_gate_and_uses_atr_structure_stop():
+    """The plan boundary gates entry; the filled order uses the ATR/structure bracket."""
     source = (Path(__file__).resolve().parents[1] / "paper_executor.py").read_text(
         encoding="utf-8"
     )
-    assert "safety_sl = planned_invalidation" in source
+    assert "planned_invalidation < order_price" in source
+    assert 'bracket_source = f"atr_structure_live+' in source
     assert '"geometry:invalidation_already_crossed"' in source
 
 

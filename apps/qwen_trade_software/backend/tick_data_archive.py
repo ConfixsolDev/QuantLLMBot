@@ -9,7 +9,7 @@ Every record is appended to BOTH:
   - permanent archive: model_training/tick_data/YYYY-MM-DD/{name}.jsonl
 
 RETENTION: tick_data/ is NEVER auto-deleted. Use for 30, 60, 90+ day analysis.
-Raw MT5 tick stream also lives in cache/market_context.sqlite3 (ticks table).
+Raw MT5 tick stream also lives in TimescaleDB (ticks table).
 """
 
 from __future__ import annotations

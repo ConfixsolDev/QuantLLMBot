@@ -17,10 +17,10 @@ import logging.handlers
 import msvcrt
 import os
 import re
-import sqlite3
 import tempfile
 import time
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -51,7 +51,7 @@ CACHE_DIR = APP_DIR / "cache"
 # anywhere else would still silently read/write the old location's database.
 # Deriving both paths from APP_DIR instead makes the whole app relocatable:
 # wherever these .py files run from, the cache travels with them.
-DEFAULT_DB = CACHE_DIR / "market_context.sqlite3"
+DEFAULT_DB = None  # Compatibility argument only; SQL persistence is TimescaleDB.
 MODEL_LOCK_FILE = CACHE_DIR / "qwen-model.lock"
 CONTEXT_CYCLE_LOCK_FILE = CACHE_DIR / "context-cycle.lock"
 # The knowledge store (core_skill.md, sop.md, etc.) now lives at the app's
@@ -72,7 +72,7 @@ TIMEFRAME_SECONDS = {
     "D1": 86400,
 }
 # Minute packet must outlive the cache worker interval with slack. Runtime uses
-# --interval 30; a 2-minute TTL was expiring whenever a cycle stalled past the
+# --interval 10; a 2-minute TTL was expiring whenever a cycle stalled past the
 # next refresh and blocked entry with entry_cache:minute:expired while the
 # structural manifest still looked ready.
 MINUTE_PACKET_TTL = timedelta(minutes=4)
@@ -207,7 +207,7 @@ def model_generation_lock(timeout: float | None = None):
 
 @contextlib.contextmanager
 def context_cycle_lock(timeout: float | None = None):
-    """Serialize full context-cache cycles so workers cannot race the SQLite cache."""
+    """Serialize full context-cache cycles so workers cannot race the shared cache."""
     with _exclusive_file_lock(
         CONTEXT_CYCLE_LOCK_FILE, timeout=timeout, label="Context cache cycle lock"
     ):
@@ -430,36 +430,56 @@ class MT5MarketSource:
                 self._normalize_rate(self.symbol, timeframe, rate, as_of)
                 for rate in sorted(rates, key=lambda item: int(item["time"]))
             ]
-            completed[timeframe] = [row for row in rows if row["is_complete"]]
-            unfinished = [row for row in rows if not row["is_complete"]]
-            if unfinished:
-                forming[timeframe] = unfinished[-1]
-            else:
-                current = mt5.copy_rates_from_pos(self.symbol, mt5_timeframe, 0, 1)
-                if current is not None and len(current):
-                    row = self._normalize_rate(self.symbol, timeframe, current[0], as_of)
-                    if not row["is_complete"]:
-                        forming[timeframe] = row
+            completed_rows = [row for row in rows if row["is_complete"]]
+            forming_rows = [row for row in rows if not row["is_complete"]]
+
+            # copy_rates_range() can lag or omit the still-forming bar at the
+            # right edge. Always read position 0 as the authoritative current
+            # bar so the forming row is refreshed on every cache tick.
+            current = mt5.copy_rates_from_pos(self.symbol, mt5_timeframe, 0, 1)
+            if current is not None and len(current):
+                current_row = self._normalize_rate(
+                    self.symbol, timeframe, current[0], as_of
+                )
+                if current_row["is_complete"]:
+                    existing = {
+                        row["open_time_utc"]: row for row in completed_rows
+                    }
+                    existing[current_row["open_time_utc"]] = current_row
+                    completed_rows = sorted(
+                        existing.values(), key=lambda row: row["open_time_utc"]
+                    )
+                    forming_rows = [
+                        row
+                        for row in forming_rows
+                        if row["open_time_utc"] != current_row["open_time_utc"]
+                    ]
+                else:
+                    forming_rows = [current_row]
+
+            completed[timeframe] = completed_rows
+            if forming_rows:
+                # There must be exactly one mutable row per timeframe. The
+                # explicit position-0 read above normally makes this the
+                # latest bar; keep the defensive max for brokers returning
+                # more than one unfinished row.
+                forming[timeframe] = max(
+                    forming_rows, key=lambda row: row["open_time_utc"]
+                )
         return completed, forming
 
 
 class MarketContextCache:
     def __init__(
         self,
-        path: Path | str = DEFAULT_DB,
+        path: Path | str | None = DEFAULT_DB,
         *,
         report_metadata_corrections: bool = True,
+        schema: str | None = None,
     ) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(
-            self.path, timeout=10.0, isolation_level=None, check_same_thread=False
-        )
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA journal_mode=WAL")
-        self.connection.execute("PRAGMA synchronous=NORMAL")
-        self.connection.execute("PRAGMA foreign_keys=ON")
-        self.connection.execute("PRAGMA busy_timeout=10000")
+        from timescale_db import TimescaleConnection
+        self.path = path
+        self.connection = TimescaleConnection(schema=schema)
         self.report_metadata_corrections = report_metadata_corrections
         self._reported_metadata_corrections: set[tuple] = set()
         self._create_schema()
@@ -1018,7 +1038,7 @@ class MarketContextCache:
                     content_hash(input_value),
                     canonical_json(response) if response is not None else None,
                     raw_response,
-                    int(passed),
+                    bool(passed),
                     canonical_json(failures),
                     canonical_json(metrics),
                 ),
@@ -1917,6 +1937,9 @@ class ContextValidator:
         if len(requests) > 1:
             failures.append("minute:too_many_data_requests")
         for request in requests:
+            if not isinstance(request, dict):
+                failures.append("minute:request_not_object")
+                continue
             if request.get("timeframe") not in TIMEFRAME_SECONDS:
                 failures.append("minute:request_timeframe_invalid")
             if not 1 <= int(request.get("completed_bars", 0)) <= 50:
@@ -3428,20 +3451,32 @@ class QwenContextShadow:
         )
         return passed, failures, metrics
 
+    def sync_market_data(
+        self,
+    ) -> tuple[Quote, datetime, dict[str, list[dict]], dict[str, dict], dict[str, int]]:
+        """Refresh the quote and candle cache without creating duplicate bars.
+
+        Completed candles are immutable and are inserted only after their
+        timeframe close. The current candle is written to the single
+        symbol/timeframe forming row and may be overwritten on every tick.
+        """
+        quote = self.source.quote()
+        as_of = as_utc(quote.time_utc)
+        starts = self.cache.incremental_starts(self.symbol, as_of)
+        completed, forming = self.source.history(as_of, starts)
+        inserted: dict[str, int] = {}
+        for timeframe, rows in completed.items():
+            inserted[timeframe] = self.cache.ingest_completed(rows)
+        self.cache.upsert_forming(forming.values())
+        self.cache.add_quote(quote)
+        return quote, as_of, completed, forming, inserted
+
     def run_once(self, *, run_qwen: bool = True, benchmark_minute: bool = True) -> dict:
         cycle_id = f"context-{utc_now():%Y%m%dT%H%M%S}-{os.getpid()}"
         timings: dict[str, float] = {}
         prior_manifest = self.cache.latest_manifest(self.symbol)
         started = time.perf_counter()
-        quote = self.source.quote()
-        as_of = as_utc(quote.time_utc)
-        starts = self.cache.incremental_starts(self.symbol, as_of)
-        completed, forming = self.source.history(as_of, starts)
-        inserted = {}
-        for timeframe, rows in completed.items():
-            inserted[timeframe] = self.cache.ingest_completed(rows)
-        self.cache.upsert_forming(forming.values())
-        self.cache.add_quote(quote)
+        quote, as_of, completed, forming, inserted = self.sync_market_data()
         timings["cache_update_ms"] = (time.perf_counter() - started) * 1000
 
         started = time.perf_counter()
@@ -3704,11 +3739,14 @@ def fixture_candle(
 
 def run_incremental_self_test() -> dict:
     failures: list[str] = []
+    test_schema = f"fallback_test_{os.getpid()}_{uuid.uuid4().hex[:10]}"
     with tempfile.TemporaryDirectory(prefix="qwen-context-") as folder:
-        path = Path(folder) / "fixture.sqlite3"
+        path = Path(folder) / "timescale-fixture"
         symbol = "XAUUSDr"
         opened = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
-        cache = MarketContextCache(path, report_metadata_corrections=False)
+        cache = MarketContextCache(
+            path, report_metadata_corrections=False, schema=test_schema
+        )
         row = fixture_candle(symbol, "M1", opened, 4000)
         first = cache.ingest_completed([row])
         before = cache.raw_hash(symbol)
@@ -3784,10 +3822,12 @@ def run_incremental_self_test() -> dict:
             failures.append("incremental:h4_epoch_expiry")
         final_hash = cache.raw_hash(symbol)
         cache.close()
-        restarted = MarketContextCache(path)
+        restarted = MarketContextCache(path, schema=test_schema)
         if restarted.raw_hash(symbol) != final_hash:
             failures.append("incremental:restart_hash")
         restarted.close()
+        from timescale_db import drop_timescale_schema
+        drop_timescale_schema(test_schema)
     source = inspect.getsource(QwenContextShadow.run_once)
     if ".jsonl" in source or "read_text" in source:
         failures.append("incremental:minute_path_full_scan")
@@ -3856,7 +3896,7 @@ def latest_readiness(
             return cache.latest_manifest(symbol)
         finally:
             cache.close()
-    except (OSError, sqlite3.Error):
+    except (OSError, RuntimeError):
         return None
 
 
@@ -4029,7 +4069,7 @@ def get_cached_completed_bars(
     count: int = 120,
     path: Path | str = DEFAULT_DB,
 ) -> list[dict]:
-    """Closed bars from the context SQLite cache. No MT5 call."""
+    """Closed bars from the TimescaleDB context cache. No MT5 call."""
     symbol = symbol or "XAUUSDr"
     try:
         cache = MarketContextCache(path)
@@ -4037,7 +4077,7 @@ def get_cached_completed_bars(
             rows = cache.latest_completed(symbol, timeframe, count)
         finally:
             cache.close()
-    except (OSError, sqlite3.Error):
+    except (OSError, RuntimeError):
         return []
     out = []
     for row in rows:
@@ -4076,15 +4116,20 @@ def run_service(args: argparse.Namespace) -> None:
     source.connect()
     cache = MarketContextCache(args.db)
     ollama = OllamaClient(args.model)
+    refresh_on_start = bool(getattr(args, "refresh_on_start", False))
     try:
         shadow = QwenContextShadow(cache, source, ollama, Path(args.store_root))
         while True:
             try:
                 with context_cycle_lock():
                     manifest = shadow.run_once(
-                        run_qwen=not args.no_qwen,
+                        run_qwen=(not args.no_qwen) or refresh_on_start,
                         benchmark_minute=not args.no_minute_benchmark,
                     )
+                # A restart gets one full Qwen-backed qualification pass. Once
+                # that pass completes, steady-state cycles return to the fast
+                # no-Qwen candle refresh path.
+                refresh_on_start = False
                 print(json.dumps(manifest, indent=2), flush=True)
                 logging.info(
                     "Context cycle status=%s failures=%s",
@@ -4109,10 +4154,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=MODEL)
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--store-root", type=Path, default=DEFAULT_STORE_ROOT)
-    parser.add_argument("--interval", type=int, default=60)
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=10,
+        help="seconds between cache refresh cycles (forming candles are upserted)",
+    )
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--no-qwen", action="store_true")
     parser.add_argument("--no-minute-benchmark", action="store_true")
+    parser.add_argument(
+        "--refresh-on-start",
+        action="store_true",
+        help="run one full Qwen-backed cache qualification after startup",
+    )
     parser.add_argument("--self-test", action="store_true")
     return parser
 

@@ -13,6 +13,18 @@
 
 **Broker:** MetaTrader 5 demo account | **Instrument:** XAUUSD (Gold)
 
+### Fallback runtime storage restoration — 2026-09-10
+
+The restored `fallback-positive-proper-closing-20260821` runtime preserves its
+entry, execution, risk, and position-closing behavior. Its SQL persistence now
+uses the existing TimescaleDB service exclusively, isolated in the
+`fallback_positive` schema. Completed/forming candles, ticks, cache objects,
+readiness records, Qwen validations, latency records, intelligence events,
+structure projections, and retrieval audits have no SQLite fallback. Local
+JSON/JSONL logs, health records, journals, and operational state remain enabled
+as inspectable evidence for later strategy improvement. A missing Timescale DSN
+fails closed before trading services can become ready.
+
 ---
 
 ## Authority and System Ownership

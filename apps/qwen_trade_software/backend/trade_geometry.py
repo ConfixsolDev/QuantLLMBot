@@ -95,6 +95,13 @@ DEFAULT_MIN_TARGET = 5.0
 MIN_STOP_DISTANCE = 1.00      # absolute sanity floor; the ladder above governs
 MAX_STOP_DISTANCE = 25.00
 
+# ATR is a volatility rail, not a replacement for structural invalidation.
+# The stop must clear both the named invalidation and the current volatility
+# floor.  The target must have enough room to justify exposing that risk.
+STOP_ATR_MULTIPLIER = 1.00
+TARGET_ATR_MULTIPLIER = 1.50
+STRUCTURE_ATR_BUFFER = 0.25
+
 
 def min_stop_for(
     frame: str | None, instrument: InstrumentConfig = XAUUSD
@@ -264,6 +271,7 @@ def build_bracket(
     target_price: float | None,
     frame: str | None = None,
     frame_range: float = 0.0,
+    atr: float | None = None,
     invalidation_id: str | None = None,
     target_id: str | None = None,
     risk_budget: float = DEFAULT_RISK_BUDGET,
@@ -304,7 +312,17 @@ def build_bracket(
         return Bracket(ok=False, reason_code=GeometryReason.TARGET_WRONG_SIDE,
                        detail=f"target {target_price} is not beyond entry {entry_price}")
 
-    buffer_amount = structure_buffer(frame_range, instrument)
+    try:
+        atr_value = float(atr) if atr is not None else 0.0
+    except (TypeError, ValueError):
+        atr_value = 0.0
+    if atr_value < 0:
+        atr_value = 0.0
+
+    buffer_amount = max(
+        structure_buffer(frame_range, instrument),
+        atr_value * STRUCTURE_ATR_BUFFER,
+    )
     stop_loss = invalidation_price - direction * buffer_amount
     stop_distance = abs(entry_price - stop_loss)
     target_distance = abs(target_price - entry_price)
@@ -312,13 +330,20 @@ def build_bracket(
     # Pad out to the frame's minimum (curriculum 1.1). "Pad to mins if nearer
     # level is tighter" -- the level is where the idea fails, the minimum is how
     # much room that frame's noise demands. Take whichever is further.
-    floor_stop = min_stop_for(frame, instrument)
+    floor_stop = max(
+        min_stop_for(frame, instrument),
+        atr_value * STOP_ATR_MULTIPLIER,
+        MIN_STOP_DISTANCE,
+    )
     if stop_distance < floor_stop:
         stop_distance = floor_stop
         stop_loss = entry_price - direction * floor_stop
 
     # A target inside the frame's minimum cannot pay for the frame's risk.
-    floor_target = min_target_for(frame, instrument)
+    floor_target = max(
+        min_target_for(frame, instrument),
+        atr_value * TARGET_ATR_MULTIPLIER,
+    )
     if target_distance < floor_target:
         return Bracket(ok=False, reason_code=GeometryReason.REWARD_RISK_TOO_LOW,
                        stop_distance=stop_distance, target_distance=target_distance,

@@ -147,8 +147,9 @@ class QwenTradeSoftware:
                 "market_context_cache.py",
                 "--no-qwen",
                 "--no-minute-benchmark",
+                "--refresh-on-start",
                 "--interval",
-                "30",
+                "10",
             ),
             "market_memory": ("market_memory_worker.py", "--interval", "2"),
             "paper_runner": ("paper_runner.py",),
@@ -210,8 +211,9 @@ class QwenTradeSoftware:
             "market_context_cache.py",
             "--no-qwen",
             "--no-minute-benchmark",
+            "--refresh-on-start",
             "--interval",
-            "30",
+            "10",
         )
         self._start_child("market_memory", "market_memory_worker.py", "--interval", "2")
         self._start_child("paper_runner", "paper_runner.py")

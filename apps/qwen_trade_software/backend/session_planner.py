@@ -10,7 +10,6 @@ import json
 import logging
 import logging.handlers
 import socket
-import sqlite3
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -165,10 +164,8 @@ def read_chart_candles(
 ) -> list[dict]:
     if timeframe not in ("M5", "M15", "H1", "H4"):
         raise ValueError(f"Unsupported timeframe: {timeframe}")
-    if not db_path.exists():
-        return []
-    connection = sqlite3.connect(str(db_path))
-    connection.row_factory = sqlite3.Row
+    from timescale_db import TimescaleConnection
+    connection = TimescaleConnection()
     try:
         rows = connection.execute(
             "SELECT open_time_utc, open, high, low, close, tick_volume "
@@ -196,10 +193,8 @@ def read_chart_candles(
 
 def hour_ohlc_from_h1(symbol: str, hour_start: datetime) -> dict | None:
     """Aggregate H1 candle whose open matches the hour, else nearest completed H1."""
-    if not DEFAULT_DB.exists():
-        return None
-    connection = sqlite3.connect(str(DEFAULT_DB))
-    connection.row_factory = sqlite3.Row
+    from timescale_db import TimescaleConnection
+    connection = TimescaleConnection()
     try:
         target = iso_utc(hour_start.replace(minute=0, second=0, microsecond=0))
         row = connection.execute(

@@ -20,7 +20,7 @@ from runtime_config import PRIMARY_MARKET_SYMBOL
 
 APP_DIR = Path(__file__).resolve().parent
 LOG_DIR = APP_DIR / "logs"
-DEFAULT_DB = APP_DIR / "cache" / "market-intelligence.sqlite3"
+DEFAULT_DB = None  # Compatibility argument; IntelligenceStore uses TimescaleDB.
 HEALTH_FILE = APP_DIR / "cache" / "market-memory-health.json"
 
 

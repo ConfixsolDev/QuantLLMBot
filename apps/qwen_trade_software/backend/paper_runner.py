@@ -262,6 +262,10 @@ def arguments_for(proposal: dict) -> Namespace:
         # named invalidation instead of at a flat $3 from the fill; see
         # paper_executor.broker_bracket_from_plan for the measured rationale.
         structure_timeframe=plan.get("structure_timeframe"),
+        atr_reference=(
+            float(plan["atr_reference"])
+            if plan.get("atr_reference") is not None else None
+        ),
         stop_level_id=plan.get("stop_level_id"),
         target_level_id=plan.get("target_level_id"),
         best_price_observation_seconds=BEST_PRICE_OBSERVATION_SECONDS,

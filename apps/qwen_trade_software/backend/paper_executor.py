@@ -836,6 +836,7 @@ def broker_bracket_from_plan(
         invalidation_price=float(invalidation),
         target_price=float(target),
         frame=getattr(args, "structure_timeframe", None),
+        atr=getattr(args, "atr_reference", None),
         invalidation_id=getattr(args, "stop_level_id", None),
         target_id=getattr(args, "target_level_id", None),
         risk_budget=risk_budget,
@@ -900,10 +901,9 @@ def submit_single_position(args, execution_id: str, tick):
     safety_sl, safety_tp, bracket_source, effective_volume = broker_bracket_from_plan(
         args, order_price, digits, include_volume=True
     )
-    # The plan's invalidation is a hard live-price boundary, not a level that
-    # waits for candle confirmation. Put it on the broker order itself so the
-    # first tradable quote through it exits even if the manager or executor is
-    # delayed. The wider structural stop remains a management reference only.
+    # The pre-fill plan invalidation remains an entry gate.  Once filled, the
+    # broker receives the ATR-plus-structure bracket returned above; replacing
+    # it with the old fixed plan distance reintroduced noise stop-outs.
     planned_invalidation = round(float(args.stop_loss), digits)
     invalidation_is_valid = (
         planned_invalidation < order_price
@@ -916,11 +916,8 @@ def submit_single_position(args, execution_id: str, tick):
             f"{args.side} entry {order_price:.3f} is already beyond "
             f"planned invalidation {planned_invalidation:.3f}",
         )
-    safety_sl = planned_invalidation
-    # The observation override may accept geometry that fell back to a nominal
-    # $3 bracket, while the broker stop is the plan's actual invalidation.
-    # Re-size against that real distance so loosening entry frequency never
-    # silently increases the configured dollar risk.
+    # Re-size against the actual broker stop so ATR widening never increases
+    # the configured dollar risk.
     effective_volume = min(
         effective_volume,
         trade_geometry.size_for_risk(
@@ -929,7 +926,7 @@ def submit_single_position(args, execution_id: str, tick):
             instrument.contract_value_per_price_unit_lot,
         ),
     )
-    bracket_source = f"planned_invalidation_live+{bracket_source}"
+    bracket_source = f"atr_structure_live+{bracket_source}"
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": args.symbol,

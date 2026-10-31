@@ -1,10 +1,9 @@
-"""SQLite event ledger and materialized structure projections."""
+"""TimescaleDB event ledger and materialized structure projections."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,12 +21,11 @@ class IntelligenceStore:
     """Append-only evidence with replaceable views that can be replayed."""
 
     def __init__(self, path: Path | str) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path, check_same_thread=False)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA busy_timeout=5000")
+        from timescale_db import TimescaleConnection
+        # Retain the local cache directory only for JSON health/state files.
+        # SQL data is always stored by TimescaleConnection.
+        self.path = Path(__file__).resolve().parents[1] / "cache" / "market-intelligence"
+        self.db = TimescaleConnection()
         self.lock = threading.RLock()
         self._schema()
 
@@ -147,7 +145,10 @@ class IntelligenceStore:
     def record_retrieval(self, request_id: str, symbol: str, request: dict, result: dict, status: str) -> None:
         with self.lock, self.db:
             self.db.execute(
-                "INSERT OR REPLACE INTO retrieval_audit VALUES (?,?,?,?,?,?)",
+                "INSERT INTO retrieval_audit(request_id,symbol,requested_at_utc,request_json,result_json,status) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET "
+                "symbol=excluded.symbol,requested_at_utc=excluded.requested_at_utc,"
+                "request_json=excluded.request_json,result_json=excluded.result_json,status=excluded.status",
                 (request_id, symbol, datetime.now(timezone.utc).isoformat(),
                  canonical(request), canonical(result), status),
             )

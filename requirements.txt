@@ -27,3 +27,4 @@ jupyter>=1.0.0
 ipython>=8.0.0
 black>=23.0.0
 flake8>=6.0.0
+psycopg[binary]>=3.2,<4
