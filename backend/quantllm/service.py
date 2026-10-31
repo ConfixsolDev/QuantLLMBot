@@ -496,6 +496,16 @@ class _Server(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
 
+    def handle_error(self, request, client_address) -> None:
+        """A browser that closes the connection mid-answer (reload, tab closed,
+        a newer refresh replacing an older one) is normal, not an error:
+        Windows reports it as WinError 10053/10054. Log anything else."""
+        import sys
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+            return
+        log.exception("HTTP request from %s failed", client_address)
+
 
 def serve(settings: Settings, use_mt5: bool = True) -> None:
     try:

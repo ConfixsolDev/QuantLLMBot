@@ -243,3 +243,16 @@ def test_replay_clock_check_flags_shifted_bars():
     assert clock_check(utc)["ok"] and len(clock_check(utc)["breaks"]) >= 2
     shifted = [t - 3 * 3600 for t in utc]                                  # the bug seen on 2026-10-31
     assert not clock_check(shifted)["ok"]
+
+
+def test_client_disconnect_is_not_logged_as_an_error(caplog):
+    from quantllm.service import _Server
+    srv = _Server(("127.0.0.1", 0), None)
+    try:
+        try:
+            raise ConnectionAbortedError(10053, "aborted by the software in your host machine")
+        except ConnectionAbortedError:
+            srv.handle_error(None, ("127.0.0.1", 1))
+        assert not caplog.records
+    finally:
+        srv.server_close()
