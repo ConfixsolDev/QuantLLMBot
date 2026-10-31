@@ -1,0 +1,101 @@
+{
+  "config_id": "XAUUSD_STRUCTURE_V1",
+  "symbol": "XAUUSD",
+  "timeframes": {
+    "M1": 1,
+    "M5": 5,
+    "M15": 15,
+    "M30": 30,
+    "H1": 60,
+    "H4": 240
+  },
+  "atr": {
+    "period": 14
+  },
+  "swings": {
+    "strength": {
+      "M1": 3,
+      "M5": 2,
+      "M15": 2,
+      "M30": 2,
+      "H1": 2,
+      "H4": 2
+    },
+    "history": 50
+  },
+  "zones": {
+    "timeframes": [
+      "H4",
+      "H1",
+      "M30"
+    ],
+    "base_max_candles": 3,
+    "base_max_range_atr": 0.8,
+    "departure_max_candles": 3,
+    "departure_min_body_atr": 0.8,
+    "departure_min_move_atr": 2.0,
+    "break_close_buffer_atr": 0.1,
+    "max_age_bars": 300,
+    "max_tests": 3,
+    "merge_overlap_ratio": 0.5
+  },
+  "scoring": {
+    "top_n": 9,
+    "weights": {
+      "freshness": 3.0,
+      "departure": 2.5,
+      "base": 1.0,
+      "volume": 1.0,
+      "room": 1.5,
+      "nesting": 1.0,
+      "liquidity": 1.0,
+      "timeframe": 2.0
+    },
+    "timeframe_weight": {
+      "H4": 1.0,
+      "H1": 0.75,
+      "M30": 0.5
+    },
+    "departure_cap_atr": 6.0,
+    "volume_cap_ratio": 3.0,
+    "volume_lookback": 20,
+    "room_cap_atr": 8.0,
+    "liquidity_proximity_atr": 0.5
+  },
+  "sessions": {
+    "day_start_utc_hour": 0,
+    "windows_utc": {
+      "ASIA": [
+        0,
+        7
+      ],
+      "LONDON": [
+        7,
+        13
+      ],
+      "NEW_YORK": [
+        13,
+        21
+      ]
+    },
+    "history": 30
+  },
+  "patterns": {
+    "atr_timeframe": "M5",
+    "peak_tolerance_atr": 0.35,
+    "min_neckline_depth_atr": 1.5,
+    "prior_move_min_atr": 4.0,
+    "prior_move_lookback_bars": 30,
+    "min_depth_prior_move_ratio": 0.3,
+    "triple_trough_tolerance_atr": 1.0,
+    "min_bars_between_peaks": 5,
+    "max_bars_between_peaks": 120,
+    "confirm_within_bars": 60,
+    "invalidate_beyond_atr": 0.5,
+    "sweep_min_atr": 0.05,
+    "volume_spike_ratio": 1.8,
+    "volume_lookback": 20,
+    "exhaustion_wick_ratio": 0.5,
+    "history": 50
+  }
+}
