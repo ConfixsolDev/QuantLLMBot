@@ -40,8 +40,11 @@ if exist "%RT%\bin\llama-server.exe" (
 if exist "%RT%\models\%MODEL%" (
   echo [ok] model already downloaded
 ) else (
+  rem download to .part and rename only when curl finishes OK, so an
+  rem interrupted download is resumed next run instead of being treated as done
   echo Downloading %MODEL% ^(5.95 GB^) ...
-  curl.exe -L --fail -C - -o "%RT%\models\%MODEL%" "%MODEL_URL%" || goto :fail
+  curl.exe -L --fail --retry 20 --retry-all-errors --retry-delay 5 -C - -o "%RT%\models\%MODEL%.part" "%MODEL_URL%" || goto :fail
+  move /y "%RT%\models\%MODEL%.part" "%RT%\models\%MODEL%" >nul || goto :fail
 )
 
 "%RT%\bin\llama-server.exe" --version
