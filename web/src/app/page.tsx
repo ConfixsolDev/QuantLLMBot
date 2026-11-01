@@ -9,7 +9,7 @@ import SidePanel from "@/components/SidePanel";
 import StructureChart, { type Layers } from "@/components/StructureChart";
 import { fetchChart, fetchHealth, fetchSnapshot, fmtTime, type Chart, type Health, type Snapshot } from "@/lib/api";
 
-const TFS = ["M1", "M5", "M15", "M30", "H1", "H4"];
+const TFS = ["M1", "M15", "M30", "H1", "H4"];   // structure config v2: no M5 (owner: gold does not trade well on M5)
 const LAYER_NAMES: [keyof Layers, string][] = [
   ["trend", "BOS / CHoCH"], ["liquidity", "Liquidity"], ["zones", "Zones"], ["ob", "Order blocks"],
   ["fvg", "FVG"], ["ranges", "Ranges"], ["levels", "Session levels"], ["swings", "Swings"], ["other", "Spikes & patterns"], ["vwap", "VWAP"], ["htf", "HTF levels"],

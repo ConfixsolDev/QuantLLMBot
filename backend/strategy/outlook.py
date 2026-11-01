@@ -71,7 +71,7 @@ def brief(e: dict) -> str | None:
         if k == "level_held":
             return f"{t} {name} held on test {d['test_no']}"
         if k == "level_broken":
-            return f"{t} {name} broken (M5 close) after {d['tests']} tests"
+            return f"{t} {name} broken ({tf} close) after {d['tests']} tests"
         if k == "level_pattern":
             return f"{t} M1 {d['pattern']} at {name}"
         return None
@@ -104,7 +104,7 @@ def market(engine, snapshot: dict, price: float, now: int, exclude_levels: set, 
     if day:
         out["day"] = {"high": _r(day["high"]), "low": _r(day["low"])}
     trend = {}
-    for tf in ("H4", "H1", "M15", "M5"):
+    for tf in ("H4", "H1", "M30", "M15"):
         t = snapshot["trend"].get(tf)
         if not t:
             continue
@@ -131,7 +131,7 @@ def market(engine, snapshot: dict, price: float, now: int, exclude_levels: set, 
                 "src": short_sources(lv["sources"]), "tests": lv["tests"],
                 "atr_away": _r((lv["price"] - price) / atr15, 1) if atr15 else None}
         if (lv["side"] == "high") == (price > lv["price"]):
-            item["beyond"] = True       # price is past it, not yet confirmed broken (M5 close)
+            item["beyond"] = True       # price is past it, not yet confirmed broken (a close beyond)
         levels.append(item)
         if len(levels) >= max_levels:
             break

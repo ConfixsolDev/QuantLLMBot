@@ -106,12 +106,14 @@ def check(text: str, prompt, min_confidence: int) -> Verdict:
 def answer_schema(prompt) -> dict:
     """JSON schema of the answer for one prompt (llama-server json_schema / grammar)."""
     ids = list(prompt.candidate_map) + ["wait"]
-    cite_ids = list(prompt.evidence_map) + [f"{c}.{f}" for c in prompt.candidate_map
-                                             for f in ("rejection", "level", "level.history", "approach",
-                                                       "trade", "obstacles", "stretch_h1atr")]
+    fields = getattr(prompt, "cite_fields", None) or ("rejection", "level", "level.history", "approach",
+                                                        "trade", "obstacles", "stretch_h1atr")
+    cite_ids = list(prompt.evidence_map) + [f"{c}.{f}" for c in prompt.candidate_map for f in fields]
     return {"type": "object",
             "properties": {"decision": {"type": "string", "enum": ids},
-                           "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+                           # 1-100: 0 is a contract error (old doctrine: "if the stack is empty, use
+                           # wait with confidence 1") - Bonsai answered 0 five times in October
+                           "confidence": {"type": "integer", "minimum": 1, "maximum": 100},
                            "cites": {"type": "array", "items": {"type": "string", "enum": cite_ids},
                                      "maxItems": 8},
                            "why": {"type": "string", "maxLength": 200}},

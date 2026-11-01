@@ -2,8 +2,8 @@
 
     strategy             active strategy id (strategy/library/<id>.v<N>.json)
     strategy_version     null = the latest version
-    risk_pct             % of balance risked per trade (demo: may be 10 or more)
-    max_open_positions   1 — one model position at a time (V3 Part E1)
+    risk_pct             % of balance risked per trade (scalping, many trades a day: 2)
+    max_open_positions   how many of OUR positions may be open at once (scalping: 3)
     daily_loss_limit_pct null = off (demo, learning phase); a number turns it on
     magic                MT5 magic number that marks OUR positions
     deviation_points     max slippage MT5 may fill at, in points
@@ -24,10 +24,10 @@ CONFIG_FILE = Path(__file__).resolve().parents[1] / "config" / "trading.json"
 
 @dataclass(frozen=True)
 class TradingSettings:
-    strategy: str = "htf_level_m1_rejection"
+    strategy: str = "m1_probe_failure_scalp"
     strategy_version: int | None = None
-    risk_pct: float = 10.0
-    max_open_positions: int = 1
+    risk_pct: float = 2.0
+    max_open_positions: int = 3
     daily_loss_limit_pct: float | None = None
     magic: int = 26110101
     deviation_points: int = 30

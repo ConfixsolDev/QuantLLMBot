@@ -10,7 +10,8 @@ decisions
 trades
   T1  every trade belongs to a "take" decision (nothing trades without approval)
   T2  stop on the correct side, at least min_stop_atr x ATR from the trigger close
-      (stop_mode "atr"), at most max_stop_atr (stop_mode "beyond_higher_level")
+      (stop_mode "atr"), at most max_stop_atr (stop_mode "beyond_higher_level", and
+      always for m1_probe_failure, whose ATR is ATR(M1))
   T3  target = trigger close -+ target_r x risk (rules.target "r_multiple")
   T4  money at risk <= balance x risk_pct (the size never exceeds the budget)
   T5  filled within the entry window after the rejection candle closed
@@ -18,7 +19,9 @@ trades
   T7  every closed trade has a complete P&L and an R multiple
   T8  stop / target exits happen at the stop / target price; a stop costs about -1 R
       (a little less: the risk money includes the spread + slippage allowance)
-  T9  no "stalled" early close when the strategy has close_on_stalled_followthrough off
+  T9  an early close by the strategy only when the strategy has one: the time cap
+      (m1_probe_failure: max_hold_bars after the fill) or the stalled rejection
+      (close_on_stalled_followthrough)
 """
 
 from __future__ import annotations
@@ -57,7 +60,7 @@ def verify(strategy, settings, journal) -> list[str]:
             continue
         if risk < r["min_stop_atr"] * atr - 0.005:            # prices are rounded to 3 decimals
             bad.append(f"T2 trade {tid}: stop {risk / atr:.2f} ATR < min {r['min_stop_atr']}")
-        if m.get("stop_source", "atr").startswith("beyond") \
+        if (m.get("stop_source", "atr").startswith("beyond") or r["kind"] == "m1_probe_failure") \
                 and risk > r["max_stop_atr"] * atr + 0.005:
             bad.append(f"T2 trade {tid}: stop {risk / atr:.2f} ATR > max {r['max_stop_atr']}")
         if r["target"] == "r_multiple":
@@ -79,8 +82,14 @@ def verify(strategy, settings, journal) -> list[str]:
                     bad.append(f"T8 trade {tid}: {t['close_reason']} exit at {t.get('exit_price')} not {want}")
                 if t["close_reason"] == "stop" and not -1 - TOL_R <= t["r_multiple"] <= -1 + TOL_R + 0.25:
                     bad.append(f"T8 trade {tid}: stop exit at {t['r_multiple']} R")
-            if t["close_reason"] == "strategy_close" and not r["close_on_stalled_followthrough"]:
-                bad.append(f"T9 trade {tid}: closed early although early closes are off")
+            if t["close_reason"] == "strategy_close":
+                cap = r.get("max_hold_bars")
+                held = (t.get("closed_at") or 0) - t["opened_at"]
+                if cap is not None:
+                    if held < cap * 60 - 60:
+                        bad.append(f"T9 trade {tid}: closed by the strategy after {held} s < time cap {cap} min")
+                elif not r.get("close_on_stalled_followthrough"):
+                    bad.append(f"T9 trade {tid}: closed early although early closes are off")
     open_at = []
     for t in trades:
         open_at = [x for x in open_at if x > t["opened_at"]]

@@ -29,13 +29,14 @@ What happens inside one push(bar)
     3b. HTF levels      H1/H4 swing + session/day/week levels see the M1 bar:
                         tests (with approach, stretch, trend), M1 rejections,
                         follow-through, held (levels.py)
-    4. higher TFs       aggregate M1 -> M5..H1, and closed H1 -> H4 on the
+    4. higher TFs       aggregate M1 -> M15..H1 (v1: M5..H1), and closed H1 -> H4 on the
                         New York grid; for each bar that CLOSED now:
                         ATR, swings, then the structure layer (_structure):
                         displacement, FVG, BOS/CHoCH + order blocks, liquidity
-                        pools with sweeps / false / accepted breaks (on M5),
-                        VWAP crosses / band rejections (on M5), HTF level
-                        breaks (on M5), ranges; new H1/H4 swings become HTF
+                        pools with sweeps / false / accepted breaks, VWAP
+                        crosses / band rejections and HTF level breaks on the
+                        detection timeframe (v1: M5; v2: M1, step 3c), ranges;
+                        new swings of htf_levels.swing_timeframes become HTF
                         levels; then close-spike detection on H1/H4, and on
                         zone timeframes: age + new zones
     return the events produced by this bar
@@ -193,12 +194,14 @@ class StructureEngine:
                                            key=f"{lv.id}:{pat.id}"))
 
         # 3b. higher-timeframe levels meet this M1 bar (tests, rejections, holds)
-        trends = {tf: self.trend[tf].state for tf in ("M15", "H1", "H4") if tf in self.trend}
+        trends = {tf: self.trend[tf].state for tf in ("M15", "M30", "H1", "H4") if tf in self.trend}
         for kind, lv, data in self.levels.on_m1(bar, self.now, self._lv_atr(), self.atr["H1"].value, trends):
             events.append(self._ev(kind, "M1", bar.time, {"level": lv.as_dict(), **data},
                                    key=f"{lv.id}:{data.get('test_no')}:{kind}"))
         self.atr["M1"].update(bar)
         self.vwap.on_m1(bar)                      # VWAPs include this closed minute
+        # 3c. close-based detection on M1 itself (config v2: no M5 anywhere)
+        events.extend(self._detect("M1", bar, atr_before["M1"]))
 
         # 4. higher timeframes that closed with this minute
         zone_tfs = set(self.cfg["zones"]["timeframes"])
@@ -270,6 +273,23 @@ class StructureEngine:
             for eq in self.liquidity.add_swings(tf, new_swings, atr, self.now):
                 kind = "equal_highs" if eq["pool"]["side"] == "high" else "equal_lows"
                 ev.append(self._ev(kind, tf, eq["times"][0], eq, key=eq["pool"]["id"]))
+        ev.extend(self._detect(tf, bar, atr))
+        if tf in self.ranges:
+            for kind, data in self.ranges[tf].on_bar(bar, atr, self.now):
+                ev.append(self._ev(kind, tf, data["start"], data, key=f"{kind}:{bar.time}"))
+                if kind == "range_formed":
+                    self.liquidity.add("range_high", "high", data["top"], tf, data["start"], self.now)
+                    self.liquidity.add("range_low", "low", data["bottom"], tf, data["start"], self.now)
+        return ev
+
+    def _detect(self, tf: str, bar: Bar, atr: float | None) -> list[Event]:
+        """Close-based judgements on the configured DETECTION timeframe(s): liquidity
+        sweeps / breaks, HTF-level breaks, VWAP crosses and band rejects.
+
+        Config v1 judged all three on M5 closes. Config v2 (scalping; the owner:
+        "gold does not trade well on M5") judges them on M1 closes, so this is
+        also called for every M1 bar (with ATR(M1) as of before the bar)."""
+        cfg, ev = self.cfg, []
         if tf == cfg["liquidity"]["detect_timeframe"]:
             for kind, side, data in self.liquidity.on_detect_bar(bar, atr, self.now):
                 ev.append(self._ev(kind, tf, bar.time, data, key=side))
@@ -279,12 +299,6 @@ class StructureEngine:
         if tf == cfg["vwap"]["detect_timeframe"]:
             for kind, data in self.vwap.on_detect_bar(bar, atr):
                 ev.append(self._ev(kind, tf, bar.time, data, key=f"{data['anchor']}:{kind}:{data.get('side') or data.get('direction')}"))
-        if tf in self.ranges:
-            for kind, data in self.ranges[tf].on_bar(bar, atr, self.now):
-                ev.append(self._ev(kind, tf, data["start"], data, key=f"{kind}:{bar.time}"))
-                if kind == "range_formed":
-                    self.liquidity.add("range_high", "high", data["top"], tf, data["start"], self.now)
-                    self.liquidity.add("range_low", "low", data["bottom"], tf, data["start"], self.now)
         return ev
 
     def _lv_atr(self) -> float | None:

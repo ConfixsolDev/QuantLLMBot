@@ -1,7 +1,7 @@
 """Strict configuration loader for the structure engine.
 
 RULE 3 of Module 1: *no hard-coded thresholds*. Every number a detector uses
-comes from a versioned JSON file (``config/xauusd_structure_v1.json``), and
+comes from a versioned JSON file (``config/xauusd_structure_v2.json``; v1 is kept for reference), and
 
 * an UNKNOWN key fails at load time  (catches typos like ``"max_tset"``),
 * a MISSING key fails at load time   (no silent defaults hiding in code),
@@ -24,7 +24,7 @@ from typing import Any
 
 #: The config shipped with the package. Pass another path to load_config()
 #: to experiment; the hash keeps experiments apart.
-DEFAULT_CONFIG = Path(__file__).resolve().parent / "config" / "xauusd_structure_v1.json"
+DEFAULT_CONFIG = Path(__file__).resolve().parent / "config" / "xauusd_structure_v2.json"
 
 # --------------------------------------------------------------------------
 # Schema markers. A schema is a nested dict whose leaves describe the value:
@@ -246,6 +246,7 @@ def build_config(raw: dict) -> StructureConfig:
     """Validate an in-memory config dict (see load_config)."""
     if not isinstance(raw, dict) or "timeframes" not in raw:
         raise ConfigError("config must be an object with 'timeframes'")
+    raw = {k: v for k, v in raw.items() if not k.startswith("_")}     # "_readme" etc.: notes, not settings
     tfs = set(raw["timeframes"]) if isinstance(raw["timeframes"], dict) else set()
     _check(raw, SCHEMA, "config", tfs)
     if raw["timeframes"].get("M1") != 1:

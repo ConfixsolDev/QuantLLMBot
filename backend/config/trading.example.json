@@ -1,9 +1,9 @@
 {
-  "_readme": "Copy to trading.json and edit. mode: off = no trading pipeline; paper = live bars, simulated broker; demo = MT5 DEMO account (a live account is always refused). risk_pct is % of balance risked per trade. daily_loss_limit_pct: null = off.",
-  "strategy": "htf_level_m1_rejection",
+  "_readme": "Copy to trading.json and edit. mode: off = no trading pipeline; paper = live bars, simulated broker; demo = MT5 DEMO account (a live account is always refused). risk_pct is % of balance risked per trade; max_open_positions how many may run at once (scalping: 2% and 3). daily_loss_limit_pct: null = off.",
+  "strategy": "m1_probe_failure_scalp",
   "strategy_version": null,
-  "risk_pct": 10.0,
-  "max_open_positions": 1,
+  "risk_pct": 2.0,
+  "max_open_positions": 3,
   "daily_loss_limit_pct": null,
   "magic": 26110101,
   "deviation_points": 30,

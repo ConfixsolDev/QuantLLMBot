@@ -81,12 +81,13 @@ def audit(m1_paths, events_path, show: int = 10) -> dict:
     return audit_events(RecordedFeed(m1_paths), events, show)
 
 
-def audit_events(m1_bars, events: list[dict], show: int = 10) -> dict:
-    """Audit in-memory events (Event.as_dict) against in-memory M1 bars."""
+def audit_events(m1_bars, events: list[dict], show: int = 10, cfg=None) -> dict:
+    """Audit in-memory events (Event.as_dict) against in-memory M1 bars (``cfg``: the
+    structure config that produced them; default = the default config)."""
     candles = build_candles(m1_bars)
     sorted_times = {tf: sorted(c) for tf, c in candles.items()}
     checks, fails, info = Counter(), defaultdict(list), Counter()
-    strength = load_config()["swings"]["strength"]
+    strength = (cfg or load_config())["swings"]["strength"]
 
     def same(c: dict | None, d: dict) -> bool:
         return c is not None and all(abs(c[k] - d[k]) < 1e-9 for k in ("open", "high", "low", "close"))
@@ -115,7 +116,7 @@ def audit_events(m1_bars, events: list[dict], show: int = 10) -> dict:
             # informational: did an earlier candle already close beyond it
             # after the swing was confirmed? (allowed by the trend rules,
             # e.g. while the trend pointed the other way)
-            known = d["level_time"] + (strength[tf] + 1) * TF_MIN[tf] * 60
+            known = d["level_time"] + (strength.get(tf, 2) + 1) * TF_MIN[tf] * 60
             for t in sorted_times[tf]:
                 if known <= t < d["break_time"]:
                     cc = cs[t]["close"]

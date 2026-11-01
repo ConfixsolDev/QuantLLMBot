@@ -1,0 +1,266 @@
+{
+  "_readme": "v2 (2026-11-01, scalping): the owner trades gold on M1 with structure from M15, M30, H1 and H4 - 'gold does not trade well on M5'. So M5 is gone: no M5 candles, swings, trend, FVG or displacement. Close-based judgements (liquidity sweeps/breaks, VWAP crosses/band rejects, HTF level breaks) are made on M1 closes (ATR(M1) ruler for liquidity/VWAP, ATR(M15) for levels). HTF levels also come from M15 and M30 swings (more scalp locations). M1 patterns measure in ATR(M15) instead of ATR(M5) (thresholds scaled by ~1/1.7). v1 stays for reference and tests.",
+  "config_id": "xauusd_structure_v2",
+  "symbol": "XAUUSD",
+  "timeframes": {
+    "M1": 1,
+    "M15": 15,
+    "M30": 30,
+    "H1": 60,
+    "H4": 240
+  },
+  "alignment": {
+    "H4": {
+      "source": "H1",
+      "timezone": "America/New_York",
+      "open_hours_local": [
+        2,
+        6,
+        10,
+        14,
+        18,
+        22
+      ]
+    }
+  },
+  "atr": {
+    "period": 14
+  },
+  "swings": {
+    "strength": {
+      "M1": 3,
+      "M15": 2,
+      "M30": 2,
+      "H1": 2,
+      "H4": 2
+    },
+    "history": 50
+  },
+  "zones": {
+    "timeframes": [
+      "H4",
+      "H1",
+      "M30"
+    ],
+    "base_max_candles": 3,
+    "base_max_range_atr": 0.8,
+    "departure_max_candles": 3,
+    "departure_min_body_atr": 0.8,
+    "departure_min_move_atr": 2.0,
+    "break_close_buffer_atr": 0.1,
+    "max_age_bars": 300,
+    "max_tests": 3,
+    "merge_overlap_ratio": 0.5
+  },
+  "scoring": {
+    "top_n": 9,
+    "weights": {
+      "freshness": 3.0,
+      "departure": 2.5,
+      "base": 1.0,
+      "volume": 1.0,
+      "room": 1.5,
+      "nesting": 1.0,
+      "liquidity": 1.0,
+      "timeframe": 2.0
+    },
+    "timeframe_weight": {
+      "H4": 1.0,
+      "H1": 0.75,
+      "M30": 0.5
+    },
+    "departure_cap_atr": 6.0,
+    "volume_cap_ratio": 3.0,
+    "volume_lookback": 20,
+    "room_cap_atr": 8.0,
+    "liquidity_proximity_atr": 0.5
+  },
+  "displacement": {
+    "timeframes": [
+      "M15",
+      "M30",
+      "H1",
+      "H4"
+    ],
+    "min_body_atr": 1.2,
+    "min_body_ratio": 0.6
+  },
+  "trend": {
+    "timeframes": [
+      "M15",
+      "M30",
+      "H1",
+      "H4"
+    ],
+    "break_buffer_atr": 0.0,
+    "history": 30
+  },
+  "fvg": {
+    "timeframes": [
+      "M15",
+      "M30",
+      "H1",
+      "H4"
+    ],
+    "min_gap_atr": 0.25,
+    "max_age_bars": 200
+  },
+  "order_blocks": {
+    "timeframes": [
+      "M15",
+      "M30",
+      "H1",
+      "H4"
+    ],
+    "lookback_bars": 10,
+    "require_displacement": true,
+    "break_buffer_atr": 0.1,
+    "max_age_bars": 300,
+    "max_tests": 3
+  },
+  "liquidity": {
+    "detect_timeframe": "M1",
+    "swing_timeframes": [
+      "M15",
+      "H1",
+      "H4"
+    ],
+    "equal_timeframes": [
+      "M15",
+      "H1"
+    ],
+    "equal_tolerance_atr": 0.15,
+    "equal_lookback_swings": 6,
+    "min_pierce_atr": 0.05,
+    "break_buffer_atr": 0.05,
+    "reclaim_buffer_atr": 0.0,
+    "false_break_bars": 5,
+    "max_age_hours": 72
+  },
+  "ranges": {
+    "timeframes": [
+      "M15",
+      "H1"
+    ],
+    "window_bars": 20,
+    "max_width_atr": 3.0,
+    "touch_tolerance_atr": 0.25,
+    "min_touches": 3,
+    "break_buffer_atr": 0.1,
+    "max_bars": 200
+  },
+  "vwap": {
+    "anchors": [
+      "day",
+      "week",
+      "session"
+    ],
+    "day_anchor": {
+      "timezone": "America/New_York",
+      "hour": 17
+    },
+    "bands": [
+      1.0,
+      2.0
+    ],
+    "detect_timeframe": "M1",
+    "cross_buffer_atr": 1.0,
+    "reject_band": 2.0,
+    "min_bars": 30
+  },
+  "sessions": {
+    "week_anchor": {
+      "timezone": "America/New_York",
+      "weekday": 6,
+      "hour": 17
+    },
+    "day_start_utc_hour": 0,
+    "windows_utc": {
+      "ASIA": [
+        0,
+        7
+      ],
+      "LONDON": [
+        7,
+        13
+      ],
+      "NEW_YORK": [
+        13,
+        21
+      ]
+    },
+    "history": 30
+  },
+  "close_spikes": {
+    "timeframes": [
+      "H1",
+      "H4"
+    ],
+    "window_minutes": 10,
+    "atr_timeframe": "H1",
+    "min_move_atr": 0.75,
+    "min_move_price": 0.0,
+    "held_close_fraction": 0.25,
+    "horizons_minutes": [
+      15,
+      60,
+      240
+    ],
+    "reversal_retrace": 1.0,
+    "volume_lookback": 60,
+    "level_lookback_hours": 24
+  },
+  "patterns": {
+    "atr_timeframe": "M15",
+    "peak_tolerance_atr": 0.2,
+    "min_neckline_depth_atr": 0.9,
+    "prior_move_min_atr": 2.4,
+    "prior_move_lookback_bars": 30,
+    "min_depth_prior_move_ratio": 0.3,
+    "triple_trough_tolerance_atr": 0.6,
+    "min_bars_between_peaks": 5,
+    "max_bars_between_peaks": 120,
+    "confirm_within_bars": 60,
+    "invalidate_beyond_atr": 0.3,
+    "sweep_min_atr": 0.03,
+    "volume_spike_ratio": 1.8,
+    "volume_lookback": 20,
+    "exhaustion_wick_ratio": 0.5,
+    "history": 50
+  },
+  "htf_levels": {
+    "swing_timeframes": [
+      "M15",
+      "M30",
+      "H1",
+      "H4"
+    ],
+    "session_levels": true,
+    "atr_timeframe": "M15",
+    "merge_tolerance_atr": 0.3,
+    "touch_tolerance_atr": 0.1,
+    "reset_atr": 1.0,
+    "min_minutes_between_tests": 15,
+    "hold_atr": 1.0,
+    "break_timeframe": "M1",
+    "break_buffer_atr": 0.15,
+    "max_age_hours": 120,
+    "approach_bars": 20,
+    "push": {
+      "min_move_atr": 1.5,
+      "min_efficiency": 0.35
+    },
+    "squeeze": {
+      "min_pressing_bars": 6,
+      "max_range_ratio": 0.8,
+      "min_drift_atr": 0.3
+    },
+    "stretch_lookback_hours": 24,
+    "rejection_within_bars": 10,
+    "rejection_min_pierce_atr": 0.05,
+    "followthrough_bars": 3,
+    "followthrough_atr": 0.5,
+    "pattern_link_atr": 0.5,
+    "pattern_link_hours": 1
+  }
+}

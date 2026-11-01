@@ -18,7 +18,8 @@
 | Start | `Start-QuantLLM.bat` (repository root) → website http://127.0.0.1:8765/ |
 | Database | existing PostgreSQL / TimescaleDB, schema `structure` (Part C2) |
 | MT5 connection | `backend/config/mt5_connection.json` (Part D) |
-| Structure config | `backend/structure_engine/config/xauusd_structure_v1.json` (Part B) |
+| Structure config | `backend/structure_engine/config/xauusd_structure_v2.json` — scalping, no M5 (F7); v1 kept for reference |
+| Active strategy | `m1_probe_failure_scalp` v1 — M1 scalps at mapped locations (F7) |
 
 **Contents** — Part A rules · Part B the structure engine · Part C the
 application (database, service, website, launcher) · Part D MT5 connection ·
@@ -607,7 +608,7 @@ Development: `cd web && npm run dev` with `NEXT_PUBLIC_API_BASE=http://127.0.0.1
 * Start: double-click `Start-QuantLLM.bat`. It checks the database variable,
   installs missing Python packages, builds the website once (needs Node.js),
   opens the browser and runs the service.
-* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests strategy/tests llm/tests trading/tests -q` (88 tests).
+* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests strategy/tests llm/tests trading/tests -q` (99 tests).
   The database tests use `QUANTLLM_TEST_DSN` (schema `quantllm_test`) or the
   `pgserver` package; they never touch the real schema.
 * Verified 2026-10-31 on 100,000 real XAUUSD M1 bars in PostgreSQL 16:
@@ -990,6 +991,81 @@ holds the engine lock while the model thinks (the website kept answering);
 fills are stamped at the decision time; the service pings the model at start
 and shows its file / reasoning setting (or "NOT reachable") in `/api/trading`.
 
+### F7. Scalping: structure config v2 and `m1_probe_failure_scalp` (2026-11-01)
+
+**Why.** The October day-by-day test (F6) proved the platform (22 days, 111
+answers, 0 invalid, 0 crashes, ~10 s per answer) and showed the strategy was
+wrong: v3 asked ~5 times a day and the model said "wait" 111 times out of
+111. Its doctrine said "waiting costs nothing" and counted a first test
+against the trade. The owner: *"with this system we are focusing scalping,
+not swing or day trades"*; *"the lowest time is M1; gold does not trade well
+on M5; M1, M15, M30, H1 and H4 are the timeframes to consider"*. The old
+system that was positive in August 2026 (+1,694 USD on 384 trades; July
+−2,200) was an M1 scalper: median hold 3.2 minutes, 90 % closed within 10,
+stops ~$3.5, ~18 fills a day.
+
+**Structure config v2** (`xauusd_structure_v2.json`, now the default):
+timeframes M1, M15, M30, H1, H4, so there are no M5 candles, swings,
+trend, FVGs or displacement. Liquidity sweeps and breaks, VWAP crosses and
+band rejects, and HTF-level breaks are judged on **M1 closes**
+(`engine._detect`, called for every M1 bar and for the configured higher
+timeframes). The ruler is ATR(M1) for liquidity and VWAP and ATR(M15) for
+levels; a level breaks on an M1 close 0.15 ATR(M15) beyond it. HTF levels
+also come from M15 and M30 swings. M1 patterns measure in ATR(M15). The v1
+mechanism tests run on v1; new tests cover v2. On May–Jul 2026 the
+real-data audit shows 0 failures over 8,700 checked events.
+
+**Strategy `m1_probe_failure_scalp` v1** (`strategy/scalp.py`):
+* **Candidate** = one completed M1 *probe and failure*, the old doctrine's
+  execution trigger. An M1 candle went beyond a mapped location and closed
+  back: a `level_rejection` (M15–H4 swing, session, day or week level), a
+  `liquidity_sweep`, a `false_break`, or a day/week/session VWAP 2 sd
+  `vwap_band_reject`. All triggers of one side in one bar make one
+  candidate, which lists every location. The model is asked at once.
+* **Prices (code):**
+  * Stop beyond the candle's extreme, at least 1.2 ATR(M1) from its close
+    (about $2–5; the owner's minimum for gold noise). A candle needing more
+    than 4 ATR is not offered.
+  * Target 1 R.
+  * Entry = the close ± 0.5 ATR(M1), valid 2 M1 bars.
+  * Time cap: after 30 M1 bars the trade is closed at market (verify T9
+    allows exactly this early close).
+* **Five checks**, code-measured facts in the prompt:
+  * confluence: 2+ probe-failures on the side within 3 min;
+  * wick ≥ ½ of the candle;
+  * the candle closed in the trade's direction;
+  * volume ≥ 2× the last 20 M1 bars;
+  * stretched: price ran ≥ 4 ATR(M1) into the location in 15 min.
+* **Study** (May–Jul 2026, take every trigger, $0.25 spread, 1 R / 30 min):
+  * 38.7 triggers a day at −0.03 R.
+  * 3+ checks: 53.5 % won, +0.10 R (n = 739, positive in each month).
+  * 2 checks: −0.06 R; 0–1 checks: −0.09 R.
+  * Trend alignment did *not* separate outcomes at this scale. Against the
+    H1 trend: −0.01 R; with it: −0.06 R.
+
+  So the thesis (H4/H1 bias) is shown as context, not used as a filter.
+  `min_checks` 2 drops the 0–1 group before the model is asked.
+* **Doctrine**, carried over from the old `qwen_cached_entry` v1.20 /
+  `decisiveness_contract` v2.0:
+  * be decisive at a complete trigger;
+  * never wait for a better price or another candle;
+  * a wait names ONE concrete contradiction;
+  * confidence anchors (3+ checks with support 65–75, 2 checks 45–55,
+    0–1 about 30);
+  * confidence 0 is a contract error (the JSON schema minimum is now 1).
+* **Pipeline baseline** (take-all through the real pipeline, paper broker,
+  May–Jul):
+  * 17.3 trades a day, 0 platform issues.
+  * −0.05 R for 2 checks, +0.02 R for 3+ checks (fills at the trigger
+    close, all costs in R).
+  * The model has to add the judgement; taking everything does not pay.
+* **Trading settings:** risk 2 % per trade, up to 3 positions open
+  (`trading.example.json`).
+
+Measure the model offline: `python -m strategy.dataset --db --from D --to D
+--out <dir>`, then `python -m llm bench --dataset <dir> --n 100`. Measure the
+platform: `Test-Days.bat`.
+
 ### F4. Running it
 
 1. `python -m llm ping` — model server reachable (Start-LLM.bat, config/llm.json).
@@ -1002,6 +1078,12 @@ and shows its file / reasoning setting (or "NOT reachable") in `/api/trading`.
 ---
 
 ## Appendix — History
+
+- **Scalping (2026-11-01, evening):** owner: scalping only, structure on
+  M1/M15/M30/H1/H4, no M5. Structure config v2 (M1-close detection, M15/M30
+  swing levels), strategy `m1_probe_failure_scalp` v1 with five measured
+  checks, 2 % risk and 3 open positions; the October test of v3 (0 takes in
+  111) and the comparison with the old system's August scalping (F7).
 
 **V2 (2026-08-17)** was written around a forensic audit of live demo trading
 and fixed these problems in phases (full text in git history):

@@ -72,7 +72,7 @@ class StrategyRunner:
     def __init__(self, strategy, session_of: Callable[[int], str | None], history: int = 600) -> None:
         self.s = strategy
         self.session_of = session_of
-        self.at_rejection = strategy.rules["decision_point"] == "rejection"
+        self.at_rejection = strategy.rules.get("decision_point", "rejection") == "rejection"
         self.recent: deque[Ev] = deque(maxlen=history)
         self.level_tests: dict[str, dict[int, dict]] = {}   # level id -> test no -> {time, rej, ft, held, broken}
         self.active: dict[str, cands.Candidate] = {}
@@ -193,7 +193,7 @@ class StrategyRunner:
 
         1. M1 patterns that formed AT the candidate's level (its tests and
            rejections are already in the candidate itself, not repeated here)
-        2. the latest BOS/CHoCH on H4, H1, M30, M15 (one each) and on M5 (two)
+        2. the latest BOS/CHoCH on H4, H1, M30 (one each) and on M15 (two)
         3. liquidity events (sweeps, false breaks, taken) within 3 ATR of price, last 3 h
         4. M1 patterns / patterns at a level, last hour; day/week VWAP band rejects, last 30 min
         5. anything else recent, to fill the budget
@@ -214,7 +214,7 @@ class StrategyRunner:
             if ev.level_id in levels and ev.kind == "level_pattern" and ev.time >= now - 3600:
                 add(ev)
         rec = list(self.recent)[::-1]
-        need = {"H4": 1, "H1": 1, "M30": 1, "M15": 1, "M5": 2}
+        need = {"H4": 1, "H1": 1, "M30": 1, "M15": 2}
         for ev in rec:
             if ev.kind in ("bos", "choch") and need.get(ev.tf, 0) > 0:
                 need[ev.tf] -= 1
@@ -241,3 +241,11 @@ def age(seconds: int) -> str:
     """Readable age: 7m, 3h, 4d (huge minute counts are hard for a model to compare)."""
     m = max(0, seconds) // 60
     return f"{m}m" if m < 120 else f"{m // 60}h" if m < 72 * 60 else f"{m // 1440}d"
+
+
+def make_runner(strategy, engine) -> StrategyRunner:
+    """The runner for the strategy's kind (pipeline, dataset, preview all use this)."""
+    if strategy.rules["kind"] == "m1_probe_failure":
+        from .scalp import ScalpRunner
+        return ScalpRunner(strategy, engine._session_name, lambda: engine.levels.m1)
+    return StrategyRunner(strategy, engine._session_name)

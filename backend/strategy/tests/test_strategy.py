@@ -56,8 +56,11 @@ class FakeEngine:
 
     def __init__(self):
         from structure_engine.bars import Bar
-        self.hist = {"M15": [(Bar(T0 - 900 * i, 1998, 2000, 1996, 1999, 100), None) for i in range(4)],
-                     "M5": [(Bar(T0 - 300 * i, 1998, 2000, 1996, 1999, 1000), None) for i in range(12)]}
+        self.hist = {"M15": [(Bar(T0 - 900 * i, 1998, 2000, 1996, 1999, 100), None) for i in range(4)]}
+
+        class levels:                                   # the last closed M1 bars (average volume 200)
+            m1 = [Bar(T0 - 60 * i, 1998, 2000, 1996, 1999, 200) for i in range(60, 0, -1)]
+        self.levels = levels
 
     def snapshot(self):
         return SNAP

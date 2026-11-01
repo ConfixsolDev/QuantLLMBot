@@ -1,0 +1,76 @@
+{
+ "_readme": "v1 (2026-11-01). The owner's system is a SCALPER: 'with this system we are focusing scalping, not swing or day trades'; structure on H4/H1/M30/M15, timing on M1, no M5. Replaces htf_level_m1_rejection v3, which asked ~5 times a day and got 'wait' 111/111 in October 2026 (its doctrine said 'waiting costs nothing' and counted a first test against the trade). Carried over from the old system (store/sop.md qwen_cached_entry v1.20, decisiveness_contract v2.0): one completed M1 probe-and-failure at a mapped location is the execution trigger; never wait only for a better price or another candle; a wait names one concrete contradiction; confidence anchors; confidence 0 is a contract error. Geometry and checks from the study on May-Jul 2026 (strategy/scalp.py docstring): take-all ~39 candidates/day at -0.03 R; 3+ checks +0.10 R. 'rules' is evaluated by code; 'doctrine' + 'legend' are what the model reads.",
+ "id": "m1_probe_failure_scalp",
+ "version": 1,
+ "name": "M1 probe-and-failure scalp at mapped gold locations",
+ "rules": {
+  "kind": "m1_probe_failure",
+  "triggers": [
+   "level_rejection",
+   "liquidity_sweep",
+   "false_break",
+   "vwap_band_reject"
+  ],
+  "vwap_anchors": [
+   "day",
+   "week",
+   "session"
+  ],
+  "sides": [
+   "buy",
+   "sell"
+  ],
+  "sessions": [
+   "ASIA",
+   "LONDON",
+   "NEW_YORK",
+   "OFF"
+  ],
+  "atr_timeframe": "M1",
+  "entry_window_bars": 2,
+  "entry_slack_atr": 0.5,
+  "stop_buffer_atr": 0.1,
+  "min_stop_atr": 1.2,
+  "max_stop_atr": 4.0,
+  "target": "r_multiple",
+  "target_r": 1.0,
+  "max_hold_bars": 30,
+  "confluence_minutes": 3,
+  "min_checks": 2,
+  "min_confidence": 51,
+  "max_candidates": 2
+ },
+ "prompt": {
+  "max_bytes": 6000,
+  "max_levels": 4,
+  "max_evidence": 10
+ },
+ "doctrine": [
+  "You judge ONE gold (XAUUSD) SCALP. Structure: H4, H1, M30, M15 give location and context; M1 gives timing. M5 is not used.",
+  "Each candidate is a COMPLETED M1 probe-and-failure: an M1 candle went beyond a mapped location (a higher-timeframe level, a liquidity pool, a VWAP 2sd band) and closed back. If you answer its id, code enters at once at market. Stop: beyond the probe candle, at least 1.2 ATR(M1). Target: 1R. Not finished after 30 minutes = closed at market. You never change prices.",
+  "Your question: will this failure give a quick 1R move away from the location before price comes back through it?",
+  "The five checks are measured by code. On May-Jul 2026 gold, taking every candidate: 3+ checks passed won 53.5% (+0.10 R per trade); 2 passed lost (-0.06 R); 0-1 lost more. confluence = 2+ probe-failures on this side within 3 min; wick = rejection wick >= half the candle; close_against_probe = the candle closed in the trade's direction; volume = >= 2x the last 20 M1 bars; stretched = price ran >= 4 ATR(M1) into the location in the last 15 min (fading exhaustion).",
+  "Context: a location that held on earlier tests is stronger; several sources at one price (at list) is stronger; obstacles nearer than the target cut the room. The thesis (H4/H1 bias) is context, not a veto: at this 1R / 30 min scale fades against the H1 trend did no worse than with it. When two candidates are offered, prefer the one with more checks, then the one with the thesis.",
+  "Be decisive. Take when 3+ checks passed and nothing concrete contradicts it. Take 2 checks only with clear extra support (held level, thesis aligned, several sources, full room). The trigger is complete and the entry window is 2 minutes: never wait for a better price, another candle or more confirmation. A wait must name ONE concrete contradiction from the prompt (e.g. an obstacle 0.4R away, a fresh M15 BOS through the location).",
+  "Confidence 1-100 = how likely the target comes before the stop. Anchors: 3+ checks with supporting context 65-75; 3 checks with one contradiction about 50; 2 checks 45-55; 0-1 checks about 30. A trade needs 51+. Never answer 0.",
+  "Cite what you used: candidate facts (C1.checks, C1.at, C1.candle, C1.trade, C1.obstacles) and evidence ids (E1 ...). Use only supplied facts; never invent levels, news or prices."
+ ],
+ "legend": [
+  "Prices in USD; *_atr in ATR(M1) unless named; usd_away = price minus the current price; ages in m(inutes), h(ours), d(ays).",
+  "market.thesis: code's direction read (bias buy/sell/none) from H4 and H1 trend; M15 against it = pullback.",
+  "trend.<tf>: dir from BOS/CHoCH on that timeframe; protected = the swing whose break flips it.",
+  "vwap.<anchor>: VWAP price; sd_away = standard deviations price is from it (+ above).",
+  "candidate.at: the mapped locations the M1 candle probed and failed at (level rejection with its test number and earlier tests in history, liquidity sweep, false break, VWAP band reject).",
+  "candidate.candle: triggers_in_window (probe-failures on this side, last 3 min), wick (0-1), close_vs_open, vol_x (volume / last 20 M1 bars), into_15m_atr (move into the location, last 15 M1 bars), range_atr, poke_atr (how far beyond the location).",
+  "candidate.trade: entry = probe candle close, stop, target, risk_usd, stop_atr, rr, max_hold_min.",
+  "obstacles: prices between entry and target that may stop the move (usd_away from entry)."
+ ],
+ "answer": {
+  "decision": "a candidate id (C1 ...) or \"wait\"",
+  "confidence": "integer 1-100",
+  "cites": [
+   "candidate facts / evidence ids used"
+  ],
+  "why": "one short sentence, at most 200 characters"
+ }
+}

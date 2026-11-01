@@ -37,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from . import load, template  # noqa: E402
-from .runner import StrategyRunner  # noqa: E402
+from .runner import make_runner  # noqa: E402
 
 MAX_HOLD_BARS = 480            # time-out: 8 hours
 EXCURSION_BARS = 60
@@ -46,9 +46,12 @@ EXCURSION_BARS = 60
 class Labeller:
     """Follows each offered candidate forward on M1 bars until its simulated trade ends."""
 
-    def __init__(self, spread: float, close_on_stalled: bool = True) -> None:
+    def __init__(self, spread: float, close_on_stalled: bool = True, max_hold: int = MAX_HOLD_BARS,
+                 wait_for_level: bool = True) -> None:
         self.spread = spread
         self.close_on_stalled = close_on_stalled
+        self.max_hold = max_hold                   # scalps: the strategy's time cap (30 M1 bars)
+        self.wait_for_level = wait_for_level       # level strategies also record held / broken
         self.open: list[dict] = []
         self.done: dict[str, dict] = {}            # prompt id -> {label: outcome}
 
@@ -91,12 +94,13 @@ class Labeller:
                 t["out"] = ("target", t["target"])
             elif t["ft"] == "stalled" and self.close_on_stalled:
                 t["out"] = ("stalled", bar.close + (self.spread if s < 0 else 0))
-            elif t["bars"] >= MAX_HOLD_BARS:
+            elif t["bars"] >= self.max_hold:
                 t["out"] = ("timeout", bar.close + (self.spread if s < 0 else 0))
         keep = []
         for t in self.open:
-            finished = t["out"] is not None and t["bars"] >= EXCURSION_BARS and t["lvl"] != "open"
-            if finished or t["bars"] >= MAX_HOLD_BARS:
+            finished = t["out"] is not None and (not self.wait_for_level or
+                                                 (t["bars"] >= EXCURSION_BARS and t["lvl"] != "open"))
+            if finished or t["bars"] >= max(self.max_hold, EXCURSION_BARS if self.wait_for_level else 0):
                 self._finish(t)
             else:
                 keep.append(t)
@@ -121,8 +125,11 @@ def build(bars, out: Path, start: int | None, end: int | None, strategy_id: str 
     from structure_engine.engine import StructureEngine
     s = load(strategy_id)
     engine = StructureEngine(load_config())
-    runner = StrategyRunner(s, engine._session_name)
-    lab = Labeller(spread, s.rules["close_on_stalled_followthrough"])
+    runner = make_runner(s, engine)
+    if s.rules["kind"] == "m1_probe_failure":
+        lab = Labeller(spread, False, s.rules["max_hold_bars"], wait_for_level=False)
+    else:
+        lab = Labeller(spread, s.rules["close_on_stalled_followthrough"])
     out.mkdir(parents=True, exist_ok=True)
     (out / "system.txt").write_text(template.system_message(s), encoding="utf-8")
     sizes, months, n = [], Counter(), 0
@@ -191,6 +198,7 @@ def main() -> None:
     ap.add_argument("--to", dest="end")
     ap.add_argument("--out", required=True)
     ap.add_argument("--spread", type=float, default=0.2)
+    ap.add_argument("--strategy", default="m1_probe_failure_scalp")
     a = ap.parse_args()
     start, end = _day(a.start), _day(a.end)
     warm = start - 10 * 86400
@@ -205,7 +213,7 @@ def main() -> None:
         bars = (b for b in RecordedFeed(a.m1) if b.time >= warm)
     else:
         sys.exit("give --m1 <files/folders> or --db")
-    print(json.dumps(build(bars, Path(a.out), start, end, spread=a.spread), indent=2))
+    print(json.dumps(build(bars, Path(a.out), start, end, a.strategy, spread=a.spread), indent=2))
 
 
 if __name__ == "__main__":

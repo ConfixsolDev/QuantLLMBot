@@ -7,7 +7,7 @@ For every closed M1 bar, after the structure engine has processed it::
                                         |          --> journal the decision (always)
                                         |          --> approve / refuse candidates
                                         +--> intents (approved plan + M1 rejection) --> Executor.execute
-                                        +--> closes  (e.g. rejection stalled)       --> Executor.close
+                                        +--> closes  (time cap, rejection stalled)  --> Executor.close
     Executor.sync --> finished trades: result in R, journal, runner forgets them
 
 The decider is passed in, so this file depends on neither the model nor MT5:
@@ -32,7 +32,7 @@ import hashlib
 import time as _time
 
 from strategy import template
-from strategy.runner import StrategyRunner
+from strategy.runner import make_runner
 
 
 class Pipeline:
@@ -42,7 +42,7 @@ class Pipeline:
             strategy, engine, decider, executor, journal, mode
         self.clock, self.simulate_latency = clock, simulate_latency
         self.diagnostics: list[dict] = []
-        self.runner = StrategyRunner(strategy, engine._session_name)
+        self.runner = make_runner(strategy, engine)
         self.stats = {"bars": 0, "prompts": 0, "take": 0, "wait": 0, "invalid": 0, "intents": 0,
                       "filled": 0, "refused": 0, "closes": 0, "max_prompt_bytes": 0, "too_large": 0}
 
@@ -99,7 +99,9 @@ class Pipeline:
             "model": d.model, "model_digest": d.model_digest, "latency_ms": d.latency_ms, "raw_answer": d.raw,
             "action": v.action, "label": v.label, "candidate_key": v.candidate_key, "confidence": v.confidence,
             "cites": list(v.cites), "why": v.why, "errors": list(v.errors),
-            "engine_config_hash": self.engine.config_hash, "mode": self.mode})
+            "engine_config_hash": self.engine.config_hash, "mode": self.mode,
+            "checks": {lbl: c.passed for lbl, key in prompt.candidate_map.items()
+                       for c in asks if c.key == key and hasattr(c, "passed")}})
         intents = []
         window_left = None
         for c in asks:

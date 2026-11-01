@@ -144,7 +144,7 @@ class DayTest:
         for d in decisions:
             self._decision_file.write(json.dumps({k: d.get(k) for k in (
                 "id", "time", "action", "label", "candidate_key", "confidence", "cites", "why", "errors",
-                "latency_ms", "prompt_bytes", "model", "model_digest", "raw_answer")}) + "\n")
+                "latency_ms", "prompt_bytes", "model", "model_digest", "raw_answer", "checks")}) + "\n")
         self._decision_file.flush()
 
         issues: list[str] = []
@@ -248,6 +248,20 @@ class DayTest:
                   f"paper balance 10,000 -> {self.broker.balance:,.2f}",
                   f"- decisions {len(self.journal.decisions)}: " + ", ".join(
                       f"{k} {v}" for k, v in Counter(d['action'] for d in self.journal.decisions).items())]
+        by_checks: dict = {}
+        for d in self.journal.decisions:                   # scalp strategy: take rate per checks passed
+            best = max((d.get("checks") or {}).values(), default=None)
+            if best is not None:
+                n, k = by_checks.get(best, (0, 0))
+                by_checks[best] = (n + 1, k + (d["action"] == "take"))
+        if by_checks:
+            lines.append("- take rate by checks passed (best candidate of the prompt): " + ", ".join(
+                f"{c}: {k}/{n}" for c, (n, k) in sorted(by_checks.items())))
+            rs: dict = {}
+            for t in trades:
+                rs.setdefault(t.get("meta", {}).get("checks_passed"), []).append(t["r_multiple"])
+            lines.append("- trades by checks passed: " + ", ".join(
+                f"{c}: n {len(v)}, {sum(v):+.2f} R" for c, v in sorted(rs.items(), key=lambda x: str(x[0]))))
         path = self.out / "summary.md"
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return path

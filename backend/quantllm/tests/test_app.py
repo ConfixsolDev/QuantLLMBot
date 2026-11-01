@@ -104,14 +104,19 @@ def test_service_replays_stores_events_and_serves_api(db, dsn, monkeypatch):
     h = get("/api/health")
     assert h["state"] == "offline" and h["bars_processed"] == len(bars)
     assert db.event_count("XAUUSDr") == h["events"]                 # every event stored once
-    for tf in ("M1", "M5", "M15", "H1", "H4"):
+    try:
+        get("/api/chart?tf=M5&bars=200")
+        raise AssertionError("M5 must not be served")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 400
+    for tf in ("M1", "M15", "M30", "H1", "H4"):                     # config v2: no M5
         c = get(f"/api/chart?tf={tf}&bars=200")
         assert c["candles"] and set(c["overlays"]) == {"lines", "boxes", "markers", "levels", "swings", "curves", "hlevels"}
         times = {k["time"] for k in c["candles"]}
         for ln in c["overlays"]["lines"]:
             assert ln["t2"] in times                              # snapped onto real candles
     snap = get("/api/snapshot")
-    assert set(snap["trend"]) == {"M5", "M15", "M30", "H1", "H4"} and snap["price"] == bars[-1].close
+    assert set(snap["trend"]) == {"M15", "M30", "H1", "H4"} and snap["price"] == bars[-1].close
     assert set(snap["vwap"]) == {"day", "week", "session"}
     svc.stop()
     httpd.shutdown()
@@ -163,7 +168,7 @@ def test_replay_day_and_reviews_api(db, dsn):
                           "verdict": "correct", "note": "ok"})
     post("/api/reviews", {"id": det[1]["id"], "day": date, "kind": det[1]["kind"], "tf": det[1]["tf"],
                           "time": det[1]["time"], "verdict": "wrong"})
-    post("/api/reviews", {"id": f"missed-{date}-1", "day": date, "kind": "liquidity_sweep", "tf": "M5",
+    post("/api/reviews", {"id": f"missed-{date}-1", "day": date, "kind": "liquidity_sweep", "tf": "M1",
                           "time": noon, "verdict": "missed", "note": "sweep of Asia high not marked"})
     post("/api/reviews", {"id": e["id"], "day": date, "kind": e["kind"], "tf": e["tf"], "time": e["time"],
                           "verdict": "correct", "note": "changed my mind twice"})          # upsert
@@ -175,7 +180,7 @@ def test_replay_day_and_reviews_api(db, dsn):
     post("/api/reviews/delete", {"id": f"missed-{date}-1"})
     assert len(get(f"/api/replay/day?date={date}")["reviews"]) == 2
     with pytest.raises(urllib.error.HTTPError) as err:
-        post("/api/reviews", {"id": "x", "day": date, "kind": "bos", "tf": "M5", "verdict": "maybe"})
+        post("/api/reviews", {"id": "x", "day": date, "kind": "bos", "tf": "M15", "verdict": "maybe"})
     assert err.value.code == 400
     httpd.shutdown()
 

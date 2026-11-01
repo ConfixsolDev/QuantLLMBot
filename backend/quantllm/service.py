@@ -65,7 +65,7 @@ log = logging.getLogger("quantllm")
 # The website, built once with `npm run build` (static export), is served by
 # this same server at http://127.0.0.1:8765/ — no separate web server needed.
 WEB_DIR = Path(__file__).resolve().parents[2] / "web" / "out"
-TFS = ("M1", "M5", "M15", "M30", "H1", "H4")
+TFS_ORDER = ("M1", "M5", "M15", "M30", "H1", "H4")   # chart timeframes = those the structure config declares
 LEVEL_FEED = {"level_test", "level_rejection", "level_followthrough", "level_held", "level_broken", "level_pattern"}
 
 
@@ -76,15 +76,16 @@ class StructureService:
         self.db = db
         self.symbol = mt5_connection.settings().broker_symbol
         self.cfg = load_config()
+        self.tfs = tuple(tf for tf in TFS_ORDER if tf in self.cfg.tf_minutes)    # config v2: no M5
         self.lock = threading.RLock()
         self.engine = StructureEngine(self.cfg)
-        self.bars = {tf: deque(maxlen=settings.keep_bars_per_tf) for tf in TFS}
+        self.bars = {tf: deque(maxlen=settings.keep_bars_per_tf) for tf in self.tfs}
         self.events: deque = deque(maxlen=settings.keep_events)
         self.status = {"state": "starting", "progress": 0.0, "message": "", "mt5": "not connected",
                        "symbol": self.symbol, "config_id": self.cfg["config_id"],
                        "config_hash": self.cfg.config_hash, "last_bar": None, "bars_processed": 0,
                        "events": 0, "started_at": int(time.time())}
-        self.vwap = {tf: deque(maxlen=settings.keep_bars_per_tf) for tf in TFS}   # (time, values)
+        self.vwap = {tf: deque(maxlen=settings.keep_bars_per_tf) for tf in self.tfs}   # (time, values)
         self.replays = replay_mod.ReplayCache()
         self.replay_lock = threading.Lock()
         self.mt5 = None
@@ -421,8 +422,8 @@ def make_handler(service: StructureService):
                     self._send(200, service.status)
                 elif url.path == "/api/chart":
                     tf = q.get("tf", "M15")
-                    if tf not in TFS:
-                        return self._send(400, {"error": f"tf must be one of {TFS}"})
+                    if tf not in service.tfs:
+                        return self._send(400, {"error": f"tf must be one of {service.tfs}"})
                     n = max(20, min(int(q.get("bars", 300)), service.s.keep_bars_per_tf))
                     self._send(200, service.chart(tf, n))
                 elif url.path == "/api/snapshot":
@@ -439,8 +440,8 @@ def make_handler(service: StructureService):
                                      "checks": service.replays.checks.get(day.date)})
                 elif url.path == "/api/replay/chart":
                     tf = q.get("tf", "M15")
-                    if tf not in TFS:
-                        return self._send(400, {"error": f"tf must be one of {TFS}"})
+                    if tf not in service.tfs:
+                        return self._send(400, {"error": f"tf must be one of {service.tfs}"})
                     day = service.replay_day(q["date"])
                     t = int(q.get("t", day.day_end))
                     self._send(200, day.chart(tf, t, max(20, min(int(q.get("bars", 300)), 2000))))

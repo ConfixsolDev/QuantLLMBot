@@ -41,7 +41,7 @@ from structure_engine.verification.causality import invariants
 from . import overlays
 
 DAY = 86400
-TFS = ("M1", "M5", "M15", "M30", "H1", "H4")
+TFS_ORDER = ("M1", "M5", "M15", "M30", "H1", "H4")      # the config decides which exist (v2: no M5)
 # events shown in the day's check sheet (the reviewable structure)
 REVIEW_KINDS = {
     "bos", "choch", "liquidity_sweep", "sweep_failed", "false_break", "liquidity_taken",
@@ -112,7 +112,7 @@ def describe(e: dict) -> str:
         if k == "level_held":
             return f"{name} held on test {d['test_no']}"
         if k == "level_broken":
-            return f"{name} broken (M5 close) after {d['tests']} test(s)"
+            return f"{name} broken ({e['tf']} close) after {d['tests']} test(s)"
         if k == "level_pattern":
             return f"M1 {d['pattern'].replace('_', ' ')} formed at {name} (test {d['test_no']})"
     return k
@@ -127,8 +127,9 @@ class ReplayDay:
         self.cfg = cfg
         engine = StructureEngine(cfg)
         self.engine = engine
-        self.bars = {tf: [] for tf in TFS}
-        self.vwap = {tf: [] for tf in TFS}
+        self.tfs = tuple(tf for tf in TFS_ORDER if tf in cfg.tf_minutes)
+        self.bars = {tf: [] for tf in self.tfs}
+        self.vwap = {tf: [] for tf in self.tfs}
         self.events: list[dict] = []
         self.m1 = []
         for b in bars:
@@ -142,7 +143,7 @@ class ReplayDay:
                         self.vwap[tf].append((c.time, v))
             self.events.extend(e.as_dict() for e in evs)
         self.avail = [e["available_at"] for e in self.events]
-        self.snaps = {tf: (lambda t, a=engine.aggs.get(tf): t - t % 60 if a is None else a._span(t)[0]) for tf in TFS}
+        self.snaps = {tf: (lambda t, a=engine.aggs.get(tf): t - t % 60 if a is None else a._span(t)[0]) for tf in self.tfs}
         self.built_at = time.time()
 
     # ---------------------------------------------------------------- views

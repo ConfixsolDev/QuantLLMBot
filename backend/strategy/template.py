@@ -46,6 +46,8 @@ class Prompt:
     evidence_map: dict                # "E1" -> engine event id
     trimmed: dict                     # what was dropped to fit
     previews: dict                    # "C1" -> TradeIntent preview (exact prices) or None
+    cite_fields: tuple = ("rejection", "level", "level.history", "approach", "trade", "obstacles",
+                          "stretch_h1atr")         # candidate facts the model may cite (C1.<field>)
 
 
 def system_message(strategy) -> str:
@@ -56,13 +58,17 @@ def system_message(strategy) -> str:
 
 
 def _avg_m1_volume(engine) -> float | None:
-    bars = [b for b, _ in engine.hist.get("M5", [])[-12:]]
+    """Average volume of the last 60 closed M1 bars (v1 used 12 M5 bars; config v2 has no M5)."""
+    bars = list(engine.levels.m1)[-60:]
     vol = sum(b.volume for b in bars)
-    return vol / (5 * len(bars)) if bars and vol > 0 else None
+    return vol / len(bars) if bars and vol > 0 else None
 
 
 def build(strategy, engine, runner, asks: list, now: int) -> Prompt:
     """Everything the model needs for the candidates in ``asks``, as of ``now``."""
+    if strategy.rules["kind"] == "m1_probe_failure":
+        from .scalp import build_prompt
+        return build_prompt(strategy, engine, runner, asks, now)
     snap = engine.snapshot()
     price = engine._last_close
     atr = snap["atr"].get("M15") or 1.0

@@ -50,7 +50,8 @@ def setup(price=1999.0, **kw):
     b = PaperBroker(XAU, balance=10_000, spread=0.2)
     b.on_bar(Bar(T0, price, price + 0.5, price - 0.5, price, 10))
     j = MemoryJournal()
-    ex = Executor(b, replace(TradingSettings(), risk_pct=kw.get("risk", 10.0), slippage_allowance=0.0), "XAUUSD", j)
+    ex = Executor(b, replace(TradingSettings(), risk_pct=kw.get("risk", 10.0), slippage_allowance=0.0,
+                                  max_open_positions=kw.get("max_open", 1)), "XAUUSD", j)
     return b, ex, j
 
 
@@ -129,7 +130,7 @@ def test_db_journal_writes_decisions_trades_refusals(tmp_path_factory):
                 "candidate_key": "Vabc:2", "confidence": 70, "cites": ["E1"], "why": "ok", "errors": []})
     b = PaperBroker(XAU, balance=10_000, spread=0.2)
     b.on_bar(Bar(T0, 1999.0, 1999.5, 1998.5, 1999.0, 10))
-    ex = Executor(b, TradingSettings(), "XAUUSD", j)
+    ex = Executor(b, replace(TradingSettings(), max_open_positions=1), "XAUUSD", j)
     assert ex.execute(make(), T0 + 60).status == "filled"
     ex.execute(replace(make(), intent_id="i2"), T0 + 60)                     # refused: one position
     b.on_bar(Bar(T0 + 60, 1999.0, 1999.1, 1989.0, 1990.0, 10))

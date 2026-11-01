@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from . import available, load  # noqa: E402
 from . import template  # noqa: E402
-from .runner import StrategyRunner  # noqa: E402
+from .runner import make_runner  # noqa: E402
 
 
 def main() -> None:
@@ -33,7 +33,7 @@ def main() -> None:
     sh.add_argument("--version", type=int)
     pv = sub.add_parser("preview")
     pv.add_argument("--m1", nargs="+", required=True)
-    pv.add_argument("--id", default="htf_level_m1_rejection")
+    pv.add_argument("--id", default="m1_probe_failure_scalp")
     pv.add_argument("--date")
     pv.add_argument("--n", type=int, default=1)
     pv.add_argument("--save")
@@ -51,7 +51,7 @@ def main() -> None:
     from structure_engine.feeds import RecordedFeed
     s = load(a.id)
     engine = StructureEngine(load_config())
-    runner = StrategyRunner(s, engine._session_name)
+    runner = make_runner(s, engine)
     day = calendar.timegm(time.strptime(a.date, "%Y-%m-%d")) if a.date else None
     shown = 0
     for bar in RecordedFeed(a.m1):
@@ -75,7 +75,7 @@ def main() -> None:
         if shown >= a.n:
             break
     if not shown:
-        print("no level test produced a candidate in that period")
+        print("no candidate in that period")
 
 
 if __name__ == "__main__":

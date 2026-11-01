@@ -20,7 +20,7 @@ import {
   type Chart, type DayChecks, type Detection, type ReplayDay, type Review, type Scorecard, type Verdict,
 } from "@/lib/api";
 
-const TFS = ["M1", "M5", "M15", "M30", "H1", "H4"];
+const TFS = ["M1", "M15", "M30", "H1", "H4"];   // structure config v2: no M5 (owner: gold does not trade well on M5)
 const TF_SEC: Record<string, number> = { M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400 };
 const LAYER_NAMES: [keyof Layers, string][] = [
   ["trend", "BOS/CHoCH"], ["liquidity", "Liquidity"], ["zones", "Zones"], ["ob", "OB"], ["fvg", "FVG"],
@@ -44,7 +44,7 @@ const ok = (b: boolean | undefined) => (b === undefined ? "…" : b ? "✓" : "�
 export default function ReplayPage() {
   const [days, setDays] = useState<string[]>([]);
   const [date, setDate] = useState("");
-  const [tf, setTf] = useState("M5");
+  const [tf, setTf] = useState("M15");
   const [layers, setLayers] = useState<Layers>({
     trend: true, liquidity: true, zones: false, ob: true, fvg: true, ranges: false, levels: true, swings: true,
     other: true, vwap: true, htf: true,
@@ -243,7 +243,7 @@ function CheckSheet({ rows, reviews, missed, cursor, groups, setGroups, onlyPast
   jump: (d: Detection) => void; addMissed: (kind: string, tf: string, note: string) => void;
 }) {
   const [mk, setMk] = useState("liquidity_sweep");
-  const [mtf, setMtf] = useState("M5");
+  const [mtf, setMtf] = useState("M15");
   const [mnote, setMnote] = useState("");
   return (
     <div className="flex flex-col gap-2">

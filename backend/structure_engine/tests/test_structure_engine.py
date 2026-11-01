@@ -29,18 +29,22 @@ from structure_engine.verification.synthetic import (  # noqa: E402
 from structure_engine.verification.synthetic_accuracy import (  # noqa: E402
     evaluate_patterns, evaluate_swings, evaluate_zones)
 
-CFG = load_config()
+# The engine's mechanism tests use config v1 (hand-built M5 scenarios); config v2
+# (the default since 2026-11-01: no M5, M1-close detection) has its own tests below.
+V1 = Path(__file__).resolve().parents[1] / "config" / "xauusd_structure_v1.json"
+V2 = Path(__file__).resolve().parents[1] / "config" / "xauusd_structure_v2.json"
+CFG = load_config(V1)
 SEEDS = (0, 1, 2)
 
 
 # ------------------------------------------------------------------ config
 def test_config_is_strict():
     with pytest.raises(ConfigError, match="unknown"):
-        load_config(overrides={"zones": {"max_tset": 3}})
+        load_config(V1, overrides={"zones": {"max_tset": 3}})
     with pytest.raises(ConfigError, match="invalid"):
-        load_config(overrides={"atr": {"period": "14"}})
+        load_config(V1, overrides={"atr": {"period": "14"}})
     with pytest.raises(ConfigError, match="declared timeframe"):
-        load_config(overrides={"swings": {"strength": {"M2": 3}}})
+        load_config(V1, overrides={"swings": {"strength": {"M2": 3}}})
     from structure_engine.config import DEFAULT_CONFIG, build_config
     raw = json.loads(DEFAULT_CONFIG.read_text())
     del raw["patterns"]["history"]
@@ -49,7 +53,7 @@ def test_config_is_strict():
 
 
 def test_config_hash_changes_with_any_threshold_and_is_on_every_event():
-    other = load_config(overrides={"zones": {"max_tests": 4}})
+    other = load_config(V1, overrides={"zones": {"max_tests": 4}})
     assert other.config_hash != CFG.config_hash
     events = run(random_walk_m1(0, 1500), CFG)
     assert events and all(e.config_hash == CFG.config_hash for e in events)
@@ -164,13 +168,14 @@ def test_backtest_run_writes_outputs_and_matches_direct_run(tmp_path):
         for b in bars:
             fh.write(f"{b.time},{b.open!r},{b.high!r},{b.low!r},{b.close!r},{b.volume!r}\n")
     summary = run_stream(load_m1(csv_path), tmp_path / "out", snapshot_every=500)
-    assert summary["bars"] == len(bars) and summary["config_hash"] == CFG.config_hash
+    default = load_config()                                       # the run uses the default config (v2)
+    assert summary["bars"] == len(bars) and summary["config_hash"] == default.config_hash
     lines = (tmp_path / "out" / "events.jsonl").read_text().splitlines()
-    direct = run(bars, CFG)
+    direct = run(bars, default)
     assert len(lines) == len(direct)
-    assert fingerprint(direct) == fingerprint(run(list(load_m1(csv_path)), CFG))
+    assert fingerprint(direct) == fingerprint(run(list(load_m1(csv_path)), default))
     snap = json.loads((tmp_path / "out" / "final_snapshot.json").read_text())
-    assert len(snap["top_zones"]) <= CFG["scoring"]["top_n"]
+    assert len(snap["top_zones"]) <= default["scoring"]["top_n"]
 
 
 # ------------------------------------------------------------------ New York H4
@@ -211,10 +216,10 @@ def test_h4_is_built_from_h1_on_the_new_york_grid():
 
 def test_alignment_config_is_validated():
     with pytest.raises(ConfigError, match="every 4h"):
-        load_config(overrides={"alignment": {"H4": {"source": "H1", "timezone": "America/New_York",
+        load_config(V1, overrides={"alignment": {"H4": {"source": "H1", "timezone": "America/New_York",
                                                     "open_hours_local": [2, 6, 10, 14, 18]}}})
     with pytest.raises(ConfigError, match="timezone"):
-        load_config(overrides={"alignment": {"H4": {"source": "H1", "timezone": "Europe/London",
+        load_config(V1, overrides={"alignment": {"H4": {"source": "H1", "timezone": "Europe/London",
                                                     "open_hours_local": [2, 6, 10, 14, 18, 22]}}})
 
 
@@ -296,7 +301,7 @@ TREND_SCENARIO = _flat(100, 20) + [
 
 
 def test_bos_choch_order_blocks_displacement_and_fvg_lifecycle():
-    cfg = load_config(overrides={"order_blocks": {"timeframes": ["M5", "M15", "M30", "H1", "H4"]}})
+    cfg = load_config(V1, overrides={"order_blocks": {"timeframes": ["M5", "M15", "M30", "H1", "H4"]}})
     m1, _ = _m5(TREND_SCENARIO)
     ev = [e for e in run(m1, cfg) if e.tf == "M5"]
     breaks = [(e.kind, e.data["direction"], e.data["level"]) for e in ev if e.kind in ("bos", "choch")]
@@ -321,7 +326,7 @@ LIQUIDITY_SCENARIO = (
 
 
 def test_liquidity_sweep_false_break_and_accepted_break():
-    cfg = load_config(overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]}})
+    cfg = load_config(V1, overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]}})
     m1, _ = _m5(LIQUIDITY_SCENARIO)
     ev = run(m1, cfg)
     got = {(e.kind, lv["price"]) for e in ev if e.kind in ("liquidity_sweep", "false_break", "liquidity_taken")
@@ -334,7 +339,7 @@ def test_liquidity_sweep_false_break_and_accepted_break():
 
 
 def test_equal_highs_and_ranges():
-    cfg = load_config(overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]},
+    cfg = load_config(V1, overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]},
                                  "ranges": {"timeframes": ["M5"]}})
     m1, _ = _m5(_flat(100, 20) + _peak(103) + _flat(101, 3) + _peak(103.05) + _flat(101, 6))
     eq = [e for e in run(m1, cfg) if e.kind == "equal_highs"]
@@ -379,7 +384,7 @@ def test_fvg_stream_equals_offline_reference():
 
 
 def test_structure_layer_no_repaint_and_invariants():
-    cfg = load_config(overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]},
+    cfg = load_config(V1, overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]},
                                  "order_blocks": {"timeframes": ["M5", "M15", "M30", "H1", "H4"]}})
     for scenario in (TREND_SCENARIO, LIQUIDITY_SCENARIO):
         m1, _ = _m5(scenario)
@@ -406,7 +411,7 @@ def test_no_fvg_across_a_market_closure():
 
 
 def test_sweep_followed_by_break_is_reported_as_failed():
-    cfg = load_config(overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]}})
+    cfg = load_config(V1, overrides={"liquidity": {"swing_timeframes": ["M5"], "equal_timeframes": ["M5"]}})
     seq = (_flat(100, 20) + _peak(103) + _flat(101, 4)
            + [(101, 103.4, 100.9, 102.5), (102.5, 104.6, 102.4, 104.5)] + _flat(104.5, 4))
     m1, _ = _m5(seq)
@@ -553,6 +558,52 @@ def test_htf_levels_in_engine_are_causal_and_audited():
     kinds = {e.kind for e in ev}
     assert {"level_test", "level_held", "level_broken"} <= kinds
     assert invariants(ev, CFG) == []
-    rep = audit_events(bars, [e.as_dict() for e in ev])
+    rep = audit_events(bars, [e.as_dict() for e in ev], cfg=CFG)
     assert rep["checks"].get("level_test", 0) > 0 and not any(k.startswith("level") for k in rep["failures"])
     assert no_repaint(bars[: 2 * 1440], CFG, cuts=3) == []
+
+
+# ------------------------------------------------------------------ config v2 (scalping, no M5)
+def test_config_v2_has_no_m5_and_detects_on_m1():
+    v2 = load_config(V2)
+    assert load_config().config_hash == v2.config_hash             # v2 is the default
+    assert "M5" not in v2.tf_minutes and set(v2.tf_minutes) == {"M1", "M15", "M30", "H1", "H4"}
+    for section in ("trend", "fvg", "displacement"):
+        assert "M5" not in v2[section]["timeframes"]
+    assert v2["htf_levels"]["break_timeframe"] == v2["liquidity"]["detect_timeframe"] \
+        == v2["vwap"]["detect_timeframe"] == "M1"
+    assert v2["htf_levels"]["swing_timeframes"] == ["M15", "M30", "H1", "H4"]
+
+
+def test_config_v2_events_are_causal_audited_and_on_m1():
+    """Same guarantees as v1 (no repaint, determinism, invariants, raw-data audit),
+    and every close-based judgement is now an M1 event; nothing is on M5."""
+    from structure_engine.verification.audit import audit_events
+    v2 = load_config(V2)
+    bars = random_walk_m1(11, 4 * 1440)
+    ev = run(bars, v2)
+    assert not any(e.tf == "M5" for e in ev)
+    by = {}
+    for e in ev:
+        by.setdefault(e.kind, set()).add(e.tf)
+    for k in ("level_broken", "liquidity_sweep", "vwap_cross"):
+        if k in by:
+            assert by[k] == {"M1"}, (k, by[k])
+    assert {"level_test", "level_broken"} <= set(by)
+    assert invariants(ev, v2) == []
+    rep = audit_events(bars, [e.as_dict() for e in ev], cfg=v2)
+    assert rep["checks"].get("level_broken", 0) > 0 and not rep["failures"], rep["failures"]
+    assert no_repaint(bars[: 2 * 1440], v2, cuts=3) == []
+    assert determinism(bars[: 1440], v2)
+
+
+def test_v2_level_break_is_an_m1_close_beyond_the_buffer():
+    from structure_engine.levels import LevelBook
+    v2 = load_config(V2)
+    ids = iter(range(100))
+    book = LevelBook(v2, lambda *k: f"V{next(ids)}")
+    lv = book.add("H1 swing high", "high", 110.0, 0, 0, 1.0, 100.0)
+    buf = v2["htf_levels"]["break_buffer_atr"]
+    assert book.on_break_bar(Bar(60, 109.5, 110.3, 109.4, 110.0 + 0.5 * buf, 50), 1.0) == []   # inside the buffer
+    out = book.on_break_bar(Bar(120, 110.0, 110.4, 109.9, 110.0 + 2 * buf, 50), 1.0)
+    assert [k for k, _, _ in out] == ["level_broken"] and out[0][1] is lv
