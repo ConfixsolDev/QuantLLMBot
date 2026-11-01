@@ -11,6 +11,9 @@ rem    rights    highest available (administrator)
 rem    windows   visible on your desktop (MT5 needs your logged-in session)
 rem
 rem  Remove it again:   Install-Autostart.bat remove
+rem  Note: MT5 must run at the same rights level as the app. If the app shows
+rem  "MT5 not connected" after an autostart, start MetaTrader 5 "as administrator"
+rem  too (or let the app start it: close MT5 before logging on).
 rem  Check it:          schtasks /Query /TN QuantLLM /V /FO LIST
 rem ===========================================================================
 setlocal
