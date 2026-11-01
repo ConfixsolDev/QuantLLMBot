@@ -201,3 +201,43 @@ def test_verify_catches_rule_breaks():
                     "intent_created_at": T0, "meta": {"rejection_candle": {"time": T0, "close": 1999.0}}})
     codes = {f.split(" ")[0] for f in verify(s, SimpleNamespace(risk_pct=10.0, max_open_positions=1), j)}
     assert {"D1", "T1", "T2", "T3", "T4", "T6"} <= codes
+
+
+def _daytest(tmp_path, decider):
+    from trading.daytest import DayTest, trading_days
+    bars = random_walk_m1(9, 9 * 1440)
+    dt = DayTest("stub", tmp_path)
+    dt.pipe.decide = decider
+    start = bars[0].time + 3 * 86400
+    reps = []
+    for date, day_bars in trading_days(iter(bars), start - start % 86400, bars[-1].time):
+        if date == "warm-up":
+            for b in day_bars:
+                dt.engine.push(b)
+                dt.broker.on_bar(b)
+            continue
+        reps.append(dt.run_day(date, day_bars))
+    return dt, reps
+
+
+def test_daytest_runs_day_by_day_and_reports(tmp_path):
+    from trading.daytest import stub_decider
+    dt, reps = _daytest(tmp_path, stub_decider(2000))
+    assert reps and sum(r["prompts"] for r in reps) > 0
+    assert all(r["crashes"] == 0 and not [i for i in r["issues"] if not i.startswith("DATA")] for r in reps)
+    assert (tmp_path / f"day-{reps[0]['date']}.json").exists()
+    assert "Day-by-day platform test" in dt.finish().read_text()
+
+
+def test_daytest_flags_a_slow_model_and_a_crashing_decider(tmp_path):
+    from trading.daytest import stub_decider
+    _, reps = _daytest(tmp_path / "slow", stub_decider(400_000))           # 400 s: window is ~3 min
+    assert any(i.startswith("WINDOW") for r in reps for i in r["issues"])
+    assert sum(r["filled"] for r in reps) == 0
+
+    def boom(prompt, strategy):
+        raise RuntimeError("decider exploded")
+    _, reps2 = _daytest(tmp_path / "boom", boom)
+    model = [i for r in reps2 for i in r["issues"] if i.startswith("MODEL")]
+    assert model and "decider error" in model[0] and len(reps2) == len(reps)      # journaled, run went on
+    assert not [i for r in reps2 for i in r["issues"] if i.startswith("CRASH")]

@@ -12,20 +12,36 @@ For every closed M1 bar, after the structure engine has processed it::
 
 The decider is passed in, so this file depends on neither the model nor MT5:
 ``llm.decider.LLMDecider()`` for lane B, ``llm.decider.take_all`` for lane A.
+
+Time while the model thinks. The bar closed at ``now``; the answer arrives
+``latency`` seconds later, and the entry window of the intent keeps running.
+The executor is therefore called with the DECISION time, not the bar time:
+
+  live        ``clock=time.time`` — the real wall clock after the answer
+  replay      ``simulate_latency=True`` — bar time + the model's measured
+              latency, so a slow model expires intents exactly as it would live
+  baseline    neither (take-all has no latency)
+
+``diagnostics`` keeps one row per decision (latency, entry window left at the
+moment of the answer, outcome) for the day-by-day platform test.
 """
 
 from __future__ import annotations
 
 import hashlib
+import time as _time
 
 from strategy import template
 from strategy.runner import StrategyRunner
 
 
 class Pipeline:
-    def __init__(self, strategy, engine, decider, executor, journal, mode: str = "paper") -> None:
+    def __init__(self, strategy, engine, decider, executor, journal, mode: str = "paper",
+                 clock=None, simulate_latency: bool = False) -> None:
         self.s, self.engine, self.decide, self.ex, self.journal, self.mode = \
             strategy, engine, decider, executor, journal, mode
+        self.clock, self.simulate_latency = clock, simulate_latency
+        self.diagnostics: list[dict] = []
         self.runner = StrategyRunner(strategy, engine._session_name)
         self.stats = {"bars": 0, "prompts": 0, "take": 0, "wait": 0, "invalid": 0, "intents": 0,
                       "filled": 0, "refused": 0, "closes": 0, "max_prompt_bytes": 0, "too_large": 0}
@@ -33,12 +49,12 @@ class Pipeline:
     def on_bar(self, bar, events, now: int) -> None:
         self.stats["bars"] += 1
         step = self.runner.observe(events, self.engine.snapshot, now)
-        intents = list(step.intents)
+        work = [(it, now) for it in step.intents]
         if step.asks:
-            intents += self._ask(step.asks, bar, now)
-        for intent in intents:
+            work += self._ask(step.asks, bar, now)
+        for intent, t in work:
             self.stats["intents"] += 1
-            out = self.ex.execute(intent, now)
+            out = self.ex.execute(intent, t)
             self.stats["filled" if out.status == "filled" else "refused"] += 1
         for key, reason in step.closes:
             if self.ex.close(key, reason, now):
@@ -60,8 +76,21 @@ class Pipeline:
         self.runner.mark_asked([c.key for c in asks])
         self.stats["prompts"] += 1
         self.stats["max_prompt_bytes"] = max(self.stats["max_prompt_bytes"], prompt.bytes)
-        d = self.decide(prompt, s)
+        t0 = _time.monotonic()
+        try:
+            d = self.decide(prompt, s)
+        except Exception as exc:                            # a decider bug must not stop trading/journaling
+            from llm.contract import Verdict
+            from llm.decider import Decision
+            d = Decision(Verdict("invalid", None, None, 0, (), (), "", (f"decider error: {exc!r}",)), "error")
         v = d.verdict
+        latency_s = d.latency_ms / 1000 if d.latency_ms is not None else _time.monotonic() - t0
+        if self.clock is not None:
+            decided = int(self.clock())                    # live: the real time of the answer
+        elif self.simulate_latency:
+            decided = now + int(round(latency_s))           # replay: bar time + model latency
+        else:
+            decided = now
         self.stats[v.action] += 1
         did = hashlib.sha1(f"{s.ref}|{prompt.sha}|{now}".encode()).hexdigest()[:16]
         self.journal.decision({
@@ -72,11 +101,19 @@ class Pipeline:
             "cites": list(v.cites), "why": v.why, "errors": list(v.errors),
             "engine_config_hash": self.engine.config_hash, "mode": self.mode})
         intents = []
+        window_left = None
         for c in asks:
             if v.action == "take" and c.key == v.candidate_key and c.key in prompt.candidate_map.values():
-                it = self.runner.approve(c.key, did, now)
+                preview = prompt.previews.get(v.label)
+                if preview is not None:
+                    window_left = preview.expires_at - decided
+                it = self.runner.approve(c.key, did, decided)
                 if it is not None:
-                    intents.append(it)
+                    intents.append((it, decided))
             else:
                 self.runner.refuse(c.key, did)
+        self.diagnostics.append({"id": did, "time": now, "action": v.action, "label": v.label,
+                                 "latency_s": round(latency_s, 2), "errors": list(v.errors),
+                                 "prompt_bytes": prompt.bytes, "trimmed": prompt.trimmed,
+                                 "window_left_s": window_left, "intent": bool(intents)})
         return intents

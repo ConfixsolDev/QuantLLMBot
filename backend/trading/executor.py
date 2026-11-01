@@ -87,7 +87,7 @@ class Executor:
                  "candidate_key": intent.candidate_id, "side": intent.side, "lots": fill.volume,
                  "entry": fill.price, "stop": intent.stop, "target": intent.target,
                  "risk_money": size.risk_money, "balance_before": acc["balance"], "risk_pct": s.risk_pct,
-                 "position_id": fill.position_id, "opened_at": fill.time or now, "mode": self.s.mode,
+                 "position_id": fill.position_id, "opened_at": max(fill.time or 0, now), "mode": self.s.mode,
                  "atr": intent.atr, "intent_created_at": intent.created_at,
                  "meta": intent.meta}
         self.open_trades[fill.position_id] = trade

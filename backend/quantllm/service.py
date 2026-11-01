@@ -261,8 +261,18 @@ class StructureService:
             broker = PaperBroker(spec)
         self.journal = DbJournal(self.db.conn)
         self.broker = broker
-        self.pipeline = Pipeline(strat, self.engine, LLMDecider(), Executor(broker, ts, self.symbol, self.journal),
-                                 self.journal, mode=ts.mode)
+        from llm import LLMClient, LLMError
+        client = LLMClient()
+        try:
+            info = client.ping()
+            self.status["model"] = f"{info.get('identity') or info['model']} ({info['api']}, reasoning "\
+                                   f"{info['reasoning_effort']})"
+        except LLMError as exc:
+            self.status["model"] = f"NOT reachable ({exc}) - start Start-LLM.bat; decisions are journaled as invalid"
+            log.error("model server: %s", self.status["model"])
+        self.pipeline = Pipeline(strat, self.engine, LLMDecider(client),
+                                 Executor(broker, ts, self.symbol, self.journal), self.journal, mode=ts.mode,
+                                 clock=time.time)
         self.status["trading"] = f"{ts.mode}: {strat.ref}, risk {ts.risk_pct}% per trade"
         log.info("trading %s", self.status["trading"])
 
@@ -272,14 +282,16 @@ class StructureService:
         try:
             if hasattr(self.broker, "on_bar"):                # paper broker: stops/targets inside the bar
                 self.broker.on_bar(bar)
-            with self.lock:
-                self.pipeline.on_bar(bar, events, self.engine.now)
+            # No lock: the pipeline only READS the engine, from this same live
+            # thread that writes it — holding the lock through a model call
+            # would freeze the website for the seconds the model thinks.
+            self.pipeline.on_bar(bar, events, self.engine.now)
         except Exception:                                     # never stop the structure feed
             log.exception("trading pipeline error")
 
     def trading_view(self) -> dict:
         j = self.journal
-        return {"status": self.status.get("trading", "off"),
+        return {"status": self.status.get("trading", "off"), "model": self.status.get("model"),
                 "stats": self.pipeline.stats if self.pipeline else None,
                 "decisions": [{k: d.get(k) for k in ("id", "time", "action", "label", "candidate_key", "confidence",
                                                       "why", "errors", "latency_ms", "prompt_bytes", "model")}

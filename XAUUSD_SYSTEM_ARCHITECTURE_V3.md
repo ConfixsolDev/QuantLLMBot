@@ -601,7 +601,7 @@ Development: `cd web && npm run dev` with `NEXT_PUBLIC_API_BASE=http://127.0.0.1
 * Start: double-click `Start-QuantLLM.bat`. It checks the database variable,
   installs missing Python packages, builds the website once (needs Node.js),
   opens the browser and runs the service.
-* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests strategy/tests llm/tests trading/tests -q` (86 tests).
+* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests strategy/tests llm/tests trading/tests -q` (88 tests).
   The database tests use `QUANTLLM_TEST_DSN` (schema `quantllm_test`) or the
   `pgserver` package; they never touch the real schema.
 * Verified 2026-10-31 on 100,000 real XAUUSD M1 bars in PostgreSQL 16:
@@ -947,6 +947,32 @@ Check it end to end: `python -m llm ping`, then `python -m llm bench
 through the model: latency p50/p95, valid-answer %, take rate, and the R and
 "level held" rate of what it took vs taking everything.
 
+### F6. Day-by-day platform test (2026-11-01)
+
+`Test-Days.bat` (= `python -m trading.daytest --db --from 2026-10-01 --to
+2026-11-01 --lane llm`) runs the LIVE pipeline over stored bars one gold
+trading day at a time (17:00 → 17:00 New York, named by the day it ends; the
+engine warms up on the 10 days before and then runs continuously). The
+model's measured latency is put on the clock (`Pipeline(simulate_latency=
+True)`): an answer that takes 40 s is executed 40 s after the bar, so a slow
+model expires trades exactly as it would live. Live, the service passes the
+wall clock (`clock=time.time`). Lanes: `llm` (the model), `stub` (no model,
+fixed 2 s answers: platform only), `all` (baseline).
+
+Checks per day — the platform first, the strategy only reported: DATA (bars,
+gaps > 5 min, clock), CRASH (exceptions per bar, the run continues), MODEL
+(valid %, invalid reasons, latency p50/p95/max), WINDOW (approvals after the
+entry window closed), PROMPT (budget, trimming), RULES (`trading/verify.py`),
+EXEC (refusal reasons, unaccounted intents, broker errors), BOOK (positions
+open at day end). Reports in `runs/daytest/<stamp>/`: `summary.md`, a JSON per
+day, `decisions.jsonl` with every raw model answer.
+
+Platform fixes made with it: a decider that raises is journaled as an
+invalid decision instead of breaking the bar; the live service no longer
+holds the engine lock while the model thinks (the website kept answering);
+fills are stamped at the decision time; the service pings the model at start
+and shows its file / reasoning setting (or "NOT reachable") in `/api/trading`.
+
 ### F4. Running it
 
 1. `python -m llm ping` — model server reachable (Start-LLM.bat, config/llm.json).
@@ -1003,6 +1029,8 @@ detection · P21 closed response missed by stale playbook.
   (A4); level-reaction study with a random-level control on real gold (B3c);
   `levels.py` records level tests, M1 rejections, follow-through, held/broken
   and M1 patterns at levels; chart layer, side panel, Replay check sheet.
+- **Day-by-day platform test (2026-11-01):** `trading/daytest.py`,
+  `Test-Days.bat`; model latency on the clock; platform fixes (F6).
 - **Bonsai 2 27B (2026-11-01):** the decision model is Bonsai 2 27B on the
   PrismML llama-server (Vulkan, RX 6800); `qwen/` became `llm/` with a
   llama-server dialect, grammar-constrained answers and `python -m llm bench`;
