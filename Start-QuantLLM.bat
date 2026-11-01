@@ -1,4 +1,7 @@
 @echo off
+rem Start QuantLLM: the trading model (Start-LLM.bat, own window) + the app
+rem (database, MT5, structure engine, website http://127.0.0.1:8765/).
+rem Autostart at Windows logon: run Install-Autostart.bat once.
 setlocal
 title QuantLLM - market structure
 cd /d "%~dp0"
@@ -26,6 +29,20 @@ if not exist "web\out\index.html" (
   call npm install --no-audit --no-fund
   call npm run build
   popd
+)
+
+rem ---- The trading model (Bonsai 2 27B on llama-server, port 8080), in its own
+rem      minimised window - only if it is installed (Setup-LLM.bat) and not already running
+if exist "llm-runtime\bin\llama-server.exe" (
+  powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue) { exit 1 }"
+  if errorlevel 1 (
+    echo [ok] trading model already running on port 8080
+  ) else (
+    echo Starting the trading model ^(Start-LLM.bat^) in its own window...
+    start "Bonsai 2 27B - trading model" /min cmd /c ""%~dp0Start-LLM.bat""
+  )
+) else (
+  echo [info] trading model not installed - run Setup-LLM.bat once to enable trading decisions
 )
 
 echo Opening http://127.0.0.1:8765/  (the page fills in once history is loaded)

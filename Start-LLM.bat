@@ -35,6 +35,12 @@ if not exist "%LLM_MODEL%" (
   pause
   exit /b 1
 )
+powershell -NoProfile -Command "if (Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue) { exit 1 }"
+if errorlevel 1 (
+  echo The trading model is already running on port 8080.
+  timeout /t 5 >nul
+  exit /b 0
+)
 echo Starting Bonsai 2 27B on http://127.0.0.1:8080  (Ctrl+C to stop)
 echo Check the log below: the model buffer must be on the Vulkan device ^(not "CPU model buffer" of several GB^).
 "%RT%\bin\llama-server.exe" -m "%LLM_MODEL%" -ngl 99 -fa on -c %LLM_CTX% -np 1 --jinja --host 127.0.0.1 --port 8080

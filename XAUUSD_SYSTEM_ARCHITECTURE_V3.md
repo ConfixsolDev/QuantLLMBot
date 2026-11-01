@@ -592,6 +592,12 @@ Development: `cd web && npm run dev` with `NEXT_PUBLIC_API_BASE=http://127.0.0.1
 
 ### C5. Start and test
 
+* Autostart: `Install-Autostart.bat` (asks for administrator rights) creates
+  the Task Scheduler task "QuantLLM": at every logon, after 60 s, with highest
+  rights, it runs `Start-QuantLLM.bat`, which now also starts the trading model
+  (`Start-LLM.bat`, own minimised window, skipped if port 8080 already
+  answers). `Restart-QuantLLM.bat` stops and restarts both. Remove the task
+  with `Install-Autostart.bat remove`.
 * Restart (after an update, or if anything looks stale): double-click
   `Restart-QuantLLM.bat`. It stops every running copy (console windows,
   anything on port 8765, any `quantllm serve`) and starts again. A second copy
