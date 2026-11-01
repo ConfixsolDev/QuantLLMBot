@@ -1,0 +1,16 @@
+{
+  "_readme": "Copy to llm.json. The trading model is Bonsai 2 27B (prism-ml/Ternary-Bonsai-2-27B-gguf) served by the PrismML llama.cpp fork: start it with Start-LLM.bat (port 8080). Test with: python -m llm ping. reasoning_effort: none (default, fastest; the decision has seconds), medium (thinks ~2k tokens: then max_tokens 16384) - never low/high (not supported / HTTP 500). Sampling = the model card's non-thinking values.",
+  "api": "llama_server",
+  "url": "http://127.0.0.1:8080",
+  "model": "Ternary-Bonsai-2-27B",
+  "reasoning_effort": "none",
+  "max_tokens": 512,
+  "temperature": 0.7,
+  "top_p": 0.8,
+  "top_k": 20,
+  "min_p": 0.0,
+  "presence_penalty": 1.5,
+  "seed": 42,
+  "json_schema": true,
+  "timeout_s": 120
+}

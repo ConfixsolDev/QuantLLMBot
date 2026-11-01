@@ -1,4 +1,4 @@
-"""What Qwen reads about the market and about each candidate (template v2).
+"""What the model reads about the market and about each candidate (template v2).
 
 Everything comes from the structure engine (snapshot, recent candles, events)
 — selection and compression only, no new analysis. Field names are spelled

@@ -4,7 +4,7 @@ Two moments, both decided by code from structure-engine events:
 
 1. PLAN — a ``level_test`` event (price reached a higher-timeframe level)
    becomes a Candidate when the strategy rules allow it. Its prices are
-   estimates for Qwen to judge::
+   estimates for the model to judge::
 
        sell at resistance L (buy at support is the mirror image)
        plan stop   = L + plan_stop_allowance_atr x ATR(M15)
@@ -13,17 +13,18 @@ Two moments, both decided by code from structure-engine events:
                      x ATR (fallback: fallback_target_r x the planned risk)
        R:R         = (L - target) / (plan stop - L)  must be >= min_rr
 
-   Qwen is asked: take this plan, or wait?
+   the model is asked: take this plan, or wait?
 
 2. TRIGGER — a ``level_rejection`` on the same level and test (M1 poked
    beyond and closed back inside) turns an APPROVED candidate into a
    TradeIntent with exact prices::
 
        reference   = close of the rejection candle
-       stop        = stop_mode "beyond_higher_level": just beyond (stop_buffer_atr) the
-                     nearest H4 / day / week level beyond the traded level, if one is
-                     within max_stop_atr of the entry (owner's idea: trade an H1 level,
-                     hide the stop behind the H4 level); otherwise, and for "atr":
+       stop        = stop_mode "beyond_next_level": just beyond (stop_buffer_atr) the
+                     nearest level of the same side beyond the traded level, or
+                     "beyond_higher_level": the nearest H4 / day / week one — if within
+                     max_stop_atr of the entry (owner's idea: hide the stop behind the
+                     next level, not inside the noise); otherwise, and for "atr":
                      rejection candle extreme + stop_buffer_atr x ATR, and at least
                      min_stop_atr x ATR from the reference (v3: 1.2 ATR — gold's noise
                      re-tests a held level by more than the old 0.3-0.5 ATR stop)
@@ -69,6 +70,7 @@ class Candidate:
     rejection: dict | None = None                         # the rejection event, once seen
     test_event: dict | None = None                        # the level_test event that armed it
     higher_beyond: list = field(default_factory=list)     # H4/day/week level prices beyond this one
+    next_beyond: list = field(default_factory=list)       # any level of the same side beyond this one
 
     @property
     def sgn(self) -> int:
@@ -116,15 +118,17 @@ def plan(strategy, test_event: dict, snapshot: dict, session: str | None) -> tup
     rr = abs(L - target) / risk if risk > 0 else 0.0
     if rr < r["min_rr"]:
         return None, f"R:R {rr:.2f} < {r['min_rr']}"
-    higher = sorted((float(x["price"]) for x in snapshot.get("htf_levels", [])
-                     if x["side"] == lv["side"] and s * (float(x["price"]) - L) > 0
-                     and any(h in src for src in x["sources"] for h in HIGHER_SOURCES)),
-                    key=lambda p: abs(p - L))
+    beyond = [x for x in snapshot.get("htf_levels", [])
+              if x["side"] == lv["side"] and s * (float(x["price"]) - L) > 0 and x["id"] != lv["id"]]
+    higher = sorted((float(x["price"]) for x in beyond
+                     if any(h in src for src in x["sources"] for h in HIGHER_SOURCES)), key=lambda p: abs(p - L))
+    nxt = sorted((float(x["price"]) for x in beyond), key=lambda p: abs(p - L))
     created = test_event["available_at"]
     expires = test_event["time"] + 60 * (r["rejection_within_bars"] + r["entry_window_bars"] + 1)
     return Candidate(f"{lv['id']}:{d['test_no']}", side, lv, d["test_no"], d.get("approach", "unknown"),
                      d.get("stretch_h1_atr"), {k: v for k, v in (d.get("trend") or {}).items()}, sess, atr,
-                     plan_stop, target, target_src, rr, created, expires, higher_beyond=higher), "ok"
+                     plan_stop, target, target_src, rr, created, expires, higher_beyond=higher,
+                     next_beyond=nxt), "ok"
 
 
 def trigger(strategy, cand: Candidate, rejection_event: dict, now: int) -> tuple[TradeIntent | None, str]:
@@ -138,11 +142,13 @@ def trigger(strategy, cand: Candidate, rejection_event: dict, now: int) -> tuple
     if s * (stop - ref) < r["min_stop_atr"] * atr:
         stop = ref + s * r["min_stop_atr"] * atr
     stop_src = "atr"
-    if r["stop_mode"] == "beyond_higher_level":
-        for p in cand.higher_beyond:
+    if r["stop_mode"] in ("beyond_next_level", "beyond_higher_level"):
+        pool = cand.next_beyond if r["stop_mode"] == "beyond_next_level" else cand.higher_beyond
+        for p in pool:
             st = p + s * r["stop_buffer_atr"] * atr
             if s * (st - stop) >= 0 and s * (st - ref) <= r["max_stop_atr"] * atr:
-                stop, stop_src = st, "beyond higher level"
+                stop, stop_src = st, "beyond next level" if r["stop_mode"] == "beyond_next_level" \
+                    else "beyond higher level"
                 break
     target = ref - s * r["target_r"] * abs(stop - ref) if r["target"] == "r_multiple" else cand.target
     if s * (ref - target) <= 0:

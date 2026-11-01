@@ -3,7 +3,7 @@
     strategy             active strategy id (strategy/library/<id>.v<N>.json)
     strategy_version     null = the latest version
     risk_pct             % of balance risked per trade (demo: may be 10 or more)
-    max_open_positions   1 — one Qwen position at a time (V3 Part E1)
+    max_open_positions   1 — one model position at a time (V3 Part E1)
     daily_loss_limit_pct null = off (demo, learning phase); a number turns it on
     magic                MT5 magic number that marks OUR positions
     deviation_points     max slippage MT5 may fill at, in points

@@ -1,4 +1,4 @@
-"""The prompt Qwen receives (template v2): system + user, <= strategy.prompt.max_bytes.
+"""The prompt the model receives (template v2): system + user, <= strategy.prompt.max_bytes.
 
   system  STRATEGY line, doctrine, FIELDS legend, answer format. Identical for
           every call of one strategy version, so the model server can keep it
@@ -10,8 +10,8 @@
                                                          rejection quality, exact trade, obstacles,
              "evidence":   {"E1": "[3m ago] H1 CHOCH up close beyond 4080.81", ...}}
 
-Evidence ids map back to engine event ids (``Prompt.evidence_map``); Qwen may
-only cite those (qwen/contract.py), so every reason points at a stored fact.
+Evidence ids map back to engine event ids (``Prompt.evidence_map``); the model may
+only cite those (llm/contract.py), so every reason points at a stored fact.
 
 Budget: when over ``max_bytes``, the least important evidence goes first,
 then the farthest market levels; if it still does not fit, PromptTooLarge —
@@ -62,7 +62,7 @@ def _avg_m1_volume(engine) -> float | None:
 
 
 def build(strategy, engine, runner, asks: list, now: int) -> Prompt:
-    """Everything Qwen needs for the candidates in ``asks``, as of ``now``."""
+    """Everything the model needs for the candidates in ``asks``, as of ``now``."""
     snap = engine.snapshot()
     price = engine._last_close
     atr = snap["atr"].get("M15") or 1.0

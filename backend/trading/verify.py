@@ -57,7 +57,7 @@ def verify(strategy, settings, journal) -> list[str]:
             continue
         if risk < r["min_stop_atr"] * atr - 0.005:            # prices are rounded to 3 decimals
             bad.append(f"T2 trade {tid}: stop {risk / atr:.2f} ATR < min {r['min_stop_atr']}")
-        if r["stop_mode"] == "beyond_higher_level" and m.get("stop_source") == "beyond higher level" \
+        if m.get("stop_source", "atr").startswith("beyond") \
                 and risk > r["max_stop_atr"] * atr + 0.005:
             bad.append(f"T2 trade {tid}: stop {risk / atr:.2f} ATR > max {r['max_stop_atr']}")
         if r["target"] == "r_multiple":

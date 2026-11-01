@@ -1,8 +1,8 @@
-"""The trading journal: every Qwen decision and every trade, in TimescaleDB.
+"""The trading journal: every model decision and every trade, in TimescaleDB.
 
 Tables (schema of the application, ``structure`` by default):
 
-  decisions   one row per question to Qwen — even "wait" and invalid answers:
+  decisions   one row per question to the model — even "wait" and invalid answers:
               time, strategy (id@version#hash), prompt hash + size, the
               candidates offered, the evidence map (E-id -> engine event id),
               model name + digest, latency, raw answer, verdict (take / wait /

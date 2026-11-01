@@ -3,15 +3,15 @@
 For every closed M1 bar, after the structure engine has processed it::
 
     events --> StrategyRunner.observe --+--> asks: build outlook + prompt (<= 6 KB)
-                                        |          --> decider (Qwen or take-all)
+                                        |          --> decider (the model or take-all)
                                         |          --> journal the decision (always)
                                         |          --> approve / refuse candidates
                                         +--> intents (approved plan + M1 rejection) --> Executor.execute
                                         +--> closes  (e.g. rejection stalled)       --> Executor.close
     Executor.sync --> finished trades: result in R, journal, runner forgets them
 
-The decider is passed in, so this file depends on neither Qwen nor MT5:
-``qwen.decider.QwenDecider()`` for lane B, ``qwen.decider.take_all`` for lane A.
+The decider is passed in, so this file depends on neither the model nor MT5:
+``llm.decider.LLMDecider()`` for lane B, ``llm.decider.take_all`` for lane A.
 """
 
 from __future__ import annotations

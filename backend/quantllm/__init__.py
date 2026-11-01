@@ -10,6 +10,6 @@ overlays.py        engine events -> chart drawings (lines, boxes, markers, level
 service.py         the running service and its HTTP API
 __main__.py        command line: serve | check | import-csv | import-mt5
 
-No Qwen and no trading here: this application only reads the market and
+No LLM and no trading here: this application only reads the market and
 shows what the deterministic structure engine sees.
 """

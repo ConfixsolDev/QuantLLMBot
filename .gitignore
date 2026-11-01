@@ -14,7 +14,7 @@ web/tsconfig.tsbuildinfo
 # Per-machine settings (templates are tracked: *.example.json)
 backend/config/mt5_connection.json
 backend/config/app.json
-backend/config/qwen.json
+backend/config/llm.json
 backend/config/trading.json
 .env
 .env.*
@@ -28,5 +28,6 @@ _archive/
 .test-tmp-*/
 
 # Large data (kept on disk, never in git)
+llm-runtime/
 model_training/
 data/

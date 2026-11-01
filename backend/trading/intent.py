@@ -1,6 +1,6 @@
 """The one object that crosses from decision to execution: a TradeIntent.
 
-Strategy code (deterministic) builds it from engine facts after Qwen approved
+Strategy code (deterministic) builds it from engine facts after the model approved
 the plan; the executor turns it into an order or refuses it. Nothing else
 about the decision reaches the broker. Prices here come from code, never
 from model text (V3 Part E1: "MT5 facts and code-owned levels are
@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 class TradeIntent:
     intent_id: str            # deterministic: strategy + candidate + trigger candle
     strategy_ref: str         # id@vN#hash
-    decision_id: str          # the Qwen decision that approved the plan
+    decision_id: str          # the model decision that approved the plan
     candidate_id: str         # stable candidate key (level id : test number)
     side: str                 # "buy" | "sell"
     entry_low: float          # the live price must be inside [entry_low, entry_high]

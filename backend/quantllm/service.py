@@ -23,7 +23,7 @@ reads three endpoints (all JSON, CORS open for localhost):
     GET /api/health                      status, progress, last bar, counts
     GET /api/chart?tf=M15&bars=300       closed candles + forming candle + overlays
     GET /api/snapshot                    what the engine thinks right now
-    GET /api/trading                     trading pipeline: mode, counters, recent Qwen
+    GET /api/trading                     trading pipeline: mode, counters, recent the model
                                          decisions and trades (config/trading.json)
 
 Replay page (verify the engine day by day, see replay.py):
@@ -225,7 +225,7 @@ class StructureService:
     def start_trading(self) -> None:
         """Build the decision pipeline when config/trading.json mode is paper or demo.
 
-        Only LIVE bars go through it (never the history replay). Qwen is asked
+        Only LIVE bars go through it (never the history replay). the model is asked
         inside the live loop; with the GPU and a prompt under 6 KB that takes
         seconds, and a candidate stays valid for its whole test window.
         """
@@ -239,7 +239,7 @@ class StructureService:
         self.status["trading"] = ts.mode
         if ts.mode == "off":
             return
-        from qwen.decider import QwenDecider
+        from llm.decider import LLMDecider
         from strategy import load as load_strategy
         from trading.broker import MT5Broker, PaperBroker
         from trading.executor import Executor
@@ -261,7 +261,7 @@ class StructureService:
             broker = PaperBroker(spec)
         self.journal = DbJournal(self.db.conn)
         self.broker = broker
-        self.pipeline = Pipeline(strat, self.engine, QwenDecider(), Executor(broker, ts, self.symbol, self.journal),
+        self.pipeline = Pipeline(strat, self.engine, LLMDecider(), Executor(broker, ts, self.symbol, self.journal),
                                  self.journal, mode=ts.mode)
         self.status["trading"] = f"{ts.mode}: {strat.ref}, risk {ts.risk_pct}% per trade"
         log.info("trading %s", self.status["trading"])

@@ -1,4 +1,4 @@
-"""Build the Qwen test dataset: every prompt the live system WOULD send, plus hidden outcomes.
+"""Build the model test dataset: every prompt the live system WOULD send, plus hidden outcomes.
 
     python -m strategy.dataset --m1 <files/folders> --from 2026-05-01 --to 2026-08-08 --out <dir>
     python -m strategy.dataset --db --from 2026-08-01 --to 2026-11-01 --out ..\\data\\qwen_dataset

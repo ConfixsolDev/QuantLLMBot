@@ -2,19 +2,19 @@
 
 Feed it every bar's events (live or replay — same code). Each call returns:
 
-  asks     candidates that need a Qwen decision NOW
+  asks     candidates that need a model decision NOW
   intents  TradeIntents ready for the executor
   closes   (candidate key, reason) — an open trade's idea failed, e.g. the
            rejection STALLED (no 0.5 ATR move in 3 M1 bars)
   ended    candidates whose test finished without a trade
   skipped  (event id, reason) — why a level test did not become a candidate
 
-When Qwen is asked depends on ``rules.decision_point``:
+When the model is asked depends on ``rules.decision_point``:
 
-  "rejection" (v2)  a level test arms a candidate silently; Qwen is asked when
+  "rejection" (v2)  a level test arms a candidate silently; the model is asked when
                     the M1 rejection happens, sees that candle, and an approval
                     becomes an intent at once (entry window: a few M1 bars)
-  "test"            Qwen is asked when price reaches the level; an approval
+  "test"            the model is asked when price reaches the level; an approval
                     waits for the rejection (v1 behaviour)
 
 The runner also keeps what the prompt needs: each level's history (earlier

@@ -1,6 +1,6 @@
 """Trade geometry study: which stop / target / management turns the candidates into the best trades?
 
-    python -m studies.trade_geometry --dataset <qwen dataset dir> --m1 <bars>
+    python -m studies.trade_geometry --dataset <dataset dir> --m1 <bars>
     python -m studies.trade_geometry --dataset ..\\data\\qwen_dataset\\<dir> --db
 
 Takes EVERY candidate of a dataset built by ``python -m strategy.dataset``
@@ -19,7 +19,7 @@ M1 bars under each variant:
 Reports per variant: trades, average R, win rate, total R, max drawdown (R),
 the two halves of the period separately (a variant that only works in one half
 is noise), and the average R of trades whose level HELD vs BROKE — the gap
-between those two is what a good selector (Qwen) can capture.
+between those two is what a good selector (the model) can capture.
 
 Research only. Spread 0.2 is paid on every trade; no commission.
 """

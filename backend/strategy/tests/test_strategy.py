@@ -183,3 +183,13 @@ def test_stop_beyond_the_next_higher_level_option():
     # the WEEK high at 2030 is 6 ATR away (> max_stop_atr 3): never used
     c3, _ = cands.plan(s2, level_test(), {**SNAP, "htf_levels": SNAP["htf_levels"] + [far]}, "LONDON")
     assert cands.trigger(s2, c3, rejection(), T0 + 120)[0].meta["stop_source"] == "atr"
+
+
+def test_stop_beyond_the_next_level_of_any_timeframe():
+    import dataclasses
+    h1 = {"id": "Vh1", "price": 2007.0, "side": "high", "sources": ["H1 swing high"], "tests": 0}
+    s2 = dataclasses.replace(S, rules={**S.rules, "stop_mode": "beyond_next_level"})
+    c, _ = cands.plan(s2, level_test(), {**SNAP, "htf_levels": SNAP["htf_levels"] + [h1]}, "LONDON")
+    assert c.next_beyond == [2007.0] and c.higher_beyond == []
+    it, _ = cands.trigger(s2, c, rejection(), T0 + 120)
+    assert it.stop == pytest.approx(2007.5) and it.meta["stop_source"] == "beyond next level"

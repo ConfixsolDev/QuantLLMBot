@@ -3,9 +3,9 @@
     python -m strategy list                          strategy files in strategy/library
     python -m strategy show <id> [--version N]       rules, doctrine and hash of one strategy
     python -m strategy preview --m1 <files/folders> [--date YYYY-MM-DD] [--n 1] [--save prompt.json]
-        replay the bars, and print the first N prompts Qwen WOULD receive on that day
+        replay the bars, and print the first N prompts the model WOULD receive on that day
         (system + user, with their size against the 6 KB budget). --save writes the
-        first one as {"system", "user"} for ``python -m qwen ask prompt.json``.
+        first one as {"system", "user"} for ``python -m llm ask prompt.json``.
 """
 
 from __future__ import annotations

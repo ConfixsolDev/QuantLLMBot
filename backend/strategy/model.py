@@ -1,11 +1,11 @@
-"""A strategy is DATA: rules for code + doctrine for Qwen, versioned and hashed.
+"""A strategy is DATA: rules for code + doctrine for the model, versioned and hashed.
 
 Files live in ``strategy/library/<id>.v<version>.json``. One strategy is
 active at a time (``trading`` settings name it). Loading is strict, like the
 structure config: unknown or missing keys fail, so a typo can never silently
 change how candidates are built.
 
-Why a hash: every Qwen decision and every trade stores the strategy id,
+Why a hash: every model decision and every trade stores the strategy id,
 version and hash (V3 Part E1: "source, prompt version, config hash ... must
 be traceable for every decision"). Editing a file without bumping the
 version still changes the hash, so the journal shows it.
@@ -76,9 +76,10 @@ def parse(raw: dict) -> Strategy:
     r = body["rules"]
     if r["kind"] not in KINDS:
         raise StrategyError(f"rules.kind {r['kind']!r} unknown; known {sorted(KINDS)}")
-    if r["stop_mode"] not in ("atr", "beyond_higher_level"):
-        raise StrategyError("rules.stop_mode: 'atr' (min_stop_atr from entry, beyond the rejection candle) or "
-                            "'beyond_higher_level' (just beyond the next H4/day/week level, <= max_stop_atr)")
+    if r["stop_mode"] not in ("atr", "beyond_next_level", "beyond_higher_level"):
+        raise StrategyError("rules.stop_mode: 'atr' (min_stop_atr from entry, beyond the rejection candle), "
+                            "'beyond_next_level' (just beyond the next level of the same side) or "
+                            "'beyond_higher_level' (just beyond the next H4/day/week level); both <= max_stop_atr")
     if r["target"] not in ("next_htf_level", "r_multiple"):
         raise StrategyError("rules.target: 'next_htf_level' or 'r_multiple' (target_r x the real risk)")
     if r["decision_point"] not in ("test", "rejection"):

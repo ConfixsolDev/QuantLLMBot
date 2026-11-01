@@ -7,7 +7,7 @@
     executor.py   checks -> one market order with stop + target -> trade life -> result in R
     journal.py    decisions / trades / refusals tables in TimescaleDB (or memory)
     pipeline.py   the bar-by-bar decision loop (same for replay and live)
-    backtest.py   python -m trading.backtest — replay lanes: take-all vs Qwen
+    backtest.py   python -m trading.backtest — replay lanes: take-all vs the model
 
 Demo only: the executor refuses a live account, and the settings refuse
 ``require_demo: false``. See V3 Part F.

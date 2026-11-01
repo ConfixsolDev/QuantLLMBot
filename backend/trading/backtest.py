@@ -1,11 +1,11 @@
 """Replay the whole pipeline on stored M1 bars with the paper broker.
 
-    python -m trading.backtest --m1 <files/folders> [--lane all|qwen] [--from D] [--to D]
-    python -m trading.backtest --db --from 2026-09-01 --lane qwen
+    python -m trading.backtest --m1 <files/folders> [--lane all|llm] [--from D] [--to D]
+    python -m trading.backtest --db --from 2026-09-01 --lane llm
 
-Lanes (V3 Part F — "Qwen must beat a baseline before it trades"):
+Lanes (V3 Part F — "the model must beat a baseline before it trades"):
   all   take EVERY candidate the strategy produces (deterministic baseline)
-  qwen  take only what Qwen approves (needs the Qwen server, config/qwen.json)
+  llm   take only what the model approves (needs the model server: Start-LLM.bat, config/llm.json)
 
 Same engine, same strategy, same paper broker, same days: the only
 difference between the lanes is the decider. Results are reported in R
@@ -42,7 +42,7 @@ from trading.settings import load_settings  # noqa: E402
 
 def run(bars, lane: str = "all", balance: float = 10_000.0, spread: float = 0.2,
         risk_pct: float | None = None, start: int | None = None, decider=None) -> dict:
-    from qwen.decider import QwenDecider, take_all
+    from llm.decider import LLMDecider, take_all
     settings = load_settings()
     if risk_pct is not None:
         from dataclasses import replace
@@ -52,7 +52,7 @@ def run(bars, lane: str = "all", balance: float = 10_000.0, spread: float = 0.2,
     broker = PaperBroker(XAU, balance=balance, spread=spread)
     journal = MemoryJournal()
     ex = Executor(broker, settings, "XAUUSD", journal)
-    decide = decider or (take_all if lane == "all" else QwenDecider())
+    decide = decider or (take_all if lane == "all" else LLMDecider())
     pipe = Pipeline(strat, engine, decide, ex, journal, mode=f"backtest-{lane}")
     for bar in bars:
         events = engine.push(bar)
@@ -115,7 +115,7 @@ def main() -> None:
     ap.add_argument("--db", action="store_true", help="read M1 bars from the database")
     ap.add_argument("--from", dest="start", help="first traded day YYYY-MM-DD (10 days before = warm-up)")
     ap.add_argument("--to", dest="end", help="last day (exclusive) YYYY-MM-DD")
-    ap.add_argument("--lane", choices=("all", "qwen"), default="all")
+    ap.add_argument("--lane", choices=("all", "llm"), default="all")
     ap.add_argument("--balance", type=float, default=10_000.0)
     ap.add_argument("--spread", type=float, default=0.2)
     ap.add_argument("--risk", type=float, help="override risk_pct")

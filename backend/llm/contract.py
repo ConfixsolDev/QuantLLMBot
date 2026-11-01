@@ -1,6 +1,6 @@
-"""The answer contract: what Qwen may say, checked by code before anything happens.
+"""The answer contract: what the model may say, checked by code before anything happens.
 
-Qwen must return ONE JSON object::
+The model (Bonsai 2 27B, see client.py) must return ONE JSON object::
 
     {"decision": "C2" | "wait", "confidence": 0-100, "cites": ["E3", "E7"], "why": "..."}
 
@@ -18,6 +18,10 @@ exists in this prompt. Rules (V3 Part E2 companion controls):
 
 Anything that breaks a rule is ``action == "invalid"`` with the reasons;
 the system then does nothing for this candidate, and the reasons are journaled.
+
+``answer_schema(prompt)`` is the same contract as a JSON schema, sent to
+llama-server so the answer is grammar-constrained: "decision" can only be one
+of THIS prompt's candidate ids or "wait". ``check`` still runs on every answer.
 """
 
 from __future__ import annotations
@@ -97,3 +101,19 @@ def check(text: str, prompt, min_confidence: int) -> Verdict:
     if errors and action == "take":
         action = "invalid"
     return Verdict(action, label, key, conf, cites, cited_events, why, tuple(errors), obj)
+
+
+def answer_schema(prompt) -> dict:
+    """JSON schema of the answer for one prompt (llama-server json_schema / grammar)."""
+    ids = list(prompt.candidate_map) + ["wait"]
+    cite_ids = list(prompt.evidence_map) + [f"{c}.{f}" for c in prompt.candidate_map
+                                             for f in ("rejection", "level", "level.history", "approach",
+                                                       "trade", "obstacles", "stretch_h1atr")]
+    return {"type": "object",
+            "properties": {"decision": {"type": "string", "enum": ids},
+                           "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+                           "cites": {"type": "array", "items": {"type": "string", "enum": cite_ids},
+                                     "maxItems": 8},
+                           "why": {"type": "string", "maxLength": 200}},
+            "required": ["decision", "confidence", "cites", "why"],
+            "additionalProperties": False}

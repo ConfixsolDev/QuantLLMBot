@@ -474,13 +474,14 @@ MT5 terminal ──closed M1──► quantllm service ──► PostgreSQL/Time
 ### C1. Code
 
 ```
-Start-QuantLLM.bat          one-click start (repository root)
+Start-QuantLLM.bat          one-click start (repository root); Restart-QuantLLM.bat
+Setup-LLM.bat / Start-LLM.bat   download / serve the decision model (Part F5)
 requirements.txt            backend Python packages (psycopg, MetaTrader5, pytest)
 backend/
   structure_engine/         Part B
   studies/                  research scripts (not used by the app): level_reaction.py (B3c),
                             trade_geometry.py (F3c)
-  strategy/ qwen/ trading/  Part F: strategies, the Qwen model, execution
+  strategy/ llm/ trading/   Part F: strategies, the decision model (Bonsai 2 27B), execution
   quantllm/
     settings.py             database / API / history settings (config/app.json + environment)
     mt5_connection.py       the one MT5 module (Part D)
@@ -600,7 +601,7 @@ Development: `cd web && npm run dev` with `NEXT_PUBLIC_API_BASE=http://127.0.0.1
 * Start: double-click `Start-QuantLLM.bat`. It checks the database variable,
   installs missing Python packages, builds the website once (needs Node.js),
   opens the browser and runs the service.
-* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests strategy/tests qwen/tests trading/tests -q` (80 tests).
+* Tests (from `backend/`): `python -m pytest structure_engine/tests quantllm/tests strategy/tests llm/tests trading/tests -q` (86 tests).
   The database tests use `QUANTLLM_TEST_DSN` (schema `quantllm_test`) or the
   `pgserver` package; they never touch the real schema.
 * Verified 2026-10-31 on 100,000 real XAUUSD M1 bars in PostgreSQL 16:
@@ -761,20 +762,20 @@ The runtime, not the model, enforces every safety invariant in phases 3 and 4.
   confirmation guard enforces a reached-level rejection or invalidation when
   completed M1 and M5 agree. P&L and elapsed time alone never confirm a close.
 
-## Part F — Decision and trading: strategy, Qwen, execution
+## Part F — Decision and trading: strategy, the model (Bonsai 2 27B), execution
 
-Owner's decisions (2026-11-01): one strategy at a time; Qwen only CHOOSES
+Owner's decisions (2026-11-01): one strategy at a time; the model only CHOOSES
 among code-built candidates (or waits) and never sets a price; position size
 = % of balance per stop distance; demo account only; no daily loss limit and
 risk per trade may be 10 % or more during the demo learning phase; results
-are judged in R so position size does not distort them; Qwen runs on the GPU
+are judged in R so position size does not distort them; the model runs on the GPU
 and the prompt stays under 6 KB.
 
 ```
 structure engine events ──► strategy/runner ──► asks (a level test = a plan)
                                 │                  └► strategy/template: doctrine + outlook + candidates
-                                │                     + evidence (E-ids), <= 6 KB ──► qwen/decider
-                                │                     ──► qwen/contract check ──► journal "decisions"
+                                │                     + evidence (E-ids), <= 6 KB ──► llm/decider
+                                │                     ──► llm/contract check ──► journal "decisions"
                                 ├─► intents (approved plan + M1 rejection) ──► trading/executor ──► broker
                                 └─► closes (rejection stalled)             ──► trading/executor
 trading/executor.sync ──► finished trades: net, R multiple, close reason ──► journal "trades"
@@ -784,19 +785,19 @@ trading/executor.sync ──► finished trades: net, R multiple, close reason �
 
 ```
 backend/strategy/            Module 2a — strategies as data
-  library/htf_level_m1_rejection.v1.json   rules (for code) + doctrine (for Qwen) + answer format
+  library/htf_level_m1_rejection.v1.json   rules (for code) + doctrine (for the model) + answer format
   model.py       strict loader; id@vN#hash identifies a strategy in every record
   outlook.py     compact market outlook from the engine snapshot + one-line event texts
   candidates.py  plan (on level_test) and trigger (on level_rejection): all prices from code
   runner.py      follows the event stream: asks / intents / closes / ended
   template.py    the prompt; refuses (PromptTooLarge) rather than silently cutting
   __main__.py    python -m strategy list | show | preview --m1 <bars> --date D [--save p.json]
-backend/qwen/                Module 2b — the model
-  client.py      Ollama or OpenAI-compatible server (LM Studio, llama.cpp, vLLM); stdlib only
+backend/llm/                 Module 2b — the model (Bonsai 2 27B on llama-server, F5)
+  client.py      llama_server (default) | openai | ollama dialects; JSON-schema constrained; stdlib only
   contract.py    answer rules: decision = candidate id or wait; confidence >= 51 to trade;
                  >= 1 citation, every citation an evidence id of this prompt
-  decider.py     QwenDecider (lane B) and take_all (lane A, the baseline)
-  __main__.py    python -m qwen ping | ask p.json
+  decider.py     LLMDecider (lane B) and take_all (lane A, the baseline)
+  __main__.py    python -m llm ping | ask p.json | bench --dataset <dir>
 backend/trading/             Module 3 — execution
   intent.py      TradeIntent: the only object crossing from decision to execution
   settings.py    config/trading.json (mode off | paper | demo, risk_pct, magic ...)
@@ -809,9 +810,9 @@ backend/trading/             Module 3 — execution
                  -> size -> order; close for strategy reasons; sync -> result in R
   journal.py     tables decisions / trades / refusals (schema "structure")
   pipeline.py    the bar-by-bar loop, the same for replay and live
-  backtest.py    python -m trading.backtest --m1 <bars> | --db --from D [--lane all|qwen]
+  backtest.py    python -m trading.backtest --m1 <bars> | --db --from D [--lane all|llm]
   verify.py      system checks on every decision and trade of a run (F3c)
-backend/config/qwen.example.json, trading.example.json   copy to qwen.json / trading.json
+backend/config/llm.example.json, trading.example.json   copy to llm.json / trading.json
 ```
 
 The service (Part C) builds the pipeline when `trading.json` mode is
@@ -825,7 +826,7 @@ The service (Part C) builds the pipeline when `trading.json` mode is
   level + 0.4 ATR(M15); target = the nearest opposite HTF level at least
   0.5 ATR away (else 2 R); R:R >= 1. Valid for the test window (10 + 3 + 1 bars).
 * **Trigger** on the `level_rejection` of the same level and test, only if
-  Qwen approved: stop = rejection candle extreme + 0.1 ATR (at least 0.3 ATR
+  the model approved: stop = rejection candle extreme + 0.1 ATR (at least 0.3 ATR
   from the close), entry range = close +- 0.3 ATR, valid 3 M1 bars, R:R re-checked.
 * **Close** at market when the rejection's `level_followthrough` is "stalled".
 * Broker stop and target always travel with the order.
@@ -839,11 +840,11 @@ bars): 633 prompts, max 3,769 bytes (budget 6,000); 282 trades; win 22.7 %;
 1st test -0.14 R (195 trades), 2nd +0.71 R (62), 3rd+ +0.58 R (25).
 At 10 % risk per trade a 26 R drawdown empties the account (paper balance
 10,000 -> 330): judge the strategy in R, and expect demo resets.
-This is the yardstick: Qwen (lane B) must beat it on the same days.
+This is the yardstick: the model (lane B) must beat it on the same days.
 
-### F3b. The template (v2) and the Qwen test dataset (2026-11-01)
+### F3b. The template (v2) and the the model test dataset (2026-11-01)
 
-Template v1 was read "as Qwen" on real prompts before any use; problems found:
+Template v1 was read "as the model would" on real prompts before any use; problems found:
 positional arrays (["up", 4069.0]) a reader must guess; R:R 12–21 that looks
 irresistible but comes from a tiny planned stop; evidence that repeated the
 candidate and wasted space on session-VWAP touches; ages like "6157m"; and the
@@ -851,7 +852,7 @@ decision taken at the level TOUCH, before the most informative fact (the M1
 rejection itself) existed. v2 (strategy file `htf_level_m1_rejection.v2.json`,
 v1 retired unused; superseded by v3, F3c):
 
-* Qwen is asked AT the M1 rejection (`rules.decision_point = "rejection"`);
+* the model is asked AT the M1 rejection (`rules.decision_point = "rejection"`);
   an approval enters at once (GPU latency is seconds).
 * Named fields with a FIELDS legend in the system message; `market` (now,
   session + minutes in, ATR, M15 range vs ATR, day high/low, trend + protected
@@ -861,7 +862,7 @@ v1 retired unused; superseded by v3, F3c):
   volume, the exact trade from code, obstacles between entry and target),
   curated `evidence` with readable ages.
 * Two levels hit by one candle with the same trade are offered once.
-* Qwen may cite evidence ids AND candidate facts (C1.rejection ...).
+* the model may cite evidence ids AND candidate facts (C1.rejection ...).
 * Size: median 4.7 KB, max 4.9 KB of the 6 KB budget.
 
 `python -m strategy.dataset --m1 <bars> | --db --from D --to D --out <dir>`
@@ -870,7 +871,7 @@ byte-exact) and a separate answer key labels.jsonl (result in R, exit, best /
 worst excursion, follow-through, level outcome). First dataset: 2026-05-01 →
 08-08, 331 prompts, `data/qwen_dataset/2026-05-01_2026-08-08/` (not in git).
 
-Blind check (Claude answering 12 random prompts as Qwen, labels hidden until
+Blind check (Claude answering 12 random prompts as the model would, labels hidden until
 after): the template was readable and decisions could be argued from it —
 4 takes, 8 waits — but **all 12 candidates lost or went flat, including the
 ones whose rejection moved and whose level HELD**. Over the whole set,
@@ -880,7 +881,7 @@ Trade geometry, not only selection, decides results. A first scan of stop /
 target / management variants on these 3 months found no robust winner (the
 best, break-even at +1 R, averaged +0.16 R, inside the noise of 331 trades).
 Decision for the owner: freeze the trade geometry on the full year of data
-before collecting Qwen answers.
+before collecting the model answers.
 
 ### F3c. Strategy v3: stop at least 1.2 ATR (owner's rule, 2026-11-01)
 
@@ -894,11 +895,11 @@ or behind the next higher-timeframe level. `htf_level_m1_rejection.v3.json`:
   default (see below);
 * target = **1.5 R** of the real risk (`target: "r_multiple"`);
 * **no early "stalled" exit** — the trade ends at its stop or target;
-* doctrine rewritten: Qwen's one question is "will this level hold?".
+* doctrine rewritten: the model's one question is "will this level hold?".
 
 What the data said (May–Aug 2026, every candidate, `python -m
 studies.trade_geometry`): with 1.2 ATR the outcome is decided by the level —
-held ≈ +0.7 R, broken ≈ −0.6 R, about half and half — so selection (Qwen)
+held ≈ +0.7 R, broken ≈ −0.6 R, about half and half — so selection (the model)
 is what matters. A stop behind the next higher level averaged −0.004 R vs
 +0.04 R for 1.2 ATR: the wider stop pushes the 1.5 R target out of reach.
 Re-run the study on the full year before changing the default.
@@ -910,12 +911,48 @@ filled inside the entry window, one position at a time, complete P&L, exits
 at the stop / target price, no early close). `python -m trading.backtest`
 prints "system checks: ALL PASS" — May–Aug 2026: 246 trades, all pass.
 
+### F5. The model: Bonsai 2 27B on the PrismML llama-server (2026-11-01)
+
+Owner's choice: `prism-ml/Ternary-Bonsai-2-27B-gguf` instead of plain Qwen —
+Qwen3.8-27B in ternary weights (1.75 bits/weight), 98 % of the FP16 benchmark
+average at 6 GB, so a 27B model fits the 16 GB RX 6800 with room to spare.
+What that means for this system (model card + its KNOWN_ISSUES, 2026-09-23):
+
+* **Runtime: the PrismML fork of llama.cpp, `llama-server`.** Its PTQ1_0 /
+  PQ2_0 files are new ggml types: Ollama, LM Studio and stock llama.cpp cannot
+  load them (and the F16 file gives garbage there). Not Ollama.
+* **On this PC: the Windows x64 Vulkan build + the PTQ1_0 file (5.95 GB).**
+  The fork's HIP/ROCm build aborts on RDNA2 cards (RX 6800 = gfx1030); PQ2_0
+  silently ran on the CPU under Vulkan in older releases. `Setup-LLM.bat`
+  downloads release prism-b10772 (Vulkan) + PTQ1_0 to `llm-runtime\` (not in
+  git); `Start-LLM.bat` serves it on 127.0.0.1:8080 (`-ngl 99 -fa on -c 16384
+  -np 1 --jinja`, reasoning left at `auto` so each request decides).
+* **Reasoning OFF for decisions** (`reasoning_effort: "none"`): it is a thinking
+  model that otherwise reasons at "xhigh" for thousands of tokens, and the
+  entry window is 3 M1 bars. "medium" (with `max_tokens` 16384) is the option
+  to test; "low" is not supported and "high" returns HTTP 500 — the settings
+  loader refuses both, and refuses reasoning with a small `max_tokens` (the
+  reasoning eats the limit and the answer comes back empty).
+* **Sampling**: the model card's non-thinking values (temperature 0.7,
+  top_p 0.8, top_k 20, min_p 0, presence_penalty 1.5) with a fixed seed.
+* **Grammar-constrained answers**: every request carries the answer contract
+  as a JSON schema (`llm/contract.answer_schema`): "decision" can only be a
+  candidate id of that prompt or "wait", citations only that prompt's evidence
+  ids / candidate facts. `contract.check` still validates every answer.
+* **Exactly one system message, first** (the template rejects anything else).
+* **Identity in the journal**: model file + server build from `/props`.
+
+Check it end to end: `python -m llm ping`, then `python -m llm bench
+--dataset ..\data\qwen_dataset\<dir> --n 30` — the dataset's exact prompts
+through the model: latency p50/p95, valid-answer %, take rate, and the R and
+"level held" rate of what it took vs taking everything.
+
 ### F4. Running it
 
-1. `python -m qwen ping` — server reachable, model present (config/qwen.json).
+1. `python -m llm ping` — model server reachable (Start-LLM.bat, config/llm.json).
 2. `python -m strategy preview --m1 <bars> --date D --save p.json`, then
-   `python -m qwen ask p.json` — one real prompt and Qwen's raw answer.
-3. `python -m trading.backtest --db --from <day> --lane qwen` vs `--lane all`.
+   `python -m llm ask p.json` — one real prompt and the model's raw answer.
+3. `python -m trading.backtest --db --from <day> --lane llm` vs `--lane all`.
 4. `config/trading.json` mode `paper` (live bars, simulated broker), later
    `demo` (MT5 demo account). A live account is refused in settings and executor.
 
@@ -966,6 +1003,10 @@ detection · P21 closed response missed by stale playbook.
   (A4); level-reaction study with a random-level control on real gold (B3c);
   `levels.py` records level tests, M1 rejections, follow-through, held/broken
   and M1 patterns at levels; chart layer, side panel, Replay check sheet.
+- **Bonsai 2 27B (2026-11-01):** the decision model is Bonsai 2 27B on the
+  PrismML llama-server (Vulkan, RX 6800); `qwen/` became `llm/` with a
+  llama-server dialect, grammar-constrained answers and `python -m llm bench`;
+  `Setup-LLM.bat` / `Start-LLM.bat` (F5).
 - **Part F (2026-11-01):** strategy / qwen / trading packages: versioned
   strategy files, deterministic candidates, 6 KB prompt with evidence ids,
   Qwen client + answer contract, risk sizing, MT5 + paper brokers, executor,
