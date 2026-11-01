@@ -72,6 +72,7 @@ def test_llama_server_request_is_tailored_to_bonsai():
     b = seen["body"]
     assert seen["url"] == "http://127.0.0.1:8080/v1/chat/completions"
     assert b["reasoning_effort"] == "none" and b["top_k"] == 20 and b["presence_penalty"] == 1.5
+    assert b["chat_template_kwargs"] == {"enable_thinking": False}
     assert b["messages"][0]["role"] == "system" and len([m for m in b["messages"] if m["role"] == "system"]) == 1
     assert b["response_format"]["type"] == "json_schema"
     assert b["response_format"]["json_schema"]["schema"]["properties"]["decision"]["enum"] == ["C1", "C2", "wait"]

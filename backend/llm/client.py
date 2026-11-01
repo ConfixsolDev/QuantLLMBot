@@ -137,6 +137,11 @@ class LLMClient:
                     "stream": False}
             if s.api == "llama_server":
                 body.update(top_k=s.top_k, min_p=s.min_p, reasoning_effort=s.reasoning_effort)
+                if s.reasoning_effort == "none":
+                    # The Bonsai chat template switches thinking off through enable_thinking
+                    # (it raises on an unknown effort); "none" alone also works on this
+                    # server, both are sent so either path closes the <think> block.
+                    body["chat_template_kwargs"] = {"enable_thinking": False}
             if schema and s.json_schema:
                 body["response_format"] = {"type": "json_schema",
                                            "json_schema": {"name": "decision", "strict": True, "schema": schema}}

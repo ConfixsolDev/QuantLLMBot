@@ -942,6 +942,17 @@ What that means for this system (model card + its KNOWN_ISSUES, 2026-09-23):
 * **Exactly one system message, first** (the template rejects anything else).
 * **Identity in the journal**: model file + server build from `/props`.
 
+Measured on the owner's PC (RX 6800, Vulkan build prism-b10772, PTQ1_0,
+2026-11-01), one real trading prompt (1,650 tokens), reasoning off: **9.4 s**
+per decision with the system message cached (prompt 142 tokens/s, answer
+37 tokens/s, ~100 answer tokens); 2.2 s when the whole prompt repeats.
+Valid, schema-conforming JSON every time, sensible reasons ("first test plus
+fresh M15 BOS against the buy: wait"). With reasoning "medium" the model was
+still thinking after 1,300 tokens (> 35 s) — too slow for a 3-bar entry
+window, so reasoning stays off. The template switches thinking off through
+`chat_template_kwargs.enable_thinking=false` (sent together with
+`reasoning_effort: "none"`).
+
 Check it end to end: `python -m llm ping`, then `python -m llm bench
 --dataset ..\data\qwen_dataset\<dir> --n 30` — the dataset's exact prompts
 through the model: latency p50/p95, valid-answer %, take rate, and the R and
